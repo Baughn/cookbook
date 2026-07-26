@@ -1,0 +1,53 @@
+
+This document is the (mostly outdated) instructions for my old claude-web cooking project. It's provided for context.
+
+= = =
+
+Here’s what you can assume I’ve got:
+- A gas stove, with oven and hob.
+- A high end combo microwave. This has convection oven, steam oven, grill and of course microwave functions, plus combinations of same.
+- A high-end battery-powered blender. It's not big, but it's competent.
+- KitchenAid Artisan stand mixer, plus the pasta and cutter accessories, plus meat grinder.
+- A wide range of spices, and the willingness to buy more. Fewer herbs, because those degrade quickly.
+- A walking distance grocery store, but it doesn’t have a lot of exotics.
+- A walking distance butcher shop.
+- Cast iron pan, carbon steel wok.
+- Saucepans and cookpots in various sizes, up to dinner-sized.
+- A sourdough starter.
+- High-accuracy kitchen scale.
+
+About me:
+- I live in Dublin, Ireland.
+- I prefer measuring food in grams or teaspoons. Metric units.
+- I usually make Asian fusion or Japanese cuisines, but enjoy expanding my repertoire.
+- I usually but not always make my food quite spicy. My spice tolerance is high, but not championship-level.
+- I have no dietary restrictions or strong dislikes.
+- I'm confident in my baking abilities, but still mastering the basics of yeast and regular dinners. That is to say, I want to build a repertoire but may still need help on the basic skills.
+- Time restrictions: I prefer to spend less than an hour on food on the weekdays, but 2-3 hours is fine on weekends. Either way I tend to make enough food for 2-3 days, so I'm amortising that.
+- I'm typically cooking for one.
+- I have a decent amount of refrigerator and freezer space. It's a floor-to-ceiling combo unit, sized for a family, though I do tend to fill it with variety.
+
+About my pantry. These are things I *always* have:
+- A variety of flour; plain, 00, spelt wholemeal, wheat wholemeal, which I need to make sourdough.
+- Spaghetti, although I can also make this. The dried spaghetti is a useful backup.
+- Some form of noodles, but the shop has a reasonably comprhensive supply.
+- A few varieties of soy sauce. (Tamari / dipping at minimum)
+- Miso paste
+- Eggs
+- Coconut milk (canned)
+- Natural tofu and eggs. (They last for months. When I buy other protein it's usually chicken, but I don't mind beef or duck on occasion.)
+- Rice. (White, brown, and mixed)
+- Couscous
+- Some manner of vegetables. I almost always have at least spring onions, brown onions, ginger, garlic and carrots. Any other common vegetables can be found in the shop.
+- Sugar/salt/baking powder/baking soda/maple syrup/honey.
+- Dried shiitake, dried peas.
+- Spices: Thyme, oregano, basil, white pepper, black pepper, cayenne, peri peri, garam masala, curry, crushed chillies, cumin, nutmeg, cinnamon, cloves, 'mixed spice' (warm; cinnamon/nutmeg/etc.), almond extract, vanilla essence, lemon extract, Sriracha hot sauce.
+- Oils: Filtered olive oil, extra virgin olive oil, sesame oil, vegetable oil (rapeseed). I prefer olive oil even if it adds a bit of taste, usually, for health reasons.
+- Gochujang, fueru wakame, matcha, green sichuan peppercorn oil, smoked chilli oil, peri peri sauce.
+- Distilled, cider and balsamic vinegar. The shop has malt and white wine vinegar.
+- White wine for cooking purposes, except when it’s turned into vinegar.
+- Various seeds. Sunflower, pumpkin, etc.
+- Various teas, both loose and in bags.
+- Apples and limes.
+- Ogórki Kiszone
+- Dairy: Fresh milk, yogurt, usually some kind of cheese.
