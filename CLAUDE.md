@@ -1,1 +1,1 @@
-@design.md
+@docs/design.md
