@@ -1,7 +1,7 @@
 # Design: a living cookbook & meal planner
 
 *Working title: **Mise** (as in mise en place — placeholder, rename freely).*
-*Last updated: 2026-07-16. This document covers UX and features, not implementation.*
+*Last updated: 2026-07-27. This document covers UX and features, not implementation.*
 
 ## Vision
 
@@ -56,7 +56,9 @@ Each queue entry shows:
 
 - The dish (linked to its recipe page, or a stub if it's still just an idea).
 - **Readiness**: can this be made right now, or does it need a shop trip — and
-  which tier (walkable shop / butcher / town)?
+  which tier (walkable shop / butcher / town)? Readiness is computed against
+  the **active location** (see Locations): its pantry, its shops, *and its
+  equipment* — a wok recipe isn't ready in a kitchen without one.
 - Rough effort class (weekday ≤1h vs. weekend project), so a glance answers
   "what can I make *tonight*?"
 - Why it's here, when the assistant suggested it ("rotating away from curry",
@@ -70,14 +72,21 @@ Queue entries are added three ways: you ask for suggestions, the assistant
 proactively proposes (see Steering), or you drop in raw ideas ("something with
 duck sometime").
 
+The queue itself is **global, not per-location**: it holds desires, and
+desires travel with you. Being at the cottage is a lens ("what's makeable
+*here*?"), not a separate queue — per-location queues would fragment intent
+and leave the cottage one stale for months.
+
 ### The Cookbook
 
 The growing collection of recipes actually made and refined — the repertoire.
 Each recipe is a living page:
 
 - The recipe itself: ingredients (grams and teaspoons, metric), steps written
-  for this kitchen (the wok, the combo microwave, the stand mixer — no
-  hedging for equipment that isn't owned).
+  for the primary kitchen (the wok, the combo microwave, the stand mixer — no
+  hedging for equipment that isn't owned). Recipes do **not** get per-location
+  variants; when cooking elsewhere, the assistant knows the active location's
+  equipment page and adapts or flags at queue/cook time.
 - **History strip**: dates made, and one-line outcomes distilled from debriefs.
 - **The recipe evolves.** Post-cook lessons get folded into the page itself —
   next time you open it, the tamari substitution and the "reduce longer" note
@@ -94,21 +103,23 @@ the cookbook.
 
 ### The Pantry
 
-One inventory, where each item carries:
+One inventory **per location** (see Locations), where each item carries:
 
 - **Presence**: have / running low / out.
 - **Freshness** for perishables: rough purchase date ("chicken thighs, bought
   Tue"), not expiry bookkeeping.
-- **Source tier**: where it comes from when it's gone —
+- **Source tier**: where it comes from when it's gone. Tiers are defined by
+  the location; home's are —
   1. *Staples* — always restocked on sight (the current project.txt pantry list).
   2. *Walkable shop* — reliably available locally.
   3. *Butcher* — the walkable butcher.
   4. *Town* — needs the bus; batch these up.
 - Free-form notes where useful ("the shop's version is bland; town one is better").
 
-The pantry page also encodes the standing facts from project.txt: equipment,
-preferences, spice tolerance, time budgets. These are pages too — editable,
-conversational ("actually I bought an immersion blender").
+The standing facts from project.txt split along the person/place line:
+**equipment** lives on the location; **preferences, spice tolerance, time
+budgets** are global. These are pages too — editable, conversational
+("actually I bought an immersion blender").
 
 **Update paths, in order of expected frequency:**
 
@@ -122,12 +133,47 @@ conversational ("actually I bought an immersion blender").
    auto-deduction.
 4. **Hand edits.** Always possible, rarely expected.
 
+### Locations
+
+You cook in more than one kitchen: home, and (currently) the family cottage in
+Norway. Each is a **location** — a small bundle of everything that belongs to a
+*place* rather than to *you*:
+
+- Its own **pantry** (inventory, presence, freshness).
+- Its own **equipment** page — the wok and stand mixer are at home; the
+  cottage has whatever it has.
+- Its own **source tier definitions**. "Walkable shop / butcher / town"
+  describes home's geography; the cottage might have just "the local shop" and
+  "the drive to town", with a very different reliably-available set. Tiers are
+  not a fixed enum.
+- Its own **fridge state**. Sunday's mapo at home does not feed you at the
+  cottage; coverage warnings are computed against where you are.
+- Standing facts about the place, e.g. "usually cooking for 2 here."
+
+Everything else — cookbook, log, techniques, steering goals, preferences,
+spice tolerance — belongs to the person and stays global, viewed through the
+lens of the **active location**.
+
+The active location is a manual, sticky selector, always visible: a silently
+wrong location means "out of miso" quietly corrupts the wrong pantry, which is
+a trust-model failure. The assistant may switch it conversationally ("we're at
+the cottage") with confirmation, but never by geolocation guesswork.
+
+Secondary locations decay hard — the cottage pantry is neglected ~90% of the
+year, and unlike home, *other people* change it while you're away. Its state
+carries lower confidence (the assistant verifies more before relying on it),
+and the photo-recon flow doubles as an **arrival ritual**: snap the cottage
+shelves when you arrive, reconcile, carry on. The presence-and-rough-freshness
+model is what makes this survivable; a stricter inventory would be
+unrecoverable after five months away.
+
 ### The Log
 
-Append-only record of cooks: date, dish, servings produced, distilled debrief
-verdict. This feeds the steering engine (variety, skill progression) and the
-fridge state. Mostly machine-maintained; readable as a diary of what you've
-been eating.
+Append-only record of cooks: date, dish, **location**, servings produced,
+distilled debrief verdict. This feeds the steering engine (variety, skill
+progression) and the fridge state. Rotation is about the person, not the
+kitchen — curry at the cottage still counts toward curry recency. Mostly
+machine-maintained; readable as a diary of what you've been eating.
 
 ### The Technique wiki
 
@@ -191,6 +237,16 @@ Opening on the phone leads with:
 Store mode is fast and terse: big touch targets, minimal reading, answers
 first, reasoning on tap.
 
+### Trip prep (changing location)
+
+Before a cottage stay, tell the assistant you're going. It plans against the
+*destination*: what the cottage pantry probably still has (at low confidence),
+what its shops can supply, and — the genuinely new artifact — a **"bring from
+home" packing list**: the wakame, miso, and Sichuan peppercorns that no local
+tier can provide. On arrival, the photo-recon ritual (see Locations)
+reconciles reality; the selector flips and every readiness annotation,
+coverage warning, and shopping list now speaks for the cottage.
+
 ### Cooking a recipe
 
 Open the recipe page (any device). The page is the current, evolved version —
@@ -225,7 +281,9 @@ Priority order:
    so, and tracks progression on the technique pages. This is Primer-mode:
    a curriculum that emerges from cooking, not homework.
 3. **Use-it-up pressure** (mild). Aging perishables and open jars nudge
-   suggestions but never dominate them.
+   suggestions but never dominate them. This is the one steering input scoped
+   to the active location — the open jar at home is irrelevant until you're
+   back; rotation and skill-building follow the person everywhere.
 
 Explicitly *not* a steering input: seasonality as a concept. What the shops
 stock already reflects the season and shows up through the pantry and store
@@ -257,15 +315,18 @@ guilt UI.
   star widget.
 - **Bulk recipe import / web clipper.** The cookbook grows by cooking.
 - **Multi-user support.** Cooking for one (guests are a conversation, not a
-  feature).
+  feature). A location may carry "usually cooking for 2 here" as a standing
+  fact — that's a property of the place, not a second user account.
 - **Nutrition logging.** Awareness only, as above.
 - **Silent inventory auto-deduction.** Updates go through the debrief touch.
 
 ## Open questions
 
 - **Naming & structure of the corpus**: what does the directory tree actually
-  look like (recipes/, techniques/, pantry.md, queue.md, log.md, threads
-  alongside or inside pages?). Decide at implementation time; constraint is
+  look like (recipes/, techniques/, queue.md, log.md, threads alongside or
+  inside pages? locations/home/ and locations/cottage/ each holding pantry,
+  equipment, shops, fridge state, with one line of global state naming the
+  active location?). Decide at implementation time; constraint is
   human-readability and hand-editability.
 - **Phone delivery**: PWA vs. something else — implementation question, but
   store mode's photo capture and offline tolerance (shop basements have bad
