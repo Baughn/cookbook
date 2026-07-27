@@ -1,7 +1,7 @@
 # Design: a living cookbook & meal planner
 
 *Working title: **Mise** (as in mise en place — placeholder, rename freely).*
-*Last updated: 2026-07-27. This document covers UX and features, not implementation.*
+*Last updated: 2026-07-29. This document covers UX and features, not implementation.*
 
 ## Vision
 
@@ -27,10 +27,11 @@ every interaction, the way a coding agent works inside a codebase.
 ## Design principles
 
 - **Everything is a page.** Recipes, the pantry, the queue, techniques, the
-  log — all are plain, human-readable documents in a directory tree. The
-  assistant is the primary editor, but hand-editing is always possible and
-  never breaks anything. (An index/cache may exist beside the files, but the
-  files are the truth.)
+  log — all are human-readable pages. The assistant is the primary editor;
+  direct editing is always available in the app. The store is the truth, and
+  beside it lives a deterministic, read-only **markdown export** of the whole
+  corpus — a plain directory tree that is greppable, diffable, readable in
+  any editor, and a complete exit strategy that outlives the software.
 - **Conversations are attached, not ephemeral.** Every page carries its own
   persistent thread. A question asked about tonkotsu in March is still there in
   July, and the conversation resumes with full context.
@@ -58,19 +59,38 @@ Each queue entry shows:
 - **Readiness**: can this be made right now, or does it need a shop trip — and
   which tier (walkable shop / butcher / town)? Readiness is computed against
   the **active location** (see Locations): its pantry, its shops, *and its
-  equipment* — a wok recipe isn't ready in a kitchen without one.
+  equipment* — a wok recipe isn't ready in a kitchen without one. Readiness
+  also knows about **lead time**: a marinade, a defrost, a levain make a dish
+  "ready tomorrow if you start tonight", and the queue surfaces the act-now
+  step instead of silently calling the dish makeable.
 - Rough effort class (weekday ≤1h vs. weekend project), so a glance answers
   "what can I make *tonight*?"
 - Why it's here, when the assistant suggested it ("rotating away from curry",
   "uses the wakame", "next step on yeast").
 
+An entry is usually a single dish, but can be a small **menu** — the
+Saturday-guests entry bundles a main and sides that shop, scale, and cook
+together.
+
 Below or beside the queue, the **fridge state**: what's currently cooked and
 being eaten through ("Sunday's mapo, ~1 serving left"), so coverage gaps are
-visible ("you run out of food Thursday").
+visible ("you run out of food Thursday"). The **freezer** — freezers, once
+the chest freezer arrives; a location can have several — is tracked
+separately: frozen portions are long-tail coverage ("you run out Thursday —
+unless you defrost the March bolognese"), and frozen raw proteins add a
+defrost step to readiness. Same presence-and-rough-date model, much slower
+decay. Coverage warnings only speak when the app is open; there is no
+away-mode to set — not opening it *is* the away mode.
 
 Queue entries are added three ways: you ask for suggestions, the assistant
 proactively proposes (see Steering), or you drop in raw ideas ("something with
 duck sometime").
+
+Entries age visibly. The assistant prunes conversationally ("still want
+this?"), and repeated deferral is itself a steering signal ("you keep
+skipping the soufflé — too ambitious for weekdays?"). Below the active queue
+sits a **someday shelf** — "would like to try this someday" — so the queue
+proper stays an honest short list of intent, not a graveyard of aspirations.
 
 The queue itself is **global, not per-location**: it holds desires, and
 desires travel with you. Being at the cottage is a lens ("what's makeable
@@ -82,12 +102,16 @@ and leave the cottage one stale for months.
 The growing collection of recipes actually made and refined — the repertoire.
 Each recipe is a living page:
 
-- The recipe itself: ingredients (grams and teaspoons, metric), steps written
+- The recipe itself: ingredients (grams and teaspoons, metric), a **servings
+  count** (the base for scaling and coverage math), steps written
   for the primary kitchen (the wok, the combo microwave, the stand mixer — no
   hedging for equipment that isn't owned). Recipes do **not** get per-location
   variants; when cooking elsewhere, the assistant knows the active location's
   equipment page and adapts or flags at queue/cook time.
-- **History strip**: dates made, and one-line outcomes distilled from debriefs.
+- **History strip**: dates made, one-line outcomes distilled from debriefs,
+  and any debrief photos — the crumb shot, the finished dish. The cookbook
+  should look like *your* cooking, and "did it look like this last time?" is
+  a real question.
 - **The recipe evolves.** Post-cook lessons get folded into the page itself —
   next time you open it, the tamari substitution and the "reduce longer" note
   are simply part of the recipe, with the change history available if you want
@@ -100,6 +124,14 @@ Recipes enter the cookbook when a queue idea gets fleshed out, or when a cook
 happens — not by bulk import. The cookbook is *what I make*, not *all recipes
 that exist*. One-off experiments that flopped stay in the log but don't clutter
 the cookbook.
+
+Repertoire also shrinks. A recipe you've gone off can be **retired**: out of
+steering's rotation and the browse surface, but never deleted — the history
+and lessons keep their value, and un-retiring is one edit.
+
+The cookbook is human-browsable, not only assistant-mediated: by cuisine,
+protein, format, effort class — conveniently the same metadata the steering
+engine already tracks.
 
 ### The Pantry
 
@@ -118,8 +150,8 @@ One inventory **per location** (see Locations), where each item carries:
 
 The standing facts from project.txt split along the person/place line:
 **equipment** lives on the location; **preferences, spice tolerance, time
-budgets** are global. These are pages too — editable, conversational
-("actually I bought an immersion blender").
+budgets** are global (see Standing facts). These are pages too — editable,
+conversational ("actually I bought an immersion blender").
 
 **Update paths, in order of expected frequency:**
 
@@ -131,7 +163,28 @@ budgets** are global. These are pages too — editable, conversational
 3. **Cook-time inference.** Marking a recipe as made prompts a light-touch
    "used up the coconut milk?" as part of the debrief, rather than silent
    auto-deduction.
-4. **Hand edits.** Always possible, rarely expected.
+4. **Direct edits in the UI.** Always possible, rarely expected.
+
+### The Shopping List
+
+A first-class page, not just a byproduct of planning. It aggregates what the
+queue needs, staples spotted running low (tier 1 is *restock on sight*), and
+free-form additions ("dish soap", "more of the good soy sauce"), grouped by
+the active location's source tiers. Unchecked items carry over to the next
+trip; the assistant prunes stale ones conversationally rather than letting
+the list rot.
+
+Every entry carries two one-tap actions:
+
+- **Bought** — checks it off and updates the pantry as a side effect.
+- **Unfindable** — opens a short, structured exchange. The assistant answers
+  with a near-strict enumeration of concrete options — a substitute from the
+  shelf in front of you, an alternate dish for the queue entry that needed
+  it, defer to a higher tier — plus a free-form escape hatch. Choices ripple
+  immediately: pick the substitute and tonight's readiness recomputes.
+
+Like every page it has its own thread — "which of these soy sauces is
+closest to tamari?" belongs to the list, mid-aisle.
 
 ### Locations
 
@@ -146,8 +199,9 @@ Norway. Each is a **location** — a small bundle of everything that belongs to 
   describes home's geography; the cottage might have just "the local shop" and
   "the drive to town", with a very different reliably-available set. Tiers are
   not a fixed enum.
-- Its own **fridge state**. Sunday's mapo at home does not feed you at the
-  cottage; coverage warnings are computed against where you are.
+- Its own **fridge & freezer state** (a location can have several freezers).
+  Sunday's mapo at home does not feed you at the cottage; coverage warnings
+  are computed against where you are.
 - Standing facts about the place, e.g. "usually cooking for 2 here."
 
 Everything else — cookbook, log, techniques, steering goals, preferences,
@@ -175,6 +229,12 @@ progression) and the fridge state. Rotation is about the person, not the
 kitchen — curry at the cottage still counts toward curry recency. Mostly
 machine-maintained; readable as a diary of what you've been eating.
 
+Not every cook is a meal. Cook events are typed — **meal**, **bake**, or
+**staple production** (tare, stock, chilli oil, pickles). Staple production
+feeds the pantry rather than the fridge state: the batch of chilli oil
+becomes an inventory item with a freshness date, and recipes can depend on
+it. A loaf covers no dinners; the tare covers the next three ramen nights.
+
 ### The Technique wiki
 
 Standalone living pages for techniques — velveting, tare, wok hei, sourdough
@@ -183,6 +243,18 @@ shaping, pan sauces. They grow organically: when a recipe thread digs into
 technique page and links it. Recipes reference techniques instead of
 re-explaining them, and the skill-building steering (below) uses these pages to
 know what's been learned versus merely encountered.
+
+### Standing facts (memory)
+
+The global home for what the assistant knows about *you and yours* that no
+other page owns: preferences, spice tolerance, time budgets, quirks ("hates
+cleaning the meat grinder"), and the people you cook for — "Anna is
+vegetarian, Dad hates coriander" is exactly the kind of fact that should
+never be asked twice. Structurally this is a memory subsystem: many small
+facts, written as a side effect of any conversation, consulted while
+planning. Guests remain a conversation, not a user account — the
+conversation just has memory. Same trust model as everything else: visible,
+editable, revertible.
 
 ## The conversation model
 
@@ -216,6 +288,15 @@ cleaning the meat grinder") is world-knowledge, not thread-local.
 
 ## Key flows
 
+### First run (bootstrapping)
+
+Day one is the cottage-arrival ritual pointed at home: seed the location's
+equipment and staples from a conversation (or the old project notes), then
+photo-recon the shelves and fridge to reconcile guesses against reality. An
+empty log means steering has nothing to push against — early on the
+assistant asks rather than infers ("what have you been eating lately?"), and
+the queue starts from stated cravings instead of rotation math.
+
 ### Planning session (desktop)
 
 Open the queue. Fridge state shows coverage ending Wednesday. Ask the assistant
@@ -226,8 +307,9 @@ conversation. Byproduct: the shopping list updates, split by source tier.
 
 Opening on the phone leads with:
 
-- **The tiered shopping list** for wherever you are — checkoff as you go, items
-  grouped by shop/butcher/town. Checking items updates the pantry.
+- **The tiered shopping list** for wherever you are — items grouped by
+  shop/butcher/town, each with its two taps: bought (updates the pantry) or
+  unfindable (structured substitution exchange — see The Shopping List).
 - **Photo recon**: snap a shelf or the discount bin. The assistant answers the
   question you actually ask, which is "what can I make with this?" — pivoting
   the queue around opportunities ("duck legs discounted → duck curry... no
@@ -285,6 +367,10 @@ Priority order:
    to the active location — the open jar at home is irrelevant until you're
    back; rotation and skill-building follow the person everywhere.
 
+The rotation goals and skill agenda live on their own **steering page** —
+"stop pushing yeast for a while" is an edit (or a sentence to the
+assistant), not a plea against a black box.
+
 Explicitly *not* a steering input: seasonality as a concept. What the shops
 stock already reflects the season and shows up through the pantry and store
 mode.
@@ -302,7 +388,8 @@ guilt UI.
 - Every page shows **recent changes** (what, when, from which conversation),
   and any change can be reverted.
 - Full history is kept; "what did this recipe say before March?" is answerable.
-- Hand edits and assistant edits are the same kind of thing in the same files.
+- Your edits and assistant edits are the same kind of thing in the same
+  history.
 
 ## Out of scope (v1, deliberately)
 
@@ -327,7 +414,7 @@ guilt UI.
   inside pages? locations/home/ and locations/cottage/ each holding pantry,
   equipment, shops, fridge state, with one line of global state naming the
   active location?). Decide at implementation time; constraint is
-  human-readability and hand-editability.
+  human-readability of the export.
 - **Phone delivery**: PWA vs. something else — implementation question, but
   store mode's photo capture and offline tolerance (shop basements have bad
   signal) should drive it.
@@ -336,3 +423,9 @@ guilt UI.
 - **How proactive is proactive**: does the assistant ever reach out (a morning
   "you're out of food tomorrow" nudge), or only speak when the app is open?
   Leaning: no push notifications in v1; the queue's coverage warning is enough.
+- **Sync & conflicts**: two postures plus offline store mode means concurrent
+  edits will happen (checking off items in a shop basement while a desktop
+  thread edits the pantry). Pages must merge at item granularity; leaning
+  CRDT — there's no trust boundary here, the server can trust the client —
+  but whole-page last-writer-wins is not good enough for the pantry. Decide
+  at implementation time.
