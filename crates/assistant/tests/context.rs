@@ -13,7 +13,7 @@ fn now() -> DateTime {
 
 fn fresh() -> (tempfile::TempDir, Store) {
     let dir = tempfile::tempdir().unwrap();
-    let store = Store::create(&dir.path().join("corpus"), &Slug::new("home").unwrap(), 2).unwrap();
+    let store = Store::create(&dir.path().join("corpus"), &Slug::new("home").unwrap(), 2, jiff::Timestamp::UNIX_EPOCH).unwrap();
     (dir, store)
 }
 
@@ -21,7 +21,7 @@ fn fresh() -> (tempfile::TempDir, Store) {
 fn assembly_is_deterministic_and_layered_for_caching() {
     let (_dir, mut store) = fresh();
     store
-        .modify::<mise_store::pages::SteeringDoc>(&DocId::Steering, "test", |s| {
+        .modify::<mise_store::pages::SteeringDoc>(&DocId::Steering, "test", jiff::Timestamp::UNIX_EPOCH, |s| {
             s.entries.insert("yeast".into(), "beyond sourdough".into());
         })
         .unwrap();
@@ -64,6 +64,7 @@ fn page_threads_carry_their_page() {
                 body: "Fry the paste.".into(),
             },
             "test",
+            jiff::Timestamp::UNIX_EPOCH,
         )
         .unwrap();
 

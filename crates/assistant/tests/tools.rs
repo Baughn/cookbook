@@ -2,6 +2,7 @@
 //! anywhere. Every tool gets its happy path and its is_error path.
 
 use jiff::civil::DateTime;
+use jiff::tz::TimeZone;
 use mise_assistant::tools::{ToolCtx, execute};
 use mise_assistant::turn::ToolCall;
 use mise_core::types::Slug;
@@ -14,12 +15,12 @@ fn now() -> DateTime {
 }
 
 fn ctx() -> ToolCtx {
-    ToolCtx { now: now(), provenance: "planning thread".into() }
+    ToolCtx { now: now().to_zoned(TimeZone::UTC).unwrap(), provenance: "planning thread".into() }
 }
 
 fn fresh() -> (tempfile::TempDir, Store) {
     let dir = tempfile::tempdir().unwrap();
-    let store = Store::create(&dir.path().join("corpus"), &Slug::new("home").unwrap(), 2).unwrap();
+    let store = Store::create(&dir.path().join("corpus"), &Slug::new("home").unwrap(), 2, jiff::Timestamp::UNIX_EPOCH).unwrap();
     (dir, store)
 }
 

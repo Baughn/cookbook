@@ -3,7 +3,6 @@
 //! the tool loop, persist the reply. The server inlines this flow instead,
 //! locking the store only around the store-touching steps.
 
-use jiff::civil::DateTime;
 use mise_store::Store;
 use mise_store::threads::{Role, ThreadId};
 
@@ -25,20 +24,21 @@ pub struct Exchange {
     pub tools_used: Vec<String>,
 }
 
-/// `clock` is read once at the start (context, tool dates, the user
-/// message's stamp) and once more when the reply persists — thread order
-/// is (created, uid), so the reply must be stamped *after* the message it
-/// answers. Still an input: tests script it.
+/// `clock` is read once at the start (context, tool dates, commit stamps,
+/// the user message's stamp) and once more when the reply persists —
+/// thread order is (created, uid), so the reply must be stamped *after*
+/// the message it answers. Still an input: tests script it.
 pub async fn run_exchange<M: Model>(
     model: &mut M,
     store: &mut Store,
     thread: &ThreadId,
     user_message: &str,
-    clock: &mut (dyn FnMut() -> DateTime + Send),
+    clock: &mut (dyn FnMut() -> jiff::Zoned + Send),
     on_event: &mut (dyn FnMut(ExchangeEvent<'_>) + Send),
 ) -> Result<Exchange> {
     let now = clock();
-    let ctx = ToolCtx { now, provenance: context::provenance(thread) };
+    let ctx = ToolCtx { now: now.clone(), provenance: context::provenance(thread) };
+    let now = now.datetime();
     store.append_thread_message(thread, Role::User, user_message, now)?;
     let (system, history) = context::assemble(store, thread, now)?;
 
@@ -64,7 +64,7 @@ pub async fn run_exchange<M: Model>(
     if !reply.is_empty() {
         // Clamp against a stalled or backwards clock: the reply must sort
         // after the message it answers.
-        let mut replied = clock();
+        let mut replied = clock().datetime();
         if replied <= now {
             replied = now.saturating_add(jiff::SignedDuration::from_nanos(1));
         }

@@ -23,7 +23,7 @@ fn slug(s: &str) -> Slug {
 }
 
 async fn spawn_server(dir: &Path) -> String {
-    let mut store = Store::create(&dir.join("server"), &slug("home"), 2).unwrap();
+    let mut store = Store::create(&dir.join("server"), &slug("home"), 2, jiff::Timestamp::UNIX_EPOCH).unwrap();
     store.export("init: empty corpus").unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -77,7 +77,7 @@ async fn two_clients_converge_through_the_server() {
     assert_eq!(a.corpus().unwrap(), b.corpus().unwrap());
 
     // Offline, divergent edits on both devices.
-    a.modify::<PantryDoc>(&DocId::Pantry(slug("home")), "offline on a", |p| {
+    a.modify::<PantryDoc>(&DocId::Pantry(slug("home")), "offline on a", jiff::Timestamp::UNIX_EPOCH, |p| {
         p.items.insert(
             "miso".into(),
             PantryItemDoc {
@@ -101,7 +101,7 @@ async fn two_clients_converge_through_the_server() {
         tags: BTreeMap::new(),
     })
     .unwrap();
-    b.modify::<QueueDoc>(&DocId::Queue, "offline on b", |q| {
+    b.modify::<QueueDoc>(&DocId::Queue, "offline on b", jiff::Timestamp::UNIX_EPOCH, |q| {
         q.entries.insert(
             "duck-curry".into(),
             QueueEntryDoc {

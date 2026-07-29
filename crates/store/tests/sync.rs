@@ -20,6 +20,10 @@ use mise_store::{DocId, Store};
 use proptest::collection::vec;
 use proptest::prelude::*;
 
+fn t0() -> jiff::Timestamp {
+    jiff::Timestamp::UNIX_EPOCH
+}
+
 fn slug(s: &str) -> Slug {
     Slug::new(s).unwrap()
 }
@@ -47,14 +51,14 @@ fn exports_equal(a: &Store, b: &Store) -> bool {
 }
 
 fn create_at(dir: &Path, name: &str) -> Store {
-    Store::create(&dir.join(name), &slug("home"), 2).unwrap()
+    Store::create(&dir.join(name), &slug("home"), 2, t0()).unwrap()
 }
 
 #[test]
 fn fresh_replica_pulls_everything() {
     let dir = tempfile::tempdir().unwrap();
     let mut a = create_at(dir.path(), "a");
-    a.modify::<PantryDoc>(&DocId::Pantry(slug("home")), "seed", |p| {
+    a.modify::<PantryDoc>(&DocId::Pantry(slug("home")), "seed", t0(), |p| {
         p.items.insert(
             "miso".into(),
             PantryItemDoc {
@@ -114,9 +118,10 @@ fn offline_edits_converge_and_resync_is_idempotent() {
             body: "Brown the legs.".into(),
         },
         "offline on a",
+    t0(),
     )
     .unwrap();
-    b.modify::<QueueDoc>(&DocId::Queue, "offline on b", |q| {
+    b.modify::<QueueDoc>(&DocId::Queue, "offline on b", t0(), |q| {
         q.entries.insert(
             "duck-curry".into(),
             QueueEntryDoc {
@@ -127,7 +132,7 @@ fn offline_edits_converge_and_resync_is_idempotent() {
         );
     })
     .unwrap();
-    b.modify::<PantryDoc>(&DocId::Pantry(slug("home")), "offline on b", |p| {
+    b.modify::<PantryDoc>(&DocId::Pantry(slug("home")), "offline on b", t0(), |p| {
         p.items.insert(
             "duck-legs".into(),
             PantryItemDoc {
@@ -246,7 +251,7 @@ fn apply(store: &mut Store, op: &Op) {
     match op {
         Op::Pantry { k, presence } => {
             store
-                .modify::<PantryDoc>(&DocId::Pantry(slug("home")), "prop", |p| {
+                .modify::<PantryDoc>(&DocId::Pantry(slug("home")), "prop", t0(), |p| {
                     let key = format!("item{}", k % 5);
                     p.items.insert(
                         key.clone(),
@@ -263,7 +268,7 @@ fn apply(store: &mut Store, op: &Op) {
         }
         Op::Queue { k, title } => {
             store
-                .modify::<QueueDoc>(&DocId::Queue, "prop", |q| {
+                .modify::<QueueDoc>(&DocId::Queue, "prop", t0(), |q| {
                     q.entries.insert(
                         format!("q{}", k % 5),
                         QueueEntryDoc {

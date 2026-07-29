@@ -157,9 +157,11 @@ fn runaway_tool_loop_is_cut_off() {
 fn scripted_exchange_mutates_the_store() {
     let dir = tempfile::tempdir().unwrap();
     let mut store =
-        Store::create(&dir.path().join("corpus"), &Slug::new("home").unwrap(), 2).unwrap();
+        Store::create(&dir.path().join("corpus"), &Slug::new("home").unwrap(), 2, jiff::Timestamp::UNIX_EPOCH).unwrap();
     let ctx = ToolCtx {
-        now: DateTime::constant(2026, 7, 29, 18, 0, 0, 0),
+        now: DateTime::constant(2026, 7, 29, 18, 0, 0, 0)
+            .to_zoned(jiff::tz::TimeZone::UTC)
+            .unwrap(),
         provenance: "planning thread".into(),
     };
 

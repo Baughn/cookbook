@@ -55,8 +55,9 @@ async fn exchange(
         None => ThreadId::Planning,
     };
 
-    let now = Zoned::now().datetime();
-    let ctx = ToolCtx { now, provenance: provenance(&thread) };
+    let started = Zoned::now();
+    let ctx = ToolCtx { now: started.clone(), provenance: provenance(&thread) };
+    let now = started.datetime();
     let (system, history) = {
         let mut store = state.store.lock().await;
         if let ThreadId::Page(id) = &thread

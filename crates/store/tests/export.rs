@@ -13,30 +13,34 @@ use mise_store::render::render;
 use mise_store::{DocId, Store};
 use proptest::prelude::*;
 
+fn t0() -> jiff::Timestamp {
+    jiff::Timestamp::UNIX_EPOCH
+}
+
 fn store_with(c: &CorpusState, root: &Path) -> Store {
     let mut store = Store::create_bare(root).unwrap();
     let p = "test: seed corpus";
-    store.create_doc(&DocId::State, &c.state, p).unwrap();
-    store.create_doc(&DocId::Queue, &c.queue, p).unwrap();
-    store.create_doc(&DocId::Someday, &c.someday, p).unwrap();
-    store.create_doc(&DocId::Shopping, &c.shopping, p).unwrap();
-    store.create_doc(&DocId::Steering, &c.steering, p).unwrap();
-    store.create_doc(&DocId::Facts, &c.facts, p).unwrap();
+    store.create_doc(&DocId::State, &c.state, p, t0()).unwrap();
+    store.create_doc(&DocId::Queue, &c.queue, p, t0()).unwrap();
+    store.create_doc(&DocId::Someday, &c.someday, p, t0()).unwrap();
+    store.create_doc(&DocId::Shopping, &c.shopping, p, t0()).unwrap();
+    store.create_doc(&DocId::Steering, &c.steering, p, t0()).unwrap();
+    store.create_doc(&DocId::Facts, &c.facts, p, t0()).unwrap();
     for (name, docs) in &c.locations {
         let loc = Slug::new(name.as_str()).unwrap();
-        store.create_doc(&DocId::Pantry(loc.clone()), &docs.pantry, p).unwrap();
-        store.create_doc(&DocId::Equipment(loc.clone()), &docs.equipment, p).unwrap();
-        store.create_doc(&DocId::Shops(loc.clone()), &docs.shops, p).unwrap();
-        store.create_doc(&DocId::Fridge(loc.clone()), &docs.fridge, p).unwrap();
+        store.create_doc(&DocId::Pantry(loc.clone()), &docs.pantry, p, t0()).unwrap();
+        store.create_doc(&DocId::Equipment(loc.clone()), &docs.equipment, p, t0()).unwrap();
+        store.create_doc(&DocId::Shops(loc.clone()), &docs.shops, p, t0()).unwrap();
+        store.create_doc(&DocId::Fridge(loc.clone()), &docs.fridge, p, t0()).unwrap();
     }
     for (slug, recipe) in &c.recipes {
         store
-            .create_doc(&DocId::Recipe(Slug::new(slug.as_str()).unwrap()), recipe, p)
+            .create_doc(&DocId::Recipe(Slug::new(slug.as_str()).unwrap()), recipe, p, t0())
             .unwrap();
     }
     for (slug, technique) in &c.techniques {
         store
-            .create_doc(&DocId::Technique(Slug::new(slug.as_str()).unwrap()), technique, p)
+            .create_doc(&DocId::Technique(Slug::new(slug.as_str()).unwrap()), technique, p, t0())
             .unwrap();
     }
     for entry in &c.log {

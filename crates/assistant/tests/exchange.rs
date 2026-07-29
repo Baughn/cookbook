@@ -34,11 +34,13 @@ impl Model for Scripted {
 }
 
 /// A scripted clock ticking one second per reading.
-fn ticking() -> impl FnMut() -> DateTime + Send {
+fn ticking() -> impl FnMut() -> jiff::Zoned + Send {
     let mut s = 0i8;
     move || {
         s += 1;
         DateTime::constant(2026, 7, 29, 18, 0, s, 0)
+            .to_zoned(jiff::tz::TimeZone::UTC)
+            .unwrap()
     }
 }
 
@@ -46,7 +48,7 @@ fn ticking() -> impl FnMut() -> DateTime + Send {
 async fn exchange_persists_thread_executes_tools_and_streams() {
     let dir = tempfile::tempdir().unwrap();
     let mut store =
-        Store::create(&dir.path().join("corpus"), &Slug::new("home").unwrap(), 2).unwrap();
+        Store::create(&dir.path().join("corpus"), &Slug::new("home").unwrap(), 2, jiff::Timestamp::UNIX_EPOCH).unwrap();
     let mut model = Scripted {
         turns: vec![
             ModelTurn {
@@ -117,6 +119,8 @@ async fn exchange_persists_thread_executes_tools_and_streams() {
         move || {
             s += 1;
             DateTime::constant(2026, 7, 29, 19, 0, s, 0)
+                .to_zoned(jiff::tz::TimeZone::UTC)
+                .unwrap()
         }
     };
     run_exchange(&mut model2, &mut store, &ThreadId::Planning, "queue dal?", &mut later, &mut |_| {})
@@ -131,7 +135,7 @@ async fn exchange_persists_thread_executes_tools_and_streams() {
 async fn stalled_clock_cannot_invert_the_transcript() {
     let dir = tempfile::tempdir().unwrap();
     let mut store =
-        Store::create(&dir.path().join("corpus"), &Slug::new("home").unwrap(), 2).unwrap();
+        Store::create(&dir.path().join("corpus"), &Slug::new("home").unwrap(), 2, jiff::Timestamp::UNIX_EPOCH).unwrap();
     let mut model = Scripted {
         turns: vec![ModelTurn {
             content: vec![ContentBlock::Text { text: "Sure.".into() }],
@@ -139,7 +143,9 @@ async fn stalled_clock_cannot_invert_the_transcript() {
         }],
         seen: vec![],
     };
-    let mut frozen = || DateTime::constant(2026, 7, 29, 18, 0, 0, 0);
+    let mut frozen = || {
+        DateTime::constant(2026, 7, 29, 18, 0, 0, 0).to_zoned(jiff::tz::TimeZone::UTC).unwrap()
+    };
     run_exchange(&mut model, &mut store, &ThreadId::Planning, "hello?", &mut frozen, &mut |_| {})
         .await
         .unwrap();

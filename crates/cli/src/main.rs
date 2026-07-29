@@ -319,7 +319,7 @@ fn main() -> Result<()> {
                 .join("cookbook"),
         },
     };
-    let now = Zoned::now().datetime();
+    let now = Zoned::now();
 
     match cli.command {
         Cmd::Init { from: Some(url), token, token_file, .. } => {
@@ -338,7 +338,7 @@ fn main() -> Result<()> {
         }
         Cmd::Init { location, headcount, .. } => {
             let location = slug(&location)?;
-            let mut store = Store::create(&root, &location, headcount)?;
+            let mut store = Store::create(&root, &location, headcount, Zoned::now().timestamp())?;
             store.export("init: empty corpus")?;
             println!("initialized corpus at {} (location: {location})", root.display());
             Ok(())
@@ -361,8 +361,9 @@ fn read_token(token: Option<String>, token_file: Option<PathBuf>) -> Result<Stri
     must_trim(&raw, "token")
 }
 
-fn run(store: &mut Store, command: Cmd, root: &Path, now: DateTime) -> Result<()> {
+fn run(store: &mut Store, command: Cmd, root: &Path, now: Zoned) -> Result<()> {
     let today = now.date();
+    let at = now.timestamp();
     match command {
         Cmd::Init { .. } => unreachable!("handled in main"),
         Cmd::Remote { cmd: RemoteCmd::Set { url, token, token_file } } => {
@@ -403,7 +404,7 @@ fn run(store: &mut Store, command: Cmd, root: &Path, now: DateTime) -> Result<()
             println!("exported to {}", store.export_dir().display());
             Ok(())
         }
-        Cmd::Queue { cmd: None } => show_queue(store, now),
+        Cmd::Queue { cmd: None } => show_queue(store, now.datetime()),
         Cmd::Queue { cmd: Some(QueueCmd::Add { title, recipe, reason, id, someday }) } => {
             let title = must_trim(&title, "title")?;
             let recipe = recipe.map(|r| slug(&r)).transpose()?;
@@ -418,7 +419,7 @@ fn run(store: &mut Store, command: Cmd, root: &Path, now: DateTime) -> Result<()
             };
             let doc_id = if someday { DocId::Someday } else { DocId::Queue };
             let msg = format!("cli: queue add {id}");
-            store.modify::<QueueDoc>(&doc_id, &msg, |q| {
+            store.modify::<QueueDoc>(&doc_id, &msg, at, |q| {
                 q.entries.insert(
                     id.to_string(),
                     QueueEntryDoc {
@@ -438,7 +439,7 @@ fn run(store: &mut Store, command: Cmd, root: &Path, now: DateTime) -> Result<()
         Cmd::Queue { cmd: Some(QueueCmd::Remove { id, someday }) } => {
             let doc_id = if someday { DocId::Someday } else { DocId::Queue };
             let msg = format!("cli: queue remove {id}");
-            let q = store.modify::<QueueDoc>(&doc_id, &msg, |q| {
+            let q = store.modify::<QueueDoc>(&doc_id, &msg, at, |q| {
                 q.entries.remove(&id);
             })?;
             if q.entries.contains_key(&id) {
@@ -449,16 +450,16 @@ fn run(store: &mut Store, command: Cmd, root: &Path, now: DateTime) -> Result<()
             Ok(())
         }
         Cmd::Chat { message, page, model } => run_chat(store, message, page, model, now),
-        Cmd::Recipe { cmd } => run_recipe(store, cmd),
-        Cmd::Equipment { cmd } => run_equipment(store, cmd),
-        Cmd::Pantry { cmd } => run_pantry(store, cmd, today),
-        Cmd::Fridge { cmd } => run_fridge(store, cmd, today),
+        Cmd::Recipe { cmd } => run_recipe(store, cmd, at),
+        Cmd::Equipment { cmd } => run_equipment(store, cmd, at),
+        Cmd::Pantry { cmd } => run_pantry(store, cmd, today, at),
+        Cmd::Fridge { cmd } => run_fridge(store, cmd, today, at),
         Cmd::Log { cmd } => run_log(store, cmd, today),
         Cmd::Location { cmd } => match cmd {
             LocationCmd::Add { name, headcount } => {
                 let name = slug(&name)?;
                 let msg = format!("cli: location add {name}");
-                store.add_location(&name, headcount, &msg)?;
+                store.add_location(&name, headcount, &msg, at)?;
                 store.export(&msg)?;
                 println!("added location {name}");
                 Ok(())
@@ -466,7 +467,7 @@ fn run(store: &mut Store, command: Cmd, root: &Path, now: DateTime) -> Result<()
             LocationCmd::Use { name } => {
                 let name = slug(&name)?;
                 let msg = format!("cli: location use {name}");
-                let state = store.modify::<StateDoc>(&DocId::State, &msg, |s| {
+                let state = store.modify::<StateDoc>(&DocId::State, &msg, at, |s| {
                     if s.locations.contains_key(name.as_str()) {
                         s.active_location = name.to_string();
                     }
@@ -487,7 +488,7 @@ fn run_chat(
     message: String,
     page: Option<String>,
     model: Option<String>,
-    now: DateTime,
+    now: Zoned,
 ) -> Result<()> {
     use std::io::Write as _;
 
@@ -516,7 +517,7 @@ fn run_chat(
     // `now` anchors the exchange; the reply's later stamp comes from a
     // fresh reading so the transcript sorts in conversation order.
     let mut first = Some(now);
-    let mut clock = move || first.take().unwrap_or_else(|| jiff::Zoned::now().datetime());
+    let mut clock = move || first.take().unwrap_or_else(jiff::Zoned::now);
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(run_exchange(
         &mut client,
@@ -542,7 +543,7 @@ fn run_chat(
     Ok(())
 }
 
-fn run_recipe(store: &mut Store, cmd: RecipeCmd) -> Result<()> {
+fn run_recipe(store: &mut Store, cmd: RecipeCmd, at: jiff::Timestamp) -> Result<()> {
     match cmd {
         RecipeCmd::Add {
             slug: s,
@@ -580,7 +581,7 @@ fn run_recipe(store: &mut Store, cmd: RecipeCmd) -> Result<()> {
                 body: body_text.as_str().into(),
             };
             let msg = format!("cli: recipe add {s}");
-            store.create_doc(&DocId::Recipe(s.clone()), &doc, &msg)?;
+            store.create_doc(&DocId::Recipe(s.clone()), &doc, &msg, at)?;
             store.export(&msg)?;
             println!("added recipe {s}");
             Ok(())
@@ -590,7 +591,7 @@ fn run_recipe(store: &mut Store, cmd: RecipeCmd) -> Result<()> {
             let link = link.map(|l| slug(&l)).transpose()?;
             let text = must_trim(&text, "ingredient text")?;
             let msg = format!("cli: recipe {s}: ingredient");
-            store.modify::<RecipeDoc>(&DocId::Recipe(s.clone()), &msg, |r| {
+            store.modify::<RecipeDoc>(&DocId::Recipe(s.clone()), &msg, at, |r| {
                 r.ingredients.push(IngredientDoc {
                     text,
                     pantry: link.as_ref().map(|l| l.to_string()),
@@ -606,7 +607,7 @@ fn run_recipe(store: &mut Store, cmd: RecipeCmd) -> Result<()> {
             let msg = format!("cli: recipe {s}: body");
             // Char-safe diff splice; autosurgeon's Text::update is
             // byte-indexed and breaks on non-ASCII (see Store::update_body).
-            store.update_body(&DocId::Recipe(s.clone()), &body, &msg)?;
+            store.update_body(&DocId::Recipe(s.clone()), &body, &msg, at)?;
             store.export(&msg)?;
             println!("updated body of {s}");
             Ok(())
@@ -614,7 +615,7 @@ fn run_recipe(store: &mut Store, cmd: RecipeCmd) -> Result<()> {
     }
 }
 
-fn run_equipment(store: &mut Store, cmd: EquipmentCmd) -> Result<()> {
+fn run_equipment(store: &mut Store, cmd: EquipmentCmd, at: jiff::Timestamp) -> Result<()> {
     match cmd {
         EquipmentCmd::Add { item, note, location } => {
             let item = slug(&item)?;
@@ -623,6 +624,7 @@ fn run_equipment(store: &mut Store, cmd: EquipmentCmd) -> Result<()> {
             store.modify::<mise_store::pages::EquipmentDoc>(
                 &DocId::Equipment(loc.clone()),
                 &msg,
+                at,
                 |e| {
                     e.items.insert(
                         item.to_string(),
@@ -640,6 +642,7 @@ fn run_equipment(store: &mut Store, cmd: EquipmentCmd) -> Result<()> {
             store.modify::<mise_store::pages::EquipmentDoc>(
                 &DocId::Equipment(loc.clone()),
                 &msg,
+                at,
                 |e| {
                     e.items.remove(&item);
                 },
@@ -651,7 +654,7 @@ fn run_equipment(store: &mut Store, cmd: EquipmentCmd) -> Result<()> {
     }
 }
 
-fn run_pantry(store: &mut Store, cmd: PantryCmd, today: Date) -> Result<()> {
+fn run_pantry(store: &mut Store, cmd: PantryCmd, today: Date, at: jiff::Timestamp) -> Result<()> {
     match cmd {
         PantryCmd::Set { item, name, presence, tier, bought, note, location } => {
             let item = slug(&item)?;
@@ -662,7 +665,7 @@ fn run_pantry(store: &mut Store, cmd: PantryCmd, today: Date) -> Result<()> {
             let tier = tier.map(|t| slug(&t)).transpose()?;
             let bought = bought.map(|b| parse_date(&b, today)).transpose()?;
             let msg = format!("cli: pantry {loc}: set {item}");
-            store.modify::<mise_store::pages::PantryDoc>(&DocId::Pantry(loc.clone()), &msg, |p| {
+            store.modify::<mise_store::pages::PantryDoc>(&DocId::Pantry(loc.clone()), &msg, at, |p| {
                 let entry = p.items.entry(item.to_string()).or_insert_with(|| PantryItemDoc {
                     name: item.as_str().replace('-', " "),
                     presence: "have".to_string(),
@@ -693,7 +696,7 @@ fn run_pantry(store: &mut Store, cmd: PantryCmd, today: Date) -> Result<()> {
         PantryCmd::Remove { item, location } => {
             let loc = resolve_location(store, location)?;
             let msg = format!("cli: pantry {loc}: remove {item}");
-            store.modify::<mise_store::pages::PantryDoc>(&DocId::Pantry(loc.clone()), &msg, |p| {
+            store.modify::<mise_store::pages::PantryDoc>(&DocId::Pantry(loc.clone()), &msg, at, |p| {
                 p.items.remove(&item);
             })?;
             store.export(&msg)?;
@@ -703,14 +706,14 @@ fn run_pantry(store: &mut Store, cmd: PantryCmd, today: Date) -> Result<()> {
     }
 }
 
-fn run_fridge(store: &mut Store, cmd: FridgeCmd, today: Date) -> Result<()> {
+fn run_fridge(store: &mut Store, cmd: FridgeCmd, today: Date, at: jiff::Timestamp) -> Result<()> {
     match cmd {
         FridgeCmd::Add { dish, servings, date, freezer, id, location } => {
             let loc = resolve_location(store, location)?;
             let dish = must_trim(&dish, "dish")?;
             let date = date.map(|d| parse_date(&d, today)).transpose()?.unwrap_or(today);
             let msg = format!("cli: fridge {loc}: add {dish}");
-            store.modify::<FridgeDoc>(&DocId::Fridge(loc.clone()), &msg, |f| {
+            store.modify::<FridgeDoc>(&DocId::Fridge(loc.clone()), &msg, at, |f| {
                 let portions = match &freezer {
                     Some(name) => f.freezers.entry(name.trim().to_string()).or_default(),
                     None => &mut f.fridge,
@@ -733,7 +736,7 @@ fn run_fridge(store: &mut Store, cmd: FridgeCmd, today: Date) -> Result<()> {
         FridgeCmd::Remove { id, freezer, location } => {
             let loc = resolve_location(store, location)?;
             let msg = format!("cli: fridge {loc}: remove {id}");
-            let doc = store.modify::<FridgeDoc>(&DocId::Fridge(loc.clone()), &msg, |f| {
+            let doc = store.modify::<FridgeDoc>(&DocId::Fridge(loc.clone()), &msg, at, |f| {
                 match &freezer {
                     Some(name) => {
                         if let Some(portions) = f.freezers.get_mut(name.trim()) {

@@ -79,7 +79,7 @@ async fn spawn_fake_anthropic() -> String {
 }
 
 async fn spawn_mise(dir: &Path, chat: Option<ChatConfig>) -> (String, AppState) {
-    let mut store = Store::create(&dir.join("server"), &Slug::new("home").unwrap(), 2).unwrap();
+    let mut store = Store::create(&dir.join("server"), &Slug::new("home").unwrap(), 2, jiff::Timestamp::now()).unwrap();
     store.export("init: empty corpus").unwrap();
     let mut state = AppState::new(store, TOKEN.to_string());
     if let Some(config) = chat {

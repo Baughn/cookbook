@@ -97,7 +97,7 @@ async fn main() -> Result<()> {
         Err(mise_store::StoreError::NoCorpus(_)) if args.init => {
             let location = Slug::new(args.init_location.as_str())
                 .map_err(|e| anyhow::Error::msg(e.to_string()))?;
-            let mut store = Store::create(&root, &location, args.init_headcount)?;
+            let mut store = Store::create(&root, &location, args.init_headcount, jiff::Timestamp::now())?;
             store.export("init: empty corpus")?;
             info!("initialized corpus at {}", root.display());
             store

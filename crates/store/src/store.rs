@@ -8,9 +8,10 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use automerge::{AutoCommit, Change};
+use automerge::{AutoCommit, Change, ChangeHash};
 use automerge::transaction::CommitOptions;
 use autosurgeon::{Hydrate, Reconcile, hydrate, reconcile};
+use jiff::Timestamp;
 use mise_core::types::{CookKind, LocationView, LogEntry, Slug};
 use rusqlite::{Connection, OptionalExtension, params};
 
@@ -95,6 +96,24 @@ fn thread_content_hash(m: &ThreadMessage) -> String {
     hex(&Sha256::digest(canonical.as_bytes()))[..16].to_string()
 }
 
+/// Commit options carrying provenance and the caller-supplied clock.
+/// Automerge change timestamps are unix seconds.
+fn stamp(provenance: &str, at: Timestamp) -> CommitOptions {
+    CommitOptions::default().with_message(provenance).with_time(at.as_second())
+}
+
+/// One entry in a document's history, oldest first.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChangeInfo {
+    /// Hex Automerge change hash — the handle for [`Store::revert`].
+    pub hash: String,
+    /// Provenance: which conversation or surface made the change.
+    pub message: String,
+    /// When, if the change was made by a clocked build (unix seconds; 0 in
+    /// changes from before timestamps were threaded through).
+    pub time: Option<Timestamp>,
+}
+
 /// Default source tiers for a fresh location; every one of these is an
 /// ordinary edit away from being something else.
 pub const DEFAULT_TIERS: &[(&str, &str)] = &[
@@ -129,16 +148,16 @@ impl Store {
 
     /// Initialize a fresh corpus at `root`: `mise.db`, `photos/`, and the
     /// `export/` git repo, with empty global pages and one location.
-    pub fn create(root: &Path, location: &Slug, headcount: u32) -> Result<Store> {
+    pub fn create(root: &Path, location: &Slug, headcount: u32, at: Timestamp) -> Result<Store> {
         let mut store = Store::create_bare(root)?;
         let provenance = "init: empty corpus";
-        store.create_doc(&DocId::State, &StateDoc::new(location.as_str(), headcount), provenance)?;
-        store.create_doc(&DocId::Queue, &QueueDoc::empty(), provenance)?;
-        store.create_doc(&DocId::Someday, &QueueDoc::empty(), provenance)?;
-        store.create_doc(&DocId::Shopping, &ShoppingDoc::empty(), provenance)?;
-        store.create_doc(&DocId::Steering, &SteeringDoc::empty(), provenance)?;
-        store.create_doc(&DocId::Facts, &FactsDoc::empty(), provenance)?;
-        store.create_location_docs(location, provenance)?;
+        store.create_doc(&DocId::State, &StateDoc::new(location.as_str(), headcount), provenance, at)?;
+        store.create_doc(&DocId::Queue, &QueueDoc::empty(), provenance, at)?;
+        store.create_doc(&DocId::Someday, &QueueDoc::empty(), provenance, at)?;
+        store.create_doc(&DocId::Shopping, &ShoppingDoc::empty(), provenance, at)?;
+        store.create_doc(&DocId::Steering, &SteeringDoc::empty(), provenance, at)?;
+        store.create_doc(&DocId::Facts, &FactsDoc::empty(), provenance, at)?;
+        store.create_location_docs(location, provenance, at)?;
         Ok(store)
     }
 
@@ -296,15 +315,22 @@ impl Store {
     }
 
     /// Create a new doc from an initial value. `provenance` lands in the
-    /// Automerge change message: which conversation or surface did this.
-    pub fn create_doc<T: Reconcile>(&mut self, id: &DocId, value: &T, provenance: &str) -> Result<()> {
+    /// Automerge change message (which conversation or surface did this)
+    /// and `at` as its timestamp — the store never reads a clock.
+    pub fn create_doc<T: Reconcile>(
+        &mut self,
+        id: &DocId,
+        value: &T,
+        provenance: &str,
+        at: Timestamp,
+    ) -> Result<()> {
         let key = id.to_string();
         if self.exists(id)? {
             return Err(StoreError::Exists(key));
         }
         let mut doc = AutoCommit::new();
         reconcile(&mut doc, value)?;
-        let committed = doc.commit_with(CommitOptions::default().with_message(provenance));
+        let committed = doc.commit_with(stamp(provenance, at));
         self.conn.execute(
             "INSERT INTO docs (id, kind) VALUES (?1, ?2)",
             params![key, id.kind()],
@@ -321,13 +347,14 @@ impl Store {
         &mut self,
         id: &DocId,
         provenance: &str,
+        at: Timestamp,
         f: impl FnOnce(&mut T),
     ) -> Result<T> {
         let mut doc = self.load_doc(id)?;
         let mut value: T = hydrate(&doc)?;
         f(&mut value);
         reconcile(&mut doc, &value)?;
-        let committed = doc.commit_with(CommitOptions::default().with_message(provenance));
+        let committed = doc.commit_with(stamp(provenance, at));
         if committed.is_some() {
             self.persist_change(&id.to_string(), &mut doc)?;
         }
@@ -343,7 +370,13 @@ impl Store {
     /// scalars; any non-ASCII body walks the indices off the end of the
     /// text. Production body edits must come through here — never
     /// `Text::update`/`Text::splice`.
-    pub fn update_body(&mut self, id: &DocId, new_body: &str, provenance: &str) -> Result<()> {
+    pub fn update_body(
+        &mut self,
+        id: &DocId,
+        new_body: &str,
+        provenance: &str,
+        at: Timestamp,
+    ) -> Result<()> {
         use automerge::transaction::Transactable;
         use automerge::{ObjType, ReadDoc, Value};
 
@@ -369,29 +402,35 @@ impl Store {
                 similar::ChangeTag::Equal => idx += chars,
             }
         }
-        let committed = doc.commit_with(CommitOptions::default().with_message(provenance));
+        let committed = doc.commit_with(stamp(provenance, at));
         if committed.is_some() {
             self.persist_change(&id.to_string(), &mut doc)?;
         }
         Ok(())
     }
 
-    fn create_location_docs(&mut self, location: &Slug, provenance: &str) -> Result<()> {
+    fn create_location_docs(&mut self, location: &Slug, provenance: &str, at: Timestamp) -> Result<()> {
         let docs = LocationDocs::empty_with_tiers(DEFAULT_TIERS);
-        self.create_doc(&DocId::Pantry(location.clone()), &docs.pantry, provenance)?;
-        self.create_doc(&DocId::Equipment(location.clone()), &docs.equipment, provenance)?;
-        self.create_doc(&DocId::Shops(location.clone()), &docs.shops, provenance)?;
-        self.create_doc(&DocId::Fridge(location.clone()), &docs.fridge, provenance)?;
+        self.create_doc(&DocId::Pantry(location.clone()), &docs.pantry, provenance, at)?;
+        self.create_doc(&DocId::Equipment(location.clone()), &docs.equipment, provenance, at)?;
+        self.create_doc(&DocId::Shops(location.clone()), &docs.shops, provenance, at)?;
+        self.create_doc(&DocId::Fridge(location.clone()), &docs.fridge, provenance, at)?;
         Ok(())
     }
 
     /// Register a new location: its four docs plus the state-page entry.
-    pub fn add_location(&mut self, location: &Slug, headcount: u32, provenance: &str) -> Result<()> {
+    pub fn add_location(
+        &mut self,
+        location: &Slug,
+        headcount: u32,
+        provenance: &str,
+        at: Timestamp,
+    ) -> Result<()> {
         if self.exists(&DocId::Pantry(location.clone()))? {
             return Err(StoreError::Exists(format!("location {location}")));
         }
-        self.create_location_docs(location, provenance)?;
-        self.modify::<StateDoc>(&DocId::State, provenance, |s| {
+        self.create_location_docs(location, provenance, at)?;
+        self.modify::<StateDoc>(&DocId::State, provenance, at, |s| {
             s.locations.insert(
                 location.as_str().to_string(),
                 crate::pages::LocationMeta { headcount },
@@ -495,6 +534,98 @@ impl Store {
                 })
             })
             .collect()
+    }
+
+    // --------------------------------------------------------- history --
+
+    /// A document's full change history, oldest first. This is the "recent
+    /// changes" feed: what, when, from which conversation.
+    pub fn history(&self, id: &DocId) -> Result<Vec<ChangeInfo>> {
+        let mut doc = self.load_doc(id)?;
+        Ok(doc
+            .get_changes(&[])
+            .into_iter()
+            .map(|c| ChangeInfo {
+                hash: hex(&c.hash().0),
+                message: c.message().cloned().unwrap_or_default(),
+                time: (c.timestamp() != 0).then(|| Timestamp::from_second(c.timestamp()))
+                    .transpose()
+                    .ok()
+                    .flatten(),
+            })
+            .collect())
+    }
+
+    /// Restore a page to its state as of `hash` (a change from
+    /// [`Store::history`]), recorded as a new forward change — history only
+    /// ever grows, and the revert itself is visible and revertible.
+    pub fn revert(&mut self, id: &DocId, hash: &str, provenance: &str, at: Timestamp) -> Result<()> {
+        let mut doc = self.load_doc(id)?;
+        let target: ChangeHash = hash
+            .parse()
+            .map_err(|_| StoreError::Invalid(format!("not a change hash: {hash:?}")))?;
+        if doc.get_change_by_hash(&target).is_none() {
+            return Err(StoreError::NotFound(format!("change {hash} in {id}")));
+        }
+        let old = doc.fork_at(&[target])?;
+
+        match id {
+            DocId::State => self.revert_plain::<StateDoc>(id, &old, provenance, at),
+            DocId::Queue | DocId::Someday => {
+                self.revert_plain::<QueueDoc>(id, &old, provenance, at)
+            }
+            DocId::Shopping => self.revert_plain::<ShoppingDoc>(id, &old, provenance, at),
+            DocId::Steering => self.revert_plain::<SteeringDoc>(id, &old, provenance, at),
+            DocId::Facts => self.revert_plain::<FactsDoc>(id, &old, provenance, at),
+            DocId::Pantry(_) => self.revert_plain::<PantryDoc>(id, &old, provenance, at),
+            DocId::Equipment(_) => self.revert_plain::<EquipmentDoc>(id, &old, provenance, at),
+            DocId::Shops(_) => self.revert_plain::<ShopsDoc>(id, &old, provenance, at),
+            DocId::Fridge(_) => self.revert_plain::<FridgeDoc>(id, &old, provenance, at),
+            // Prose pages: scalar fields through reconcile, the body through
+            // the char-safe splice path (a hydrated Text from the historical
+            // fork cannot reconcile onto the current doc).
+            DocId::Recipe(_) => {
+                let value: crate::pages::RecipeDoc = hydrate(&old)?;
+                self.modify::<crate::pages::RecipeDoc>(id, provenance, at, |r| {
+                    r.schema_version = value.schema_version;
+                    r.title = value.title;
+                    r.servings = value.servings;
+                    r.effort = value.effort;
+                    r.lead = value.lead;
+                    r.tags = value.tags;
+                    r.equipment = value.equipment;
+                    r.ingredients = value.ingredients;
+                    r.retired = value.retired;
+                })?;
+                let old_body = {
+                    let value: crate::pages::RecipeDoc = hydrate(&old)?;
+                    value.body.as_str().to_string()
+                };
+                self.update_body(id, &old_body, provenance, at)
+            }
+            DocId::Technique(_) => {
+                let value: crate::pages::TechniqueDoc = hydrate(&old)?;
+                let old_body = value.body.as_str().to_string();
+                self.modify::<crate::pages::TechniqueDoc>(id, provenance, at, |t| {
+                    t.schema_version = value.schema_version;
+                    t.title = value.title;
+                    t.tags = value.tags;
+                })?;
+                self.update_body(id, &old_body, provenance, at)
+            }
+        }
+    }
+
+    fn revert_plain<T: Hydrate + Reconcile>(
+        &mut self,
+        id: &DocId,
+        old: &AutoCommit,
+        provenance: &str,
+        at: Timestamp,
+    ) -> Result<()> {
+        let value: T = hydrate(old)?;
+        self.modify::<T>(id, provenance, at, |v| *v = value)?;
+        Ok(())
     }
 
     // --------------------------------------------------------- threads --

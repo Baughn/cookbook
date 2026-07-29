@@ -36,7 +36,7 @@ fn slug(s: &str) -> Slug {
 /// A lived-in corpus: recipes with tags and lead time, a stocked pantry,
 /// a log leaning hard on curry, a steering agenda.
 fn seed(root: &std::path::Path) -> Result<Store> {
-    let mut store = Store::create(root, &slug("home"), 2)?;
+    let mut store = Store::create(root, &slug("home"), 2, Zoned::now().timestamp())?;
     let p = "eval: seed";
     type Seed = (&'static str, &'static str, BTreeMap<String, String>, Option<LeadTimeDoc>);
     let recipes: [Seed; 4] = [
@@ -93,9 +93,10 @@ fn seed(root: &std::path::Path) -> Result<Store> {
                 body: "Cook it well.".into(),
             },
             p,
+            Zoned::now().timestamp(),
         )?;
     }
-    store.modify::<mise_store::pages::PantryDoc>(&DocId::Pantry(slug("home")), p, |d| {
+    store.modify::<mise_store::pages::PantryDoc>(&DocId::Pantry(slug("home")), p, Zoned::now().timestamp(), |d| {
         for (item, presence) in
             [("eggs", "have"), ("red-lentils", "have"), ("coconut-milk", "low"), ("flour", "have")]
         {
@@ -111,7 +112,7 @@ fn seed(root: &std::path::Path) -> Result<Store> {
             );
         }
     })?;
-    store.modify::<mise_store::pages::SteeringDoc>(&DocId::Steering, p, |d| {
+    store.modify::<mise_store::pages::SteeringDoc>(&DocId::Steering, p, Zoned::now().timestamp(), |d| {
         d.entries.insert("skill".into(), "yeast baking beyond sourdough".into());
     })?;
     let today = Zoned::now().date();
@@ -137,7 +138,7 @@ async fn chat(store: &mut Store, thread: &ThreadId, message: &str) -> Result<Vec
     let mut client = AnthropicClient::new(
         std::env::var("ANTHROPIC_API_KEY").context("ANTHROPIC_API_KEY not set")?,
     );
-    let mut clock = || Zoned::now().datetime();
+    let mut clock = Zoned::now;
     let exchange = run_exchange(&mut client, store, thread, message, &mut clock, &mut |e| {
         match e {
             ExchangeEvent::TextDelta(d) => print!("{d}"),

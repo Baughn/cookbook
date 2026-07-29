@@ -10,7 +10,7 @@
 
 use std::collections::BTreeMap;
 
-use jiff::civil::{Date, DateTime};
+use jiff::civil::Date;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -30,13 +30,18 @@ use crate::views;
 /// Ambient facts for one exchange: the clock (always a parameter, never
 /// read here) and the provenance string edits are recorded under.
 pub struct ToolCtx {
-    pub now: DateTime,
+    pub now: jiff::Zoned,
     pub provenance: String,
 }
 
 impl ToolCtx {
     fn today(&self) -> Date {
         self.now.date()
+    }
+
+    /// Commit timestamp for this exchange's edits.
+    fn at(&self) -> jiff::Timestamp {
+        self.now.timestamp()
     }
 
     fn msg(&self, action: &str) -> String {
@@ -433,7 +438,7 @@ fn ingredients_schema() -> Value {
 
 fn run(store: &mut Store, ctx: &ToolCtx, name: &str, input: &Value) -> ToolResult {
     match name {
-        "queue_status" => Ok(views::queue_status(store, ctx.now)?),
+        "queue_status" => Ok(views::queue_status(store, ctx.now.datetime())?),
         "list_pages" => list_pages(store),
         "read_page" => read_page(store, input),
         "search" => search(store, input),
@@ -567,7 +572,7 @@ fn queue_add(store: &mut Store, ctx: &ToolCtx, input: &Value) -> ToolResult {
     let doc_id = if a.someday { DocId::Someday } else { DocId::Queue };
     let today = ctx.today();
     store
-        .modify::<QueueDoc>(&doc_id, &ctx.msg(&format!("queue add {id}")), |q| {
+        .modify::<QueueDoc>(&doc_id, &ctx.msg(&format!("queue add {id}")), ctx.at(), |q| {
             q.entries.insert(
                 id.to_string(),
                 QueueEntryDoc {
@@ -598,7 +603,7 @@ fn queue_remove(store: &mut Store, ctx: &ToolCtx, input: &Value) -> ToolResult {
         return Err(user(format!("no queue entry {:?}", a.id)));
     }
     store
-        .modify::<QueueDoc>(&doc_id, &ctx.msg(&format!("queue remove {}", a.id)), |q| {
+        .modify::<QueueDoc>(&doc_id, &ctx.msg(&format!("queue remove {}", a.id)), ctx.at(), |q| {
             q.entries.remove(&a.id);
         })
         .map_err(Fail::from)?;
@@ -676,7 +681,7 @@ fn recipe_add(store: &mut Store, ctx: &ToolCtx, input: &Value) -> ToolResult {
         body: a.body.as_deref().unwrap_or("").trim().into(),
     };
     store
-        .create_doc(&DocId::Recipe(s.clone()), &doc, &ctx.msg(&format!("recipe add {s}")))
+        .create_doc(&DocId::Recipe(s.clone()), &doc, &ctx.msg(&format!("recipe add {s}")), ctx.at())
         .map_err(Fail::from)?;
     Ok(format!("added recipe {s}"))
 }
@@ -734,7 +739,7 @@ fn recipe_edit(store: &mut Store, ctx: &ToolCtx, input: &Value) -> ToolResult {
     let msg = ctx.msg(&format!("recipe edit {s}"));
 
     store
-        .modify::<RecipeDoc>(&DocId::Recipe(s.clone()), &msg, |r| {
+        .modify::<RecipeDoc>(&DocId::Recipe(s.clone()), &msg, ctx.at(), |r| {
             if let Some(t) = title {
                 r.title = t;
             }
@@ -766,7 +771,7 @@ fn recipe_edit(store: &mut Store, ctx: &ToolCtx, input: &Value) -> ToolResult {
     // The body goes through the store's char-safe diff splice, not
     // autosurgeon's byte-indexed Text::update.
     if let Some(b) = &body {
-        store.update_body(&DocId::Recipe(s.clone()), b, &msg).map_err(Fail::from)?;
+        store.update_body(&DocId::Recipe(s.clone()), b, &msg, ctx.at()).map_err(Fail::from)?;
     }
     Ok(format!("updated recipe {s}"))
 }
@@ -796,6 +801,7 @@ fn pantry_set(store: &mut Store, ctx: &ToolCtx, input: &Value) -> ToolResult {
         .modify::<PantryDoc>(
             &DocId::Pantry(loc.clone()),
             &ctx.msg(&format!("pantry {loc}: set {item}")),
+            ctx.at(),
             |p| {
                 let entry = p.items.entry(item.to_string()).or_insert_with(|| PantryItemDoc {
                     name: item.as_str().replace('-', " "),
@@ -841,6 +847,7 @@ fn pantry_remove(store: &mut Store, ctx: &ToolCtx, input: &Value) -> ToolResult 
         .modify::<PantryDoc>(
             &DocId::Pantry(loc.clone()),
             &ctx.msg(&format!("pantry {loc}: remove {}", a.item)),
+            ctx.at(),
             |p| {
                 p.items.remove(a.item.trim());
             },
@@ -865,6 +872,7 @@ fn equipment_set(store: &mut Store, ctx: &ToolCtx, input: &Value) -> ToolResult 
         .modify::<EquipmentDoc>(
             &DocId::Equipment(loc.clone()),
             &ctx.msg(&format!("equipment {loc}: set {item}")),
+            ctx.at(),
             |e| {
                 e.items.insert(
                     item.to_string(),
@@ -892,6 +900,7 @@ fn equipment_remove(store: &mut Store, ctx: &ToolCtx, input: &Value) -> ToolResu
         .modify::<EquipmentDoc>(
             &DocId::Equipment(loc.clone()),
             &ctx.msg(&format!("equipment {loc}: remove {}", a.item)),
+            ctx.at(),
             |e| {
                 e.items.remove(a.item.trim());
             },
@@ -925,6 +934,7 @@ fn fridge_add(store: &mut Store, ctx: &ToolCtx, input: &Value) -> ToolResult {
         .modify::<FridgeDoc>(
             &DocId::Fridge(loc.clone()),
             &ctx.msg(&format!("fridge {loc}: add {dish}")),
+            ctx.at(),
             |f| {
                 let portions = match &a.freezer {
                     Some(name) => f.freezers.entry(name.trim().to_string()).or_default(),
@@ -969,6 +979,7 @@ fn fridge_remove(store: &mut Store, ctx: &ToolCtx, input: &Value) -> ToolResult 
         .modify::<FridgeDoc>(
             &DocId::Fridge(loc.clone()),
             &ctx.msg(&format!("fridge {loc}: remove {}", a.id)),
+            ctx.at(),
             |f| match &a.freezer {
                 Some(name) => {
                     if let Some(portions) = f.freezers.get_mut(name.trim()) {
@@ -1053,7 +1064,7 @@ fn shopping_add(store: &mut Store, ctx: &ToolCtx, input: &Value) -> ToolResult {
     let requested = a.id.as_deref().map(slug).transpose()?;
     let mut assigned = String::new();
     store
-        .modify::<ShoppingDoc>(&DocId::Shopping, &ctx.msg(&format!("shopping add {text}")), |d| {
+        .modify::<ShoppingDoc>(&DocId::Shopping, &ctx.msg(&format!("shopping add {text}")), ctx.at(), |d| {
             let id = match &requested {
                 Some(id) => id.to_string(),
                 None => (1..)
@@ -1090,7 +1101,7 @@ fn shopping_update(store: &mut Store, ctx: &ToolCtx, input: &Value) -> ToolResul
     }
     let action = if a.remove { "remove" } else { "update" };
     store
-        .modify::<ShoppingDoc>(&DocId::Shopping, &ctx.msg(&format!("shopping {action} {}", a.id)), |d| {
+        .modify::<ShoppingDoc>(&DocId::Shopping, &ctx.msg(&format!("shopping {action} {}", a.id)), ctx.at(), |d| {
             if a.remove {
                 d.items.remove(a.id.trim());
             } else if let Some(item) = d.items.get_mut(a.id.trim())
@@ -1135,7 +1146,7 @@ fn kv_apply(entries: &mut BTreeMap<String, String>, key: &str, value: &Option<St
 fn steering_set(store: &mut Store, ctx: &ToolCtx, input: &Value) -> ToolResult {
     let (key, value, action) = kv_parts(input)?;
     store
-        .modify::<SteeringDoc>(&DocId::Steering, &ctx.msg(&format!("steering {action} {key}")), |d| {
+        .modify::<SteeringDoc>(&DocId::Steering, &ctx.msg(&format!("steering {action} {key}")), ctx.at(), |d| {
             kv_apply(&mut d.entries, &key, &value);
         })
         .map_err(Fail::from)?;
@@ -1145,7 +1156,7 @@ fn steering_set(store: &mut Store, ctx: &ToolCtx, input: &Value) -> ToolResult {
 fn facts_set(store: &mut Store, ctx: &ToolCtx, input: &Value) -> ToolResult {
     let (key, value, action) = kv_parts(input)?;
     store
-        .modify::<FactsDoc>(&DocId::Facts, &ctx.msg(&format!("facts {action} {key}")), |d| {
+        .modify::<FactsDoc>(&DocId::Facts, &ctx.msg(&format!("facts {action} {key}")), ctx.at(), |d| {
             kv_apply(&mut d.facts, &key, &value);
         })
         .map_err(Fail::from)?;

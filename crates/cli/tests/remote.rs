@@ -28,7 +28,7 @@ fn mise(root: &Path, args: &[&str]) -> String {
 
 /// Serve a fresh corpus on an ephemeral port from a background thread.
 fn spawn_server(dir: &Path) -> String {
-    let mut store = Store::create(&dir.join("server"), &Slug::new("home").unwrap(), 2).unwrap();
+    let mut store = Store::create(&dir.join("server"), &Slug::new("home").unwrap(), 2, jiff::Timestamp::now()).unwrap();
     store.export("init: empty corpus").unwrap();
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
