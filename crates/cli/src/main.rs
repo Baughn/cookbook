@@ -604,9 +604,9 @@ fn run_recipe(store: &mut Store, cmd: RecipeCmd) -> Result<()> {
             let s = slug(&s)?;
             let body = read_body(&file)?;
             let msg = format!("cli: recipe {s}: body");
-            store.modify::<RecipeDoc>(&DocId::Recipe(s.clone()), &msg, |r| {
-                r.body.update(&body);
-            })?;
+            // Char-safe diff splice; autosurgeon's Text::update is
+            // byte-indexed and breaks on non-ASCII (see Store::update_body).
+            store.update_body(&DocId::Recipe(s.clone()), &body, &msg)?;
             store.export(&msg)?;
             println!("updated body of {s}");
             Ok(())

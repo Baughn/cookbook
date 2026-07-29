@@ -174,3 +174,69 @@ fn every_doc_id_export_path_exists_in_the_render() {
         );
     }
 }
+
+// ---------------------------------------------------------- update_body --
+
+fn recipe_with_body(root: &std::path::Path, body: &str) -> Store {
+    let mut store = Store::create(root, &slug("home"), 2).unwrap();
+    store
+        .create_doc(
+            &DocId::Recipe(slug("dish")),
+            &mise_store::pages::RecipeDoc {
+                schema_version: 1,
+                title: "Dish".into(),
+                servings: 2,
+                effort: "weekday".into(),
+                lead: None,
+                tags: Default::default(),
+                equipment: vec![],
+                ingredients: vec![],
+                retired: false,
+                body: body.into(),
+            },
+            "test",
+        )
+        .unwrap();
+    store
+}
+
+#[test]
+fn update_body_refuses_docs_without_prose() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::create(&dir.path().join("c"), &slug("home"), 2).unwrap();
+    match store.update_body(&DocId::Queue, "x", "test") {
+        Err(StoreError::Invalid(_)) => {}
+        other => panic!("expected Invalid, got {:?}", other.map(|_| ())),
+    }
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::prelude::ProptestConfig {
+        cases: 64, ..proptest::prelude::ProptestConfig::default()
+    })]
+
+    /// Regression for the non-ASCII body crash: autosurgeon's Text::update
+    /// advanced splice positions in bytes against Automerge's char-indexed
+    /// text. update_body must land any unicode body exactly, from any
+    /// unicode predecessor, and survive a reload.
+    #[test]
+    fn update_body_round_trips_arbitrary_unicode(
+        old in proptest::string::string_regex("[a-zæøå☃—×–\\n .#\\[\\]|;=\\\\]{0,60}").unwrap(),
+        new in proptest::string::string_regex("[a-zæøå☃—×–\\n .#\\[\\]|;=\\\\]{0,60}").unwrap(),
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("c");
+        let mut store = recipe_with_body(&root, &old);
+        store.update_body(&DocId::Recipe(slug("dish")), &new, "test: body").unwrap();
+
+        let doc: mise_store::pages::RecipeDoc =
+            store.get(&DocId::Recipe(slug("dish"))).unwrap();
+        proptest::prop_assert_eq!(doc.body.as_str(), new.as_str());
+
+        drop(store);
+        let reopened = Store::open(&root).unwrap();
+        let doc: mise_store::pages::RecipeDoc =
+            reopened.get(&DocId::Recipe(slug("dish"))).unwrap();
+        proptest::prop_assert_eq!(doc.body.as_str(), new.as_str());
+    }
+}

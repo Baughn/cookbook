@@ -277,3 +277,17 @@ fn bad_input_and_unknown_tools_are_model_problems() {
     assert!(err(&mut store, "queue_add", json!({"reason": 42})).contains("bad tool input"));
     assert!(err(&mut store, "no_such_tool", json!({})).contains("no such tool"));
 }
+
+/// Regression: the first live debrief crashed with "index 95 is out of
+/// bounds" — a non-ASCII body fed through autosurgeon's byte-indexed
+/// Text::update. Bodies now go through Store::update_body.
+#[test]
+fn recipe_edit_takes_non_ascii_bodies() {
+    let (_dir, mut store) = fresh();
+    seed_recipe(&mut store);
+    let body = "Fry the paste, add stock, slide in the tofu. Rest five minutes.\n\n\
+        Notes: double the doubanjiang — 2× is the move; six servings, not four.";
+    ok(&mut store, "recipe_edit", json!({"slug": "mapo-tofu", "body": body}));
+    let doc: RecipeDoc = store.get(&DocId::Recipe(Slug::new("mapo-tofu").unwrap())).unwrap();
+    assert_eq!(doc.body.as_str(), body);
+}

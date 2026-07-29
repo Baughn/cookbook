@@ -731,9 +731,10 @@ fn recipe_edit(store: &mut Store, ctx: &ToolCtx, input: &Value) -> ToolResult {
         return Err(user("clear_lead contradicts lead_minutes/lead_step"));
     }
     let body = a.body.map(|b| b.trim().to_string());
+    let msg = ctx.msg(&format!("recipe edit {s}"));
 
     store
-        .modify::<RecipeDoc>(&DocId::Recipe(s.clone()), &ctx.msg(&format!("recipe edit {s}")), |r| {
+        .modify::<RecipeDoc>(&DocId::Recipe(s.clone()), &msg, |r| {
             if let Some(t) = title {
                 r.title = t;
             }
@@ -757,14 +758,16 @@ fn recipe_edit(store: &mut Store, ctx: &ToolCtx, input: &Value) -> ToolResult {
             } else if let Some(l) = lead {
                 r.lead = Some(l);
             }
-            if let Some(b) = &body {
-                r.body.update(b);
-            }
             if let Some(ret) = a.retired {
                 r.retired = ret;
             }
         })
         .map_err(Fail::from)?;
+    // The body goes through the store's char-safe diff splice, not
+    // autosurgeon's byte-indexed Text::update.
+    if let Some(b) = &body {
+        store.update_body(&DocId::Recipe(s.clone()), b, &msg).map_err(Fail::from)?;
+    }
     Ok(format!("updated recipe {s}"))
 }
 

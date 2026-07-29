@@ -334,6 +334,48 @@ impl Store {
         Ok(value)
     }
 
+    /// Replace a prose body (the root-level `body` text of a recipe or
+    /// technique) by grapheme-level diff, splicing directly through
+    /// Automerge in its native character units.
+    ///
+    /// This exists because autosurgeon 0.8's `Text::update` advances splice
+    /// positions in *bytes* while Automerge indexes text by unicode
+    /// scalars; any non-ASCII body walks the indices off the end of the
+    /// text. Production body edits must come through here — never
+    /// `Text::update`/`Text::splice`.
+    pub fn update_body(&mut self, id: &DocId, new_body: &str, provenance: &str) -> Result<()> {
+        use automerge::transaction::Transactable;
+        use automerge::{ObjType, ReadDoc, Value};
+
+        let mut doc = self.load_doc(id)?;
+        let Some((Value::Object(ObjType::Text), obj)) = doc.get(automerge::ROOT, "body")?
+        else {
+            return Err(StoreError::Invalid(format!("{id} has no prose body")));
+        };
+        let old = doc.text(&obj)?;
+        let mut idx = 0usize;
+        for change in similar::TextDiff::from_graphemes(old.as_str(), new_body).iter_all_changes()
+        {
+            let chunk = change.value();
+            let chars = chunk.chars().count();
+            match change.tag() {
+                similar::ChangeTag::Delete => {
+                    doc.splice_text(&obj, idx, isize::try_from(chars).expect("chunk fits"), "")?;
+                }
+                similar::ChangeTag::Insert => {
+                    doc.splice_text(&obj, idx, 0, chunk)?;
+                    idx += chars;
+                }
+                similar::ChangeTag::Equal => idx += chars,
+            }
+        }
+        let committed = doc.commit_with(CommitOptions::default().with_message(provenance));
+        if committed.is_some() {
+            self.persist_change(&id.to_string(), &mut doc)?;
+        }
+        Ok(())
+    }
+
     fn create_location_docs(&mut self, location: &Slug, provenance: &str) -> Result<()> {
         let docs = LocationDocs::empty_with_tiers(DEFAULT_TIERS);
         self.create_doc(&DocId::Pantry(location.clone()), &docs.pantry, provenance)?;
