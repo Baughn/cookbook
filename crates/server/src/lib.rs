@@ -20,6 +20,7 @@ use mise_store::sync::{Peer, WireMsg};
 use tokio::sync::Mutex;
 use tracing::{info, warn};
 
+mod api;
 mod chat;
 
 /// Everything the assistant endpoint needs to reach the model. Absent when
@@ -37,25 +38,50 @@ pub struct AppState {
     pub store: Arc<Mutex<Store>>,
     pub token: Arc<String>,
     pub chat: Option<Arc<ChatConfig>>,
+    /// Built web app to serve at `/`; sync/API-only without it.
+    pub static_dir: Option<Arc<std::path::PathBuf>>,
 }
 
 impl AppState {
     pub fn new(store: Store, token: String) -> AppState {
-        AppState { store: Arc::new(Mutex::new(store)), token: Arc::new(token), chat: None }
+        AppState {
+            store: Arc::new(Mutex::new(store)),
+            token: Arc::new(token),
+            chat: None,
+            static_dir: None,
+        }
     }
 
     pub fn with_chat(mut self, config: ChatConfig) -> AppState {
         self.chat = Some(Arc::new(config));
         self
     }
+
+    pub fn with_static_dir(mut self, dir: std::path::PathBuf) -> AppState {
+        self.static_dir = Some(Arc::new(dir));
+        self
+    }
 }
 
 pub fn app(state: AppState) -> Router {
-    Router::new()
+    let mut router = Router::new()
         .route("/health", get(|| async { "ok" }))
         .route("/sync", get(ws_sync))
         .route("/chat", post(chat_endpoint))
-        .with_state(state)
+        .route("/api/queue", get(api::queue))
+        .route("/api/pages", get(api::pages))
+        .route("/api/page/{*path}", get(api::page))
+        .route("/api/history/{*doc}", get(api::history))
+        .route("/api/revert", post(api::revert))
+        .route("/api/thread/{*thread}", get(api::thread));
+    if let Some(dir) = &state.static_dir {
+        // The SvelteKit build is a static SPA: unknown paths fall back to
+        // index.html and the app routes client-side.
+        let serve = tower_http::services::ServeDir::new(dir.as_ref())
+            .fallback(tower_http::services::ServeFile::new(dir.join("index.html")));
+        router = router.fallback_service(serve);
+    }
+    router.with_state(state)
 }
 
 #[derive(serde::Deserialize)]

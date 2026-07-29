@@ -28,6 +28,9 @@ struct Args {
     /// Model for the assistant.
     #[arg(long, default_value = mise_assistant::client::DEFAULT_MODEL)]
     model: String,
+    /// Directory with the built web app; served at /. Omit for sync/API only.
+    #[arg(long)]
+    static_dir: Option<PathBuf>,
     /// Create the corpus if it doesn't exist yet.
     #[arg(long)]
     init: bool,
@@ -116,6 +119,9 @@ async fn main() -> Result<()> {
             });
         }
         None => info!("no Anthropic key; running sync-only"),
+    }
+    if let Some(dir) = &args.static_dir {
+        state = state.with_static_dir(dir.clone());
     }
 
     let listener = tokio::net::TcpListener::bind(args.listen).await?;
