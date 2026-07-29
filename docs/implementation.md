@@ -70,6 +70,36 @@ Settled 2026-07-29, at M1 build start:
 - **The CLI is its own crate**, `crates/cli`, building the `mise` binary. It
   is an edge: it reads the wall clock and passes it into `core` as data.
 
+Settled 2026-07-29, at M2 build start:
+
+- **Sync protocol: JSON rounds over one WebSocket, strict alternation.**
+  Each round carries base64 Automerge sync messages tagged by doc id (docs
+  new to one side are created by sync), plus a one-time exchange of log-row
+  uids followed by whichever entries the other side lacks. The initiator
+  says `done` after an empty round in both directions; the responder echoes
+  it. Every round is persisted before replying, so an interrupted sync
+  loses nothing. The peer machinery is sans-IO in `store/` — server, CLI,
+  and tests drive the identical code; the transport is dumb pipe.
+- **Log-row identity: content hash + occurrence index.** Append-only rows
+  have no CRDT, so cross-replica dedupe keys on content: uid =
+  `sha256(entry)[..16]-<n>`. The same cook logged on two devices merges to
+  one row; a genuinely repeated identical cook is `-0`, `-1`. Log ordering
+  is (date, uid) — deterministic across replicas, so converged replicas
+  still export byte-identically. Change rows likewise carry their Automerge
+  change hash, deduping changes that arrive via two paths. Schema v2; v1
+  databases migrate on open by pure backfill.
+- **Auth.** One static bearer token (≥16 chars), `Authorization: Bearer` or
+  `?token=` for browser clients that can't set WS headers; constant-time
+  compare. Server reads it from `--token-file`, systemd
+  `$CREDENTIALS_DIRECTORY/token`, or `$MISE_TOKEN`. Clients store it in
+  `remote.json` (0600) beside the corpus — never in the export.
+- **Server defaults.** `mise-server` binds 127.0.0.1:7920; Caddy proxies
+  and terminates TLS. `--init` creates the corpus on first start. Client
+  join flow: `mise init --from <url> --token …` = bare corpus + saved
+  remote + first sync. Packaging: `flake.nix` (package + devshell) and
+  `nix/module.nix` (`services.mise`, hardened systemd unit, git on the
+  service path, token via LoadCredential).
+
 ## Architecture
 
 ```
@@ -123,6 +153,7 @@ disk, referenced by hash from pages and threads.
 ```
 ~/cookbook/
   mise.db                       # the truth: pages, threads, log, history
+  remote.json                   # client devices: saved sync server + token (0600)
   photos/<hash>.<ext>           # content-addressed blobs
   export/                       # read-only markdown mirror, a git repo
     queue.md                    # global — desires travel with you
