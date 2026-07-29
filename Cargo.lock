@@ -1106,6 +1106,7 @@ dependencies = [
  "dotenvy",
  "futures-util",
  "jiff",
+ "mise-assistant",
  "mise-core",
  "mise-server",
  "mise-store",

@@ -101,3 +101,37 @@ fn init_populate_queue_export() {
     let log_dir = std::fs::read_dir(export.join("log")).unwrap().count();
     assert_eq!(log_dir, 1, "one month shard expected");
 }
+
+/// `mise chat` fails helpfully before any network is involved: an unknown
+/// page thread, then a missing API key. (The model itself is never part of
+/// the test suite.)
+#[test]
+fn chat_fails_helpfully_without_page_or_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("corpus");
+    mise(&root, &["init"]);
+
+    let out = Command::new(env!("CARGO_BIN_EXE_mise"))
+        .current_dir(dir.path()) // no .env here
+        .arg("--root")
+        .arg(&root)
+        .args(["chat", "hello?", "--page", "recipe/nope"])
+        .env_remove("ANTHROPIC_API_KEY")
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("no page recipe/nope"), "{stderr}");
+
+    let out = Command::new(env!("CARGO_BIN_EXE_mise"))
+        .current_dir(dir.path())
+        .arg("--root")
+        .arg(&root)
+        .args(["chat", "hello?"])
+        .env_remove("ANTHROPIC_API_KEY")
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("ANTHROPIC_API_KEY"), "{stderr}");
+}

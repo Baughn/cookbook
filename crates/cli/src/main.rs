@@ -96,6 +96,18 @@ enum Cmd {
         #[command(subcommand)]
         cmd: LocationCmd,
     },
+    /// Talk to the assistant: the planning thread, or a page's thread.
+    Chat {
+        /// What to say.
+        message: String,
+        /// A page's thread (doc id like recipe/mapo-tofu); default: the
+        /// global planning thread.
+        #[arg(long)]
+        page: Option<String>,
+        /// Model override; defaults to the client's default.
+        #[arg(long)]
+        model: Option<String>,
+    },
     /// Regenerate the markdown export and commit it.
     Export,
 }
@@ -436,6 +448,7 @@ fn run(store: &mut Store, command: Cmd, root: &Path, now: DateTime) -> Result<()
             println!("removed {id}");
             Ok(())
         }
+        Cmd::Chat { message, page, model } => run_chat(store, message, page, model, now),
         Cmd::Recipe { cmd } => run_recipe(store, cmd),
         Cmd::Equipment { cmd } => run_equipment(store, cmd),
         Cmd::Pantry { cmd } => run_pantry(store, cmd, today),
@@ -467,6 +480,66 @@ fn run(store: &mut Store, command: Cmd, root: &Path, now: DateTime) -> Result<()
             }
         },
     }
+}
+
+fn run_chat(
+    store: &mut Store,
+    message: String,
+    page: Option<String>,
+    model: Option<String>,
+    now: DateTime,
+) -> Result<()> {
+    use std::io::Write as _;
+
+    use mise_assistant::client::AnthropicClient;
+    use mise_assistant::context::provenance;
+    use mise_assistant::exchange::{ExchangeEvent, run_exchange};
+    use mise_store::threads::ThreadId;
+
+    let message = must_trim(&message, "message")?;
+    let thread = match &page {
+        Some(p) => ThreadId::Page(DocId::parse(p).map_err(|e| anyhow::Error::msg(e.to_string()))?),
+        None => ThreadId::Planning,
+    };
+    if let ThreadId::Page(id) = &thread
+        && !store.exists(id)?
+    {
+        bail!("no page {id} to talk about; create it first");
+    }
+    let api_key = std::env::var("ANTHROPIC_API_KEY")
+        .context("ANTHROPIC_API_KEY not set (a git-ignored .env works for dev)")?;
+    let mut client = AnthropicClient::new(api_key);
+    if let Some(m) = model {
+        client = client.with_model(m);
+    }
+
+    // `now` anchors the exchange; the reply's later stamp comes from a
+    // fresh reading so the transcript sorts in conversation order.
+    let mut first = Some(now);
+    let mut clock = move || first.take().unwrap_or_else(|| jiff::Zoned::now().datetime());
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(run_exchange(
+        &mut client,
+        store,
+        &thread,
+        &message,
+        &mut clock,
+        &mut |event| match event {
+            ExchangeEvent::TextDelta(d) => {
+                print!("{d}");
+                let _ = std::io::stdout().flush();
+            }
+            ExchangeEvent::ToolCall { name } => eprintln!("  ⚙ {name}"),
+        },
+    ))?;
+    println!();
+
+    let mut summary: String = message.chars().take(60).collect();
+    if summary.len() < message.len() {
+        summary.push('…');
+    }
+    store.export(&format!("{}: {summary}", provenance(&thread)))?;
+    Ok(())
 }
 
 fn run_recipe(store: &mut Store, cmd: RecipeCmd) -> Result<()> {

@@ -11,6 +11,7 @@ path = "src/main.rs"
 [dependencies]
 mise-core.workspace = true
 mise-store.workspace = true
+mise-assistant.workspace = true
 jiff.workspace = true
 anyhow.workspace = true
 clap.workspace = true
