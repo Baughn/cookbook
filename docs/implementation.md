@@ -91,7 +91,10 @@ Settled 2026-07-29, at M2 build start:
 - **Auth.** One static bearer token (≥16 chars), `Authorization: Bearer` or
   `?token=` for browser clients that can't set WS headers; constant-time
   compare. Server reads it from `--token-file`, systemd
-  `$CREDENTIALS_DIRECTORY/token`, or `$MISE_TOKEN`. Clients store it in
+  `$CREDENTIALS_DIRECTORY/token`, or `$MISE_TOKEN`. In production the
+  token file is an agenix secret fed through `LoadCredential`; in dev,
+  both binaries load a git-ignored `.env` via dotenvy, so `MISE_TOKEN`
+  and `MISE_ROOT` come from there. Clients store the token in
   `remote.json` (0600) beside the corpus — never in the export.
 - **Server defaults.** `mise-server` binds 127.0.0.1:7920; Caddy proxies
   and terminates TLS. `--init` creates the corpus on first start. Client

@@ -52,6 +52,9 @@ fn read_token(args: &Args) -> Result<String> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Dev convenience: a .env can supply MISE_TOKEN / MISE_ROOT. In
+    // production there is no .env; the token arrives via LoadCredential.
+    let _ = dotenvy::dotenv();
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()

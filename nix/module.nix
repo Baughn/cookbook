@@ -32,7 +32,8 @@ in
       description = ''
         File containing the static bearer token (at least 16 characters),
         handed to the service via systemd credentials. Keep it out of the
-        Nix store — use e.g. an agenix/sops secret path.
+        Nix store — with agenix:
+        `services.mise.tokenFile = config.age.secrets.mise-token.path;`
       '';
     };
 

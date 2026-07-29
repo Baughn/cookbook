@@ -295,6 +295,8 @@ enum LocationCmd {
 }
 
 fn main() -> Result<()> {
+    // Dev convenience: a .env can supply MISE_ROOT.
+    let _ = dotenvy::dotenv();
     let cli = Cli::parse();
     let root = match &cli.root {
         Some(r) => r.clone(),
