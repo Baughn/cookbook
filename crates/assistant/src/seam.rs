@@ -90,6 +90,6 @@ pub trait Model {
     fn next_turn(
         &mut self,
         req: &TurnRequest,
-        on_delta: &mut dyn FnMut(&str),
+        on_delta: &mut (dyn FnMut(&str) + Send),
     ) -> impl Future<Output = Result<ModelTurn>> + Send;
 }

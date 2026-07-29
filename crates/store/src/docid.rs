@@ -40,6 +40,25 @@ impl DocId {
         }
     }
 
+    /// Where this doc renders in the export tree. Kept honest by a test
+    /// against the render map.
+    pub fn export_path(&self) -> String {
+        match self {
+            DocId::State => "state.md".to_string(),
+            DocId::Queue => "queue.md".to_string(),
+            DocId::Someday => "someday.md".to_string(),
+            DocId::Shopping => "shopping.md".to_string(),
+            DocId::Steering => "steering.md".to_string(),
+            DocId::Facts => "facts.md".to_string(),
+            DocId::Pantry(l) => format!("locations/{l}/pantry.md"),
+            DocId::Equipment(l) => format!("locations/{l}/equipment.md"),
+            DocId::Shops(l) => format!("locations/{l}/shops.md"),
+            DocId::Fridge(l) => format!("locations/{l}/fridge.md"),
+            DocId::Recipe(r) => format!("recipes/{r}.md"),
+            DocId::Technique(t) => format!("techniques/{t}.md"),
+        }
+    }
+
     pub fn parse(s: &str) -> Result<DocId, StoreError> {
         let bad = || StoreError::BadDocId(s.to_string());
         match s {

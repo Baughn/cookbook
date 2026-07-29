@@ -11,7 +11,9 @@
 //! CLI can run it over a locally-owned store while the server interleaves
 //! it with a locked one — model calls never hold the store lock.
 
+pub mod context;
 pub mod error;
+pub mod exchange;
 pub mod seam;
 pub mod tools;
 pub mod turn;

@@ -115,3 +115,62 @@ fn export_commits_once_per_change_batch_and_prunes_stale_files() {
     let state = std::fs::read_to_string(export.join("state.md")).unwrap();
     assert!(state.contains("| home | 3 |"), "{state}");
 }
+
+#[test]
+fn every_doc_id_export_path_exists_in_the_render() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::create(&dir.path().join("corpus"), &slug("home"), 2).unwrap();
+    store
+        .create_doc(
+            &DocId::Recipe(slug("mapo-tofu")),
+            &mise_store::pages::RecipeDoc {
+                schema_version: 1,
+                title: "Mapo tofu".into(),
+                servings: 4,
+                effort: "weekday".into(),
+                lead: None,
+                tags: Default::default(),
+                equipment: vec![],
+                ingredients: vec![],
+                retired: false,
+                body: "".into(),
+            },
+            "test",
+        )
+        .unwrap();
+    store
+        .create_doc(
+            &DocId::Technique(slug("velveting")),
+            &mise_store::pages::TechniqueDoc {
+                schema_version: 1,
+                title: "Velveting".into(),
+                tags: Default::default(),
+                body: "".into(),
+            },
+            "test",
+        )
+        .unwrap();
+
+    let files = mise_store::render::render(&store.corpus().unwrap());
+    let home = slug("home");
+    for id in [
+        DocId::State,
+        DocId::Queue,
+        DocId::Someday,
+        DocId::Shopping,
+        DocId::Steering,
+        DocId::Facts,
+        DocId::Pantry(home.clone()),
+        DocId::Equipment(home.clone()),
+        DocId::Shops(home.clone()),
+        DocId::Fridge(home),
+        DocId::Recipe(slug("mapo-tofu")),
+        DocId::Technique(slug("velveting")),
+    ] {
+        assert!(
+            files.contains_key(&id.export_path()),
+            "export_path {} missing from render",
+            id.export_path(),
+        );
+    }
+}
