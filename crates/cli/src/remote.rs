@@ -117,6 +117,12 @@ pub fn describe(outcome: &SyncOutcome) -> String {
     if outcome.log_sent > 0 {
         parts.push(format!("{} log entries out", outcome.log_sent));
     }
+    if outcome.threads_added > 0 {
+        parts.push(format!("{} thread messages in", outcome.threads_added));
+    }
+    if outcome.threads_sent > 0 {
+        parts.push(format!("{} thread messages out", outcome.threads_sent));
+    }
     if parts.is_empty() {
         parts.push("pushed local changes".to_string());
     }

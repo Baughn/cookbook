@@ -452,4 +452,7 @@ pub struct CorpusState {
     pub recipes: BTreeMap<String, RecipeDoc>,
     pub techniques: BTreeMap<String, TechniqueDoc>,
     pub log: Vec<mise_core::types::LogEntry>,
+    /// Non-empty threads keyed by thread id string, messages in (created,
+    /// uid) order.
+    pub threads: BTreeMap<String, Vec<crate::threads::ThreadMessage>>,
 }

@@ -10,7 +10,9 @@ pub mod pages;
 pub mod render;
 pub mod store;
 pub mod sync;
+pub mod threads;
 
 pub use docid::DocId;
 pub use error::StoreError;
 pub use store::Store;
+pub use threads::{Role, ThreadId, ThreadMessage};

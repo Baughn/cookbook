@@ -16,6 +16,7 @@ use mise_store::pages::{
     RecipeDoc, ShoppingDoc, ShoppingItemDoc, ShopsDoc, StateDoc, SteeringDoc, TechniqueDoc,
     TierDoc,
 };
+use mise_store::threads::{Role, ThreadId, ThreadMessage};
 use proptest::collection::vec;
 use proptest::prelude::*;
 
@@ -355,6 +356,31 @@ fn parse_log_page(content: &str) -> Vec<LogEntry> {
         .collect()
 }
 
+fn parse_thread(path_key: &str, content: &str) -> Vec<ThreadMessage> {
+    let (heading, rest) = content.split_once('\n').expect("thread heading line");
+    let key = heading.strip_prefix("# Thread — ").expect("thread heading");
+    assert_eq!(key, path_key, "thread heading matches its path");
+    let thread = ThreadId::parse(key).expect("valid thread id");
+    rest.split("\n## ")
+        .skip(1)
+        .map(|chunk| {
+            let (head, body) = chunk.split_once('\n').expect("message heading");
+            let (role, created) = head.split_once(" — ").expect("role — created");
+            let lines: Vec<&str> = body
+                .lines()
+                .filter(|l| l.starts_with('>'))
+                .map(|l| l.strip_prefix("> ").unwrap_or_else(|| &l[1..]))
+                .collect();
+            ThreadMessage {
+                thread: thread.clone(),
+                role: role.parse().expect("valid role"),
+                content: lines.join("\n"),
+                created: created.parse().expect("valid datetime"),
+            }
+        })
+        .collect()
+}
+
 /// Reconstruct the full corpus from a rendered export. Panics on anything
 /// malformed — this is a test oracle, not an input path.
 pub fn parse_corpus(files: &BTreeMap<String, String>) -> CorpusState {
@@ -384,6 +410,7 @@ pub fn parse_corpus(files: &BTreeMap<String, String>) -> CorpusState {
     let mut recipes = BTreeMap::new();
     let mut techniques = BTreeMap::new();
     let mut log = Vec::new();
+    let mut threads = BTreeMap::new();
     for (path, content) in files {
         if let Some(slug) = path.strip_prefix("recipes/").and_then(|p| p.strip_suffix(".md")) {
             recipes.insert(slug.to_string(), parse_recipe(content));
@@ -394,6 +421,10 @@ pub fn parse_corpus(files: &BTreeMap<String, String>) -> CorpusState {
         } else if path.starts_with("log/") {
             // BTreeMap iteration order is path order: months ascend.
             log.extend(parse_log_page(content));
+        } else if let Some(key) =
+            path.strip_prefix("threads/").and_then(|p| p.strip_suffix(".md"))
+        {
+            threads.insert(key.to_string(), parse_thread(key, content));
         }
     }
 
@@ -408,6 +439,7 @@ pub fn parse_corpus(files: &BTreeMap<String, String>) -> CorpusState {
         recipes,
         techniques,
         log,
+        threads,
     }
 }
 
@@ -645,6 +677,28 @@ fn arb_log_entry(location_pool: Vec<String>) -> impl Strategy<Value = LogEntry> 
         })
 }
 
+fn arb_thread_message() -> impl Strategy<Value = ThreadMessage> {
+    let thread = prop_oneof![
+        Just("planning".to_string()),
+        slug_str("r", 6).prop_map(|s| format!("recipe/{s}")),
+        slug_str("t", 4).prop_map(|s| format!("technique/{s}")),
+        Just("queue".to_string()),
+    ];
+    (
+        thread,
+        prop_oneof![Just(Role::User), Just(Role::Assistant)],
+        body().prop_map(|s| if s.is_empty() { "noted".to_string() } else { s }),
+        // A small time pool so equal timestamps (uid tiebreak) actually occur.
+        (date_str(), 0u8..3, 0u8..3),
+    )
+        .prop_map(|(thread, role, content, (date, h, m))| ThreadMessage {
+            thread: ThreadId::parse(&thread).unwrap(),
+            role,
+            content,
+            created: format!("{date}T{h:02}:{m:02}:00").parse().unwrap(),
+        })
+}
+
 /// A well-formed corpus: trimmed strings, no empty options, valid slug keys.
 pub fn arb_corpus() -> impl Strategy<Value = CorpusState> {
     let locations = prop_oneof![
@@ -667,6 +721,7 @@ pub fn arb_corpus() -> impl Strategy<Value = CorpusState> {
             vec((slug_str("r", 6), arb_recipe_doc()), 0..3),
             vec((slug_str("t", 4), arb_technique_doc()), 0..2),
             vec(arb_log_entry(names.clone()), 0..6),
+            vec(arb_thread_message(), 0..5),
         )
             .prop_map(
                 |(
@@ -679,6 +734,7 @@ pub fn arb_corpus() -> impl Strategy<Value = CorpusState> {
                     recipes,
                     techniques,
                     log,
+                    thread_messages,
                 )| {
                     let state = StateDoc {
                         schema_version: 1,
@@ -689,6 +745,10 @@ pub fn arb_corpus() -> impl Strategy<Value = CorpusState> {
                             .map(|(n, h)| (n.clone(), LocationMeta { headcount: *h }))
                             .collect(),
                     };
+                    let mut threads: BTreeMap<String, Vec<ThreadMessage>> = BTreeMap::new();
+                    for msg in thread_messages {
+                        threads.entry(msg.thread.to_string()).or_default().push(msg);
+                    }
                     CorpusState {
                         state,
                         queue,
@@ -700,6 +760,7 @@ pub fn arb_corpus() -> impl Strategy<Value = CorpusState> {
                         recipes: recipes.into_iter().collect(),
                         techniques: techniques.into_iter().collect(),
                         log,
+                        threads,
                     }
                 },
             )

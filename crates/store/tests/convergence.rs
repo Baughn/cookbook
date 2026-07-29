@@ -138,6 +138,7 @@ impl Replica {
             recipes: BTreeMap::from([("wok-thing".to_string(), recipe)]),
             techniques: BTreeMap::new(),
             log: vec![],
+            threads: BTreeMap::new(),
         }
     }
 }

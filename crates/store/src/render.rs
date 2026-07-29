@@ -101,6 +101,9 @@ pub fn render(c: &CorpusState) -> BTreeMap<String, String> {
     for (month, entries) in log_by_month(&c.log) {
         files.insert(format!("log/{month}.md"), log_page(&month, &entries));
     }
+    for (key, messages) in &c.threads {
+        files.insert(format!("threads/{key}.md"), thread_page(key, messages));
+    }
     files
 }
 
@@ -364,6 +367,27 @@ fn log_by_month(log: &[LogEntry]) -> BTreeMap<String, Vec<LogEntry>> {
         months.entry(month).or_default().push(entry.clone());
     }
     months
+}
+
+/// A thread transcript. Message content is blockquoted line by line — a
+/// content line can never be mistaken for a `##` message heading, so the
+/// transcript round-trips exactly. Content is normalized on append (LF,
+/// trimmed, non-empty); thread keys and roles need no escaping by
+/// construction.
+fn thread_page(key: &str, messages: &[crate::threads::ThreadMessage]) -> String {
+    let mut out = String::new();
+    let _ = writeln!(out, "# Thread — {key}");
+    for m in messages {
+        let _ = write!(out, "\n## {} — {}\n\n", m.role, m.created);
+        for line in m.content.lines() {
+            if line.is_empty() {
+                out.push_str(">\n");
+            } else {
+                let _ = writeln!(out, "> {line}");
+            }
+        }
+    }
+    out
 }
 
 fn log_page(month: &str, entries: &[LogEntry]) -> String {

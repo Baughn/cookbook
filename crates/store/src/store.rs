@@ -1,7 +1,8 @@
 //! The store proper: one SQLite file (`mise.db`) holding Automerge docs as
 //! append-only change rows plus periodic snapshots, the append-only cook log,
-//! and blob metadata. Beside it, `export/` — the read-only markdown mirror,
-//! a git repo the store regenerates and commits after every change batch.
+//! conversation threads, and blob metadata. Beside it, `export/` — the
+//! read-only markdown mirror, a git repo the store regenerates and commits
+//! after every change batch.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -19,6 +20,7 @@ use crate::pages::{
     CorpusState, EquipmentDoc, FactsDoc, FridgeDoc, LocationDocs, PantryDoc, QueueDoc,
     ShoppingDoc, ShopsDoc, StateDoc, SteeringDoc,
 };
+use crate::threads::{Role, ThreadId, ThreadMessage};
 
 /// Snapshot cadence: a snapshot row is written every this-many changes, so
 /// loading a doc replays at most this many changes past the latest snapshot.
@@ -56,22 +58,21 @@ CREATE TABLE cook_log (
   tags     TEXT NOT NULL
 ) STRICT;
 CREATE UNIQUE INDEX ux_cook_log_uid ON cook_log(uid);
-CREATE TABLE threads (
-  id   INTEGER PRIMARY KEY,
-  page TEXT NOT NULL
-) STRICT;
 CREATE TABLE thread_messages (
-  id        INTEGER PRIMARY KEY,
-  thread_id INTEGER NOT NULL REFERENCES threads(id),
-  role      TEXT NOT NULL,
-  content   TEXT NOT NULL,
-  created   TEXT NOT NULL
+  id      INTEGER PRIMARY KEY,
+  uid     TEXT NOT NULL,
+  thread  TEXT NOT NULL,
+  role    TEXT NOT NULL,
+  content TEXT NOT NULL,
+  created TEXT NOT NULL
 ) STRICT;
+CREATE UNIQUE INDEX ux_thread_messages_uid ON thread_messages(uid);
+CREATE INDEX ix_thread_messages_thread ON thread_messages(thread, created, uid);
 CREATE TABLE blobs (
   hash TEXT PRIMARY KEY,
   ext  TEXT NOT NULL
 ) STRICT;
-PRAGMA user_version = 2;
+PRAGMA user_version = 3;
 ";
 
 pub(crate) fn hex(bytes: &[u8]) -> String {
@@ -84,6 +85,13 @@ pub(crate) fn hex(bytes: &[u8]) -> String {
 fn log_content_hash(e: &LogEntry) -> String {
     use sha2::{Digest, Sha256};
     let canonical = serde_json::to_string(e).expect("log entries serialize");
+    hex(&Sha256::digest(canonical.as_bytes()))[..16].to_string()
+}
+
+/// Same scheme for thread messages: content-hash prefix, occurrence suffix.
+fn thread_content_hash(m: &ThreadMessage) -> String {
+    use sha2::{Digest, Sha256};
+    let canonical = serde_json::to_string(m).expect("thread messages serialize");
     hex(&Sha256::digest(canonical.as_bytes()))[..16].to_string()
 }
 
@@ -447,6 +455,121 @@ impl Store {
             .collect()
     }
 
+    // --------------------------------------------------------- threads --
+
+    /// Append one turn to a thread. Content is normalized (LF line endings,
+    /// trimmed); an empty message is refused. Returns the row uid — content
+    /// hash plus occurrence index, exactly like the cook log.
+    pub fn append_thread_message(
+        &mut self,
+        thread: &ThreadId,
+        role: Role,
+        content: &str,
+        created: jiff::civil::DateTime,
+    ) -> Result<String> {
+        let content = content.replace("\r\n", "\n").replace('\r', "");
+        let content = content.trim();
+        if content.is_empty() {
+            return Err(StoreError::Invalid("empty thread message".into()));
+        }
+        let msg = ThreadMessage {
+            thread: thread.clone(),
+            role,
+            content: content.to_string(),
+            created,
+        };
+        let prefix = thread_content_hash(&msg);
+        let n: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM thread_messages WHERE uid LIKE ?1 || '-%'",
+            [&prefix],
+            |r| r.get(0),
+        )?;
+        let uid = format!("{prefix}-{n}");
+        self.insert_thread_row(&uid, &msg)?;
+        Ok(uid)
+    }
+
+    /// Idempotent insert of a thread row with a known uid (the sync path).
+    pub(crate) fn insert_thread_row(&mut self, uid: &str, m: &ThreadMessage) -> Result<bool> {
+        let inserted = self.conn.execute(
+            "INSERT OR IGNORE INTO thread_messages (uid, thread, role, content, created)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                uid,
+                m.thread.to_string(),
+                m.role.to_string(),
+                m.content,
+                m.created.to_string(),
+            ],
+        )?;
+        Ok(inserted > 0)
+    }
+
+    pub(crate) fn thread_uids(&self) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare("SELECT uid FROM thread_messages ORDER BY uid")?;
+        let uids = stmt
+            .query_map([], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(uids)
+    }
+
+    fn thread_row(
+        row: (String, String, String, String),
+    ) -> Result<ThreadMessage> {
+        let (thread, role, content, created) = row;
+        let corrupt = |m: String| StoreError::Corrupt(format!("thread row: {m}"));
+        Ok(ThreadMessage {
+            thread: ThreadId::parse(&thread).map_err(|e| corrupt(e.to_string()))?,
+            role: role.parse().map_err(corrupt)?,
+            content,
+            created: created.parse().map_err(|e| corrupt(format!("bad datetime: {e}")))?,
+        })
+    }
+
+    /// All thread rows with their uids, ordered (thread, created, uid).
+    pub(crate) fn thread_rows(&self) -> Result<Vec<(String, ThreadMessage)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT uid, thread, role, content, created
+             FROM thread_messages ORDER BY thread, created, uid",
+        )?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    (r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?),
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<(String, _)>>>()?;
+        rows.into_iter()
+            .map(|(uid, raw)| Ok((uid, Store::thread_row(raw)?)))
+            .collect()
+    }
+
+    /// One thread's messages in (created, uid) order — deterministic across
+    /// replicas, same argument as the cook log.
+    pub fn thread_messages(&self, thread: &ThreadId) -> Result<Vec<ThreadMessage>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT thread, role, content, created FROM thread_messages
+             WHERE thread = ?1 ORDER BY created, uid",
+        )?;
+        let rows = stmt
+            .query_map([thread.to_string()], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows.into_iter().map(Store::thread_row).collect()
+    }
+
+    /// Every non-empty thread, keyed by thread id string, messages in
+    /// (created, uid) order.
+    pub fn threads(&self) -> Result<BTreeMap<String, Vec<ThreadMessage>>> {
+        let mut out: BTreeMap<String, Vec<ThreadMessage>> = BTreeMap::new();
+        for (_, msg) in self.thread_rows()? {
+            out.entry(msg.thread.to_string()).or_default().push(msg);
+        }
+        Ok(out)
+    }
+
     // ---------------------------------------------------------- corpus --
 
     /// Hydrate everything: the render layer's input.
@@ -483,6 +606,7 @@ impl Store {
             recipes,
             techniques,
             log: self.log_entries()?,
+            threads: self.threads()?,
         })
     }
 
@@ -573,12 +697,41 @@ impl Store {
 fn migrate(conn: &Connection) -> Result<()> {
     let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     match version {
-        2 => Ok(()),
-        1 => migrate_v1_to_v2(conn),
+        3 => Ok(()),
+        2 => migrate_v2_to_v3(conn),
+        1 => {
+            migrate_v1_to_v2(conn)?;
+            migrate_v2_to_v3(conn)
+        }
         other => Err(StoreError::Corrupt(format!(
-            "unsupported schema version {other} (this build understands 1..=2)"
+            "unsupported schema version {other} (this build understands 1..=3)"
         ))),
     }
+}
+
+/// v2 → v3: thread rows gain the same content-hash uid identity as the log,
+/// and the separate `threads` table folds into a `thread` column. No code
+/// path in any v2 build ever inserted a thread row — the tables existed but
+/// were unreachable — so this is a drop-and-recreate, not a data migration.
+fn migrate_v2_to_v3(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "BEGIN;
+         DROP TABLE thread_messages;
+         DROP TABLE threads;
+         CREATE TABLE thread_messages (
+           id      INTEGER PRIMARY KEY,
+           uid     TEXT NOT NULL,
+           thread  TEXT NOT NULL,
+           role    TEXT NOT NULL,
+           content TEXT NOT NULL,
+           created TEXT NOT NULL
+         ) STRICT;
+         CREATE UNIQUE INDEX ux_thread_messages_uid ON thread_messages(uid);
+         CREATE INDEX ix_thread_messages_thread ON thread_messages(thread, created, uid);
+         PRAGMA user_version = 3;
+         COMMIT;",
+    )?;
+    Ok(())
 }
 
 /// v1 → v2: change rows gain a content-hash column (sync dedupe), log rows

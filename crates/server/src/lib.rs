@@ -112,12 +112,13 @@ async fn handle_sync(state: AppState, mut socket: WebSocket) {
     }
 
     let outcome = peer.outcome().clone();
-    if !outcome.docs_updated.is_empty() || outcome.log_added > 0 {
+    if !outcome.docs_updated.is_empty() || outcome.log_added > 0 || outcome.threads_added > 0 {
         let docs: Vec<&str> = outcome.docs_updated.iter().map(String::as_str).collect();
         let message = format!(
-            "sync: {} ({} log entries)",
+            "sync: {} ({} log entries, {} thread messages)",
             if docs.is_empty() { "no doc changes".to_string() } else { docs.join(", ") },
             outcome.log_added,
+            outcome.threads_added,
         );
         let mut store = state.store.lock().await;
         if let Err(e) = store.export(&message) {
@@ -125,9 +126,11 @@ async fn handle_sync(state: AppState, mut socket: WebSocket) {
         }
     }
     info!(
-        "sync session done: {} docs updated, {} log entries in, {} out",
+        "sync session done: {} docs updated, {} log entries in/{} out, {} thread messages in/{} out",
         outcome.docs_updated.len(),
         outcome.log_added,
         outcome.log_sent,
+        outcome.threads_added,
+        outcome.threads_sent,
     );
 }

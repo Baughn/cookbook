@@ -8,13 +8,14 @@ mod support;
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use jiff::civil::Date;
+use jiff::civil::{Date, DateTime};
 use mise_core::types::{CookKind, LogEntry, Slug};
 use mise_store::pages::{
     DishRefDoc, PantryDoc, PantryItemDoc, QueueDoc, QueueEntryDoc, RecipeDoc, StateDoc,
 };
 use mise_store::render::render;
 use mise_store::sync::{Peer, SyncOutcome};
+use mise_store::threads::{Role, ThreadId};
 use mise_store::{DocId, Store};
 use proptest::collection::vec;
 use proptest::prelude::*;
@@ -181,6 +182,46 @@ fn same_cook_logged_on_both_devices_dedupes() {
     assert_eq!(a.corpus().unwrap(), b.corpus().unwrap());
 }
 
+#[test]
+fn thread_messages_sync_and_dedupe() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut a = create_at(dir.path(), "a");
+    let mut b = Store::create_bare(&dir.path().join("b")).unwrap();
+    run_sync(&mut a, &mut b);
+
+    let at = |h: i8| DateTime::constant(2026, 7, 29, h, 0, 0, 0);
+    // A planning exchange on A, a page-thread question on B…
+    a.append_thread_message(&ThreadId::Planning, Role::User, "plan the week", at(9))
+        .unwrap();
+    a.append_thread_message(&ThreadId::Planning, Role::Assistant, "three dishes: …", at(9))
+        .unwrap();
+    let recipe_thread = ThreadId::Page(DocId::Recipe(slug("mapo-tofu")));
+    b.append_thread_message(&recipe_thread, Role::User, "can I halve the sugar?", at(10))
+        .unwrap();
+    // …and one message recorded identically on both devices.
+    for s in [&mut a, &mut b] {
+        s.append_thread_message(&ThreadId::Planning, Role::User, "checked off eggs", at(11))
+            .unwrap();
+    }
+
+    let (out_a, out_b) = run_sync(&mut a, &mut b);
+    // The identical message has the same uid on both devices, so the uid
+    // exchange keeps it off the wire entirely.
+    assert_eq!(out_a.threads_sent, 2, "{out_a:?}");
+    assert_eq!(out_b.threads_sent, 1, "{out_b:?}");
+    assert_eq!(a.corpus().unwrap(), b.corpus().unwrap());
+    assert!(exports_equal(&a, &b));
+    assert_eq!(
+        a.thread_messages(&ThreadId::Planning).unwrap().len(),
+        3,
+        "identical message logged on both devices deduped"
+    );
+
+    let (out_a, out_b) = run_sync(&mut a, &mut b);
+    assert_eq!(out_a, SyncOutcome::default());
+    assert_eq!(out_b, SyncOutcome::default());
+}
+
 // ------------------------------------------------------------ properties --
 
 #[derive(Clone, Debug)]
@@ -188,6 +229,7 @@ enum Op {
     Pantry { k: u8, presence: u8 },
     Queue { k: u8, title: String },
     Log { day: u8, title: String },
+    Thread { k: u8, text: String },
 }
 
 fn arb_op() -> impl Strategy<Value = Op> {
@@ -196,6 +238,7 @@ fn arb_op() -> impl Strategy<Value = Op> {
         (any::<u8>(), any::<u8>()).prop_map(|(k, presence)| Op::Pantry { k, presence }),
         (any::<u8>(), word()).prop_map(|(k, title)| Op::Queue { k, title }),
         (any::<u8>(), word()).prop_map(|(day, title)| Op::Log { day, title }),
+        (any::<u8>(), word()).prop_map(|(k, text)| Op::Thread { k, text }),
     ]
 }
 
@@ -244,6 +287,22 @@ fn apply(store: &mut Store, op: &Op) {
                     verdict: "fine".into(),
                     tags: BTreeMap::new(),
                 })
+                .unwrap();
+        }
+        Op::Thread { k, text } => {
+            let thread = if k % 2 == 0 {
+                ThreadId::Planning
+            } else {
+                ThreadId::Page(DocId::Queue)
+            };
+            let role = if k % 4 < 2 { Role::User } else { Role::Assistant };
+            store
+                .append_thread_message(
+                    &thread,
+                    role,
+                    text,
+                    DateTime::constant(2026, 7, 29, i8::try_from(k % 24).unwrap(), 0, 0, 0),
+                )
                 .unwrap();
         }
     }
@@ -378,7 +437,7 @@ fn v1_corpus_migrates_on_open() {
     // Backfill happened: hashes and distinct uids exist.
     let conn = rusqlite::Connection::open(root.join("mise.db")).unwrap();
     let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-    assert_eq!(version, 2);
+    assert_eq!(version, 3);
     let uids: Vec<String> = conn
         .prepare("SELECT uid FROM cook_log ORDER BY uid")
         .unwrap()

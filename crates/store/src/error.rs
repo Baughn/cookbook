@@ -30,6 +30,8 @@ pub enum StoreError {
     NoCorpus(PathBuf),
     #[error("corrupt corpus state: {0}")]
     Corrupt(String),
+    #[error("invalid input: {0}")]
+    Invalid(String),
 }
 
 pub type Result<T> = std::result::Result<T, StoreError>;

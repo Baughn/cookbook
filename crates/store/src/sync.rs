@@ -1,11 +1,12 @@
 //! Replica sync: the Automerge sync protocol per doc, plus append-merge for
-//! the cook log, spoken as JSON rounds over any transport.
+//! the cook log and thread messages, spoken as JSON rounds over any
+//! transport.
 //!
 //! The protocol is deliberately dumb: strict alternation. The initiator
-//! sends a round (sync messages for every doc it knows, plus its log uids);
-//! the responder replies in kind; rounds ping-pong until the initiator sees
-//! an empty round in both directions and says `done`, which the responder
-//! echoes. Docs the other side has never heard of simply show up as sync
+//! sends a round (sync messages for every doc it knows, plus its log and
+//! thread uids); the responder replies in kind; rounds ping-pong until the
+//! initiator sees an empty round in both directions and says `done`, which
+//! the responder echoes. Docs the other side has never heard of simply show up as sync
 //! messages for unknown ids and get created. Everything received is
 //! persisted after each round, so an interrupted sync loses nothing and the
 //! next session picks up where things stand.
@@ -26,6 +27,7 @@ use serde::{Deserialize, Serialize};
 use crate::docid::DocId;
 use crate::error::{Result, StoreError};
 use crate::store::Store;
+use crate::threads::ThreadMessage;
 
 // ------------------------------------------------------------------ wire --
 
@@ -46,6 +48,11 @@ pub struct Round {
     pub log_uids: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub log_entries: Vec<LogRow>,
+    /// Sent once per side, alongside `log_uids`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_uids: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub thread_entries: Vec<ThreadRow>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -59,6 +66,12 @@ pub struct DocMsg {
 pub struct LogRow {
     pub uid: String,
     pub entry: LogEntry,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ThreadRow {
+    pub uid: String,
+    pub message: ThreadMessage,
 }
 
 impl WireMsg {
@@ -81,6 +94,10 @@ pub struct SyncOutcome {
     pub log_added: usize,
     /// Log entries sent to the peer.
     pub log_sent: usize,
+    /// Thread messages added locally.
+    pub threads_added: usize,
+    /// Thread messages sent to the peer.
+    pub threads_sent: usize,
 }
 
 struct DocPeer {
@@ -96,8 +113,10 @@ struct DocPeer {
 pub struct Peer {
     initiator: bool,
     docs: BTreeMap<String, DocPeer>,
+    /// Covers both the log and thread uid exchanges — they travel together.
     sent_uids: bool,
     pending_entries: Option<Vec<LogRow>>,
+    pending_threads: Option<Vec<ThreadRow>>,
     outcome: SyncOutcome,
 }
 
@@ -114,12 +133,13 @@ impl Peer {
             docs,
             sent_uids: false,
             pending_entries: None,
+            pending_threads: None,
             outcome: SyncOutcome::default(),
         })
     }
 
     /// The initiator's opening round: sync messages for every doc it knows,
-    /// plus its log uids.
+    /// plus its log and thread uids.
     pub fn initial_round(&mut self, store: &Store) -> Result<WireMsg> {
         assert!(self.initiator, "only the initiator opens");
         let docs = self.generate_all();
@@ -128,6 +148,8 @@ impl Peer {
             docs,
             log_uids: Some(store.log_uids()?),
             log_entries: vec![],
+            thread_uids: Some(store.thread_uids()?),
+            thread_entries: vec![],
         }))
     }
 
@@ -180,8 +202,9 @@ impl Peer {
                 }
             }
             WireMsg::Round(round) => {
-                let incoming_payload =
-                    !round.docs.is_empty() || !round.log_entries.is_empty();
+                let incoming_payload = !round.docs.is_empty()
+                    || !round.log_entries.is_empty()
+                    || !round.thread_entries.is_empty();
 
                 for dm in &round.docs {
                     let id = DocId::parse(&dm.doc)?;
@@ -201,6 +224,11 @@ impl Peer {
                         self.outcome.log_added += 1;
                     }
                 }
+                for row in &round.thread_entries {
+                    if store.insert_thread_row(&row.uid, &row.message)? {
+                        self.outcome.threads_added += 1;
+                    }
+                }
                 self.commit(store)?;
 
                 if let Some(uids) = &round.log_uids {
@@ -213,23 +241,43 @@ impl Peer {
                         .collect();
                     self.pending_entries = Some(missing);
                 }
+                if let Some(uids) = &round.thread_uids {
+                    let theirs: BTreeSet<&String> = uids.iter().collect();
+                    let missing: Vec<ThreadRow> = store
+                        .thread_rows()?
+                        .into_iter()
+                        .filter(|(uid, _)| !theirs.contains(uid))
+                        .map(|(uid, message)| ThreadRow { uid, message })
+                        .collect();
+                    self.pending_threads = Some(missing);
+                }
 
                 let docs = self.generate_all();
-                let log_uids = if self.sent_uids {
-                    None
+                let (log_uids, thread_uids) = if self.sent_uids {
+                    (None, None)
                 } else {
                     self.sent_uids = true;
-                    Some(store.log_uids()?)
+                    (Some(store.log_uids()?), Some(store.thread_uids()?))
                 };
                 let log_entries = self.pending_entries.take().unwrap_or_default();
                 self.outcome.log_sent += log_entries.len();
+                let thread_entries = self.pending_threads.take().unwrap_or_default();
+                self.outcome.threads_sent += thread_entries.len();
 
-                let reply_empty =
-                    docs.is_empty() && log_uids.is_none() && log_entries.is_empty();
+                let reply_empty = docs.is_empty()
+                    && log_uids.is_none()
+                    && log_entries.is_empty()
+                    && thread_entries.is_empty();
                 if self.initiator && reply_empty && !incoming_payload {
                     Ok(Some(WireMsg::Done))
                 } else {
-                    Ok(Some(WireMsg::Round(Round { docs, log_uids, log_entries })))
+                    Ok(Some(WireMsg::Round(Round {
+                        docs,
+                        log_uids,
+                        log_entries,
+                        thread_uids,
+                        thread_entries,
+                    })))
                 }
             }
         }
