@@ -28,6 +28,13 @@ pub enum ContentBlock {
         content: String,
         is_error: bool,
     },
+    /// User-supplied image (photo recon and friends). Never model output.
+    Image {
+        /// e.g. `image/jpeg`
+        media_type: String,
+        /// Base64 payload.
+        data: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]

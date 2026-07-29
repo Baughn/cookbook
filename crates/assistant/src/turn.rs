@@ -96,9 +96,9 @@ impl Turn {
                     name: name.clone(),
                     input: input.clone(),
                 }),
-                ContentBlock::ToolResult { .. } => {
+                ContentBlock::ToolResult { .. } | ContentBlock::Image { .. } => {
                     return Err(AssistantError::Protocol(
-                        "model turn contained a tool result".into(),
+                        "model turn contained a non-model block".into(),
                     ));
                 }
             }
