@@ -1,6 +1,6 @@
 # Implementation plan
 
-*Last updated: 2026-07-29. Companion to [design.md](design.md); this document
+*Last updated: 2026-07-29 (M3 complete). Companion to [design.md](design.md); this document
 covers the technical shape and build order. Decisions here resolve the "Open
 questions" section of the design doc.*
 
@@ -103,6 +103,60 @@ Settled 2026-07-29, at M2 build start:
   `nix/module.nix` (`services.mise`, hardened systemd unit, git on the
   service path, token via LoadCredential).
 
+Settled 2026-07-29, at M3 build start:
+
+- **Threads are log-shaped, and they sync.** One thread per page plus the
+  global planning thread, stored as append-only rows with the log's
+  content-hash uid identity (`sha256(msg)[..16]-<n>`), merged by the same
+  one-time uid exchange in the sync protocol. Ordering is (created, uid);
+  the reply to a message is stamped by a second clock reading (clamped
+  monotone) so transcripts sort in conversation order. Threads hold **text
+  turns only** — tool activity is not transcribed; edits carry provenance
+  in page history, and a resumed conversation re-reads pages through tools
+  rather than trusting stale tool results. Transcripts export to
+  `threads/<thread-id>.md` (`threads/planning.md`,
+  `threads/recipe/mapo-tofu.md`) with blockquoted content, covered by the
+  export determinism/completeness properties. Schema v3 (v2's unreachable
+  thread tables drop and recreate).
+- **The seam, concretely.** `mise-assistant` is its own crate. The `Model`
+  trait is the seam: `next_turn(request, on_delta) → ModelTurn` over our
+  own content-block types. The tool loop is a sans-IO `Turn` state machine
+  (like sync's `Peer`): callers shuttle model turns and tool outcomes, so
+  lock discipline is theirs — the server holds its store mutex only around
+  store work, never across model calls. `run_exchange` packages the flow
+  for exclusive-store callers (CLI, tests).
+- **Tools.** Nineteen deterministic operations mirroring the CLI surface —
+  reads (queue_status with readiness/coverage, list_pages, read_page by
+  export path, search), queue/recipe/pantry/equipment/fridge/log/shopping
+  edits, steering_set/facts_set. No export inside tools; one export per
+  exchange, provenance `planning thread: …` / `thread recipe/x: …`.
+  Model-recoverable problems (bad input, unknown slug, duplicate) return
+  as `is_error` tool results; real store failures abort the exchange.
+- **Context assembly.** System prompt layered for prompt caching:
+  instructions, then slow-moving corpus context (state/steering/facts,
+  plus the page for page threads), the clock dead last — a test pins that
+  changing the clock only changes the final line. History is the thread's
+  text turns. `DocId::export_path()` is the single authority mapping docs
+  to export paths.
+- **Anthropic client.** Hand-rolled over `reqwest` (rustls); pinned
+  `anthropic-version: 2023-06-01`; streaming SSE with an incremental
+  framer and turn assembler (both pure, unit-tested); `cache_control`
+  markers on the system block and last tool; image content blocks mapped
+  and ready for M5. Default model `claude-opus-5`, overridable
+  (`mise chat --model`, `services.mise.model`).
+- **Surfaces.** CLI: `mise chat "…" [--page recipe/x]` streams text to
+  stdout and tool activity to stderr. Server: `POST /chat` (bearer-authed)
+  streams SSE `delta`/`tool`/`done`/`error` events; without an Anthropic
+  key the server runs sync-only and /chat answers 503. The key arrives
+  like the bearer token: `--anthropic-key-file`, then
+  `$CREDENTIALS_DIRECTORY/anthropic` (module option `anthropicKeyFile`,
+  agenix-friendly), then `$ANTHROPIC_API_KEY` (dev `.env`).
+- **Evals.** `evals/` is a workspace binary (`cargo run -p mise-evals`) so
+  it compiles in CI but only runs by hand against the real API. Scenarios
+  seed a lived-in corpus and score mechanical checks (explored before
+  proposing, reasons on the queue, pantry/log/fridge actually changed);
+  transcripts print for human judgment.
+
 ## Architecture
 
 ```
@@ -169,7 +223,7 @@ disk, referenced by hash from pages and threads.
     techniques/<slug>.md
     locations/<name>/           # home, cottage, ...
       pantry.md  equipment.md  shops.md  fridge.md
-    threads/<page-path>.md      # rendered transcripts + planning.md
+    threads/<thread-id>.md      # transcripts: planning.md, recipe/<slug>.md, …
 ```
 
 `mise.db` is what gets backed up. The export is derived — deletable and
@@ -202,20 +256,22 @@ expire.
 
 ### The LLM seam
 
-Per the testing charter, all model interaction sits behind one trait:
+Per the testing charter, all model interaction sits behind one trait
+(built in M3 as `mise_assistant::seam::Model`):
 
 ```rust
-trait Assistant {           // sketch, name TBD
-    // given a thread + tool definitions, produce the next turn:
-    // tool calls to execute, text to say, page edits to apply
+trait Model {
+    // given the system prompt, conversation, and tool definitions,
+    // produce the next turn: text and/or tool calls, streamed
+    async fn next_turn(&mut self, req: &TurnRequest, on_delta: …) -> ModelTurn;
 }
 ```
 
 Below the seam: tool implementations (search corpus, read page, edit page,
 append log, update pantry, ...) are ordinary deterministic functions over the
-store, tested with scripted `Assistant` fakes. Above the seam: the real
-implementation assembles context (page + thread + relevant corpus), calls the
-API with the tool loop, streams back. Prompt/judgment quality lives in a
+store, and the tool loop itself is a sans-IO `Turn` state machine — both
+tested with scripted fakes. Above the seam: the real client calls the
+Messages API and streams back. Prompt/judgment quality lives in a
 separate `evals/` directory, run manually against the real API, never in CI.
 
 Tool-loop details worth writing down now:
@@ -237,10 +293,10 @@ crates/
                # Pure. Clock is a parameter. No IO, no automerge.
   store/       # corpus: SQLite persistence, automerge docs, markdown
                # export (git-committed), history, threads, log, photos
-  assistant/   # LLM seam trait + tools + context assembly + the real
-               # Anthropic client (small; module, not a separate crate)
-  server/      # axum: REST + WS sync + chat streaming + static files
-  cli/         # the `mise` binary: local corpus operations, M1's surface
+  assistant/   # LLM seam trait + tools + context assembly + turn driver
+               # + the hand-rolled Anthropic client
+  server/      # axum: WS sync + SSE chat streaming + (M4) static files
+  cli/         # the `mise` binary: local corpus operations + `mise chat`
 
 web/           # SvelteKit PWA
 evals/         # prompt-quality checks, separate from the test suite
