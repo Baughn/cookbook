@@ -1,0 +1,18 @@
+# Evals
+
+Prompt- and judgment-quality checks for the assistant, run **manually**
+against the real Anthropic API. Never part of the test suite, never in CI —
+the test suite proves the deterministic machinery; these measure whether the
+assistant is any *good*.
+
+```sh
+ANTHROPIC_API_KEY=… cargo run -p mise-evals            # all scenarios
+cargo run -p mise-evals -- plan-week pantry-in-passing  # a subset
+```
+
+(A git-ignored `.env` with the key works too.)
+
+Each scenario seeds a fresh corpus, runs one or more real exchanges, then
+prints the transcript plus a checklist: the mechanical parts (did it look
+before proposing? did the queue/pantry/log actually change?) are scored
+automatically; tone and judgment are yours to read.

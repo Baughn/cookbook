@@ -1128,6 +1128,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "mise-evals"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "dotenvy",
+ "jiff",
+ "mise-assistant",
+ "mise-core",
+ "mise-store",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "mise-server"
 version = "0.1.0"
 dependencies = [
