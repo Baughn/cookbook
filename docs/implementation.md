@@ -55,7 +55,11 @@ Settled 2026-07-29, ahead of M1:
   frontmatter tags (cuisine / protein / format by convention); rotation math
   runs over whatever tags exist. Automerge docs persist as append-only
   change rows plus periodic snapshots in SQLite. Every doc carries a
-  schema-version field from day one.
+  schema-version field from day one. The location registry — names plus
+  per-location headcount — lives on the state page; other per-place standing
+  facts join it when they show up. The queue renders in (added, id) order
+  for now; a real user-ordering affordance (fractional position) waits for
+  the M4 UI that can express it.
 
 Settled 2026-07-29, at M1 build start:
 
