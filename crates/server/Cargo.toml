@@ -1,0 +1,28 @@
+[package]
+name = "mise-server"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "mise_server"
+
+[[bin]]
+name = "mise-server"
+path = "src/main.rs"
+
+[dependencies]
+mise-store.workspace = true
+mise-core.workspace = true
+axum.workspace = true
+tokio.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+tokio-tungstenite.workspace = true
+futures-util.workspace = true
+tempfile.workspace = true
+jiff.workspace = true
