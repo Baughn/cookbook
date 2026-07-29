@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/core", "crates/store", "crates/cli", "crates/server"]
+members = ["crates/core", "crates/store", "crates/assistant", "crates/cli", "crates/server"]
 
 [workspace.package]
 edition = "2024"
@@ -9,6 +9,7 @@ license = "MIT"
 [workspace.dependencies]
 mise-core = { path = "crates/core" }
 mise-store = { path = "crates/store" }
+mise-assistant = { path = "crates/assistant" }
 mise-server = { path = "crates/server" }
 
 jiff = { version = "0.2", features = ["serde"] }

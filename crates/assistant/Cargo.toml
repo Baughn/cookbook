@@ -1,0 +1,19 @@
+[package]
+name = "mise-assistant"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "mise_assistant"
+
+[dependencies]
+mise-core.workspace = true
+mise-store.workspace = true
+jiff.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -874,6 +874,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "mise-assistant"
+version = "0.1.0"
+dependencies = [
+ "jiff",
+ "mise-core",
+ "mise-store",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.19",
+]
+
+[[package]]
 name = "mise-cli"
 version = "0.1.0"
 dependencies = [
