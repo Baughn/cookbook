@@ -1,0 +1,509 @@
+//! The store proper: one SQLite file (`mise.db`) holding Automerge docs as
+//! append-only change rows plus periodic snapshots, the append-only cook log,
+//! and blob metadata. Beside it, `export/` — the read-only markdown mirror,
+//! a git repo the store regenerates and commits after every change batch.
+
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+use automerge::{AutoCommit, Change};
+use automerge::transaction::CommitOptions;
+use autosurgeon::{Hydrate, Reconcile, hydrate, reconcile};
+use mise_core::types::{CookKind, LocationView, LogEntry, Slug};
+use rusqlite::{Connection, OptionalExtension, params};
+
+use crate::docid::DocId;
+use crate::error::{Result, StoreError};
+use crate::pages::{
+    CorpusState, EquipmentDoc, FactsDoc, FridgeDoc, LocationDocs, PantryDoc, QueueDoc,
+    ShoppingDoc, ShopsDoc, StateDoc, SteeringDoc,
+};
+
+/// Snapshot cadence: a snapshot row is written every this-many changes, so
+/// loading a doc replays at most this many changes past the latest snapshot.
+const SNAPSHOT_EVERY: i64 = 64;
+
+const SCHEMA: &str = "
+CREATE TABLE docs (
+  id   TEXT PRIMARY KEY,
+  kind TEXT NOT NULL
+) STRICT;
+CREATE TABLE doc_changes (
+  doc_id TEXT NOT NULL REFERENCES docs(id),
+  seq    INTEGER NOT NULL,
+  change BLOB NOT NULL,
+  PRIMARY KEY (doc_id, seq)
+) STRICT;
+CREATE TABLE doc_snapshots (
+  doc_id   TEXT NOT NULL REFERENCES docs(id),
+  upto_seq INTEGER NOT NULL,
+  snapshot BLOB NOT NULL,
+  PRIMARY KEY (doc_id, upto_seq)
+) STRICT;
+CREATE TABLE cook_log (
+  id       INTEGER PRIMARY KEY,
+  date     TEXT NOT NULL,
+  kind     TEXT NOT NULL,
+  recipe   TEXT,
+  title    TEXT NOT NULL,
+  location TEXT NOT NULL,
+  servings INTEGER NOT NULL,
+  verdict  TEXT NOT NULL,
+  tags     TEXT NOT NULL
+) STRICT;
+CREATE TABLE threads (
+  id   INTEGER PRIMARY KEY,
+  page TEXT NOT NULL
+) STRICT;
+CREATE TABLE thread_messages (
+  id        INTEGER PRIMARY KEY,
+  thread_id INTEGER NOT NULL REFERENCES threads(id),
+  role      TEXT NOT NULL,
+  content   TEXT NOT NULL,
+  created   TEXT NOT NULL
+) STRICT;
+CREATE TABLE blobs (
+  hash TEXT PRIMARY KEY,
+  ext  TEXT NOT NULL
+) STRICT;
+PRAGMA user_version = 1;
+";
+
+/// Default source tiers for a fresh location; every one of these is an
+/// ordinary edit away from being something else.
+pub const DEFAULT_TIERS: &[(&str, &str)] = &[
+    ("staples", "Staples — restock on sight"),
+    ("shop", "Walkable shop"),
+    ("butcher", "Butcher"),
+    ("town", "Town"),
+];
+
+pub struct Store {
+    conn: Connection,
+    root: PathBuf,
+}
+
+impl Store {
+    /// Initialize the on-disk layout with no documents at all. Callers other
+    /// than tests almost always want [`Store::create`].
+    pub fn create_bare(root: &Path) -> Result<Store> {
+        let db = root.join("mise.db");
+        if db.exists() {
+            return Err(StoreError::AlreadyInitialized(root.to_path_buf()));
+        }
+        std::fs::create_dir_all(root)?;
+        std::fs::create_dir_all(root.join("photos"))?;
+        std::fs::create_dir_all(root.join("export"))?;
+        let conn = Connection::open(&db)?;
+        conn.execute_batch(SCHEMA)?;
+        let store = Store { conn, root: root.to_path_buf() };
+        store.git(&["init", "-q"])?;
+        Ok(store)
+    }
+
+    /// Initialize a fresh corpus at `root`: `mise.db`, `photos/`, and the
+    /// `export/` git repo, with empty global pages and one location.
+    pub fn create(root: &Path, location: &Slug, headcount: u32) -> Result<Store> {
+        let mut store = Store::create_bare(root)?;
+        let provenance = "init: empty corpus";
+        store.create_doc(&DocId::State, &StateDoc::new(location.as_str(), headcount), provenance)?;
+        store.create_doc(&DocId::Queue, &QueueDoc::empty(), provenance)?;
+        store.create_doc(&DocId::Someday, &QueueDoc::empty(), provenance)?;
+        store.create_doc(&DocId::Shopping, &ShoppingDoc::empty(), provenance)?;
+        store.create_doc(&DocId::Steering, &SteeringDoc::empty(), provenance)?;
+        store.create_doc(&DocId::Facts, &FactsDoc::empty(), provenance)?;
+        store.create_location_docs(location, provenance)?;
+        Ok(store)
+    }
+
+    pub fn open(root: &Path) -> Result<Store> {
+        let db = root.join("mise.db");
+        if !db.exists() {
+            return Err(StoreError::NoCorpus(root.to_path_buf()));
+        }
+        Ok(Store { conn: Connection::open(&db)?, root: root.to_path_buf() })
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    pub fn export_dir(&self) -> PathBuf {
+        self.root.join("export")
+    }
+
+    // ------------------------------------------------------------ docs --
+
+    fn load_doc(&self, id: &DocId) -> Result<AutoCommit> {
+        let key = id.to_string();
+        let exists: Option<String> = self
+            .conn
+            .query_row("SELECT id FROM docs WHERE id = ?1", [&key], |r| r.get(0))
+            .optional()?;
+        if exists.is_none() {
+            return Err(StoreError::NotFound(key));
+        }
+        let snapshot: Option<(i64, Vec<u8>)> = self
+            .conn
+            .query_row(
+                "SELECT upto_seq, snapshot FROM doc_snapshots
+                 WHERE doc_id = ?1 ORDER BY upto_seq DESC LIMIT 1",
+                [&key],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        let (from_seq, mut doc) = match snapshot {
+            Some((upto, bytes)) => (upto, AutoCommit::load(&bytes)?),
+            None => (0, AutoCommit::new()),
+        };
+        let mut stmt = self.conn.prepare(
+            "SELECT change FROM doc_changes WHERE doc_id = ?1 AND seq > ?2 ORDER BY seq",
+        )?;
+        let changes = stmt
+            .query_map(params![&key, from_seq], |r| r.get::<_, Vec<u8>>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let changes = changes
+            .into_iter()
+            .map(Change::from_bytes)
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        doc.apply_changes(changes)?;
+        Ok(doc)
+    }
+
+    pub fn exists(&self, id: &DocId) -> Result<bool> {
+        let found: Option<String> = self
+            .conn
+            .query_row("SELECT id FROM docs WHERE id = ?1", [id.to_string()], |r| r.get(0))
+            .optional()?;
+        Ok(found.is_some())
+    }
+
+    /// Doc ids of one kind, in id order.
+    pub fn list(&self, kind: &str) -> Result<Vec<DocId>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id FROM docs WHERE kind = ?1 ORDER BY id")?;
+        let ids = stmt
+            .query_map([kind], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        ids.iter().map(|s| DocId::parse(s)).collect()
+    }
+
+    pub fn get<T: Hydrate>(&self, id: &DocId) -> Result<T> {
+        Ok(hydrate(&self.load_doc(id)?)?)
+    }
+
+    /// Persist one committed change from `doc`, snapshotting on cadence.
+    fn persist_change(&mut self, key: &str, doc: &mut AutoCommit) -> Result<()> {
+        let change_bytes = doc
+            .get_last_local_change()
+            .expect("commit reported a change")
+            .raw_bytes()
+            .to_vec();
+        let tx = self.conn.transaction()?;
+        let seq: i64 = tx.query_row(
+            "SELECT COALESCE(MAX(seq), 0) FROM doc_changes WHERE doc_id = ?1",
+            [key],
+            |r| r.get::<_, i64>(0),
+        )? + 1;
+        tx.execute(
+            "INSERT INTO doc_changes (doc_id, seq, change) VALUES (?1, ?2, ?3)",
+            params![key, seq, change_bytes],
+        )?;
+        if seq % SNAPSHOT_EVERY == 0 {
+            tx.execute(
+                "INSERT INTO doc_snapshots (doc_id, upto_seq, snapshot) VALUES (?1, ?2, ?3)",
+                params![key, seq, doc.save()],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Create a new doc from an initial value. `provenance` lands in the
+    /// Automerge change message: which conversation or surface did this.
+    pub fn create_doc<T: Reconcile>(&mut self, id: &DocId, value: &T, provenance: &str) -> Result<()> {
+        let key = id.to_string();
+        if self.exists(id)? {
+            return Err(StoreError::Exists(key));
+        }
+        let mut doc = AutoCommit::new();
+        reconcile(&mut doc, value)?;
+        let committed = doc.commit_with(CommitOptions::default().with_message(provenance));
+        self.conn.execute(
+            "INSERT INTO docs (id, kind) VALUES (?1, ?2)",
+            params![key, id.kind()],
+        )?;
+        if committed.is_some() {
+            self.persist_change(&key, &mut doc)?;
+        }
+        Ok(())
+    }
+
+    /// Hydrate, mutate, reconcile, persist. Returns the new value. A no-op
+    /// mutation writes nothing.
+    pub fn modify<T: Hydrate + Reconcile>(
+        &mut self,
+        id: &DocId,
+        provenance: &str,
+        f: impl FnOnce(&mut T),
+    ) -> Result<T> {
+        let mut doc = self.load_doc(id)?;
+        let mut value: T = hydrate(&doc)?;
+        f(&mut value);
+        reconcile(&mut doc, &value)?;
+        let committed = doc.commit_with(CommitOptions::default().with_message(provenance));
+        if committed.is_some() {
+            self.persist_change(&id.to_string(), &mut doc)?;
+        }
+        Ok(value)
+    }
+
+    fn create_location_docs(&mut self, location: &Slug, provenance: &str) -> Result<()> {
+        let docs = LocationDocs::empty_with_tiers(DEFAULT_TIERS);
+        self.create_doc(&DocId::Pantry(location.clone()), &docs.pantry, provenance)?;
+        self.create_doc(&DocId::Equipment(location.clone()), &docs.equipment, provenance)?;
+        self.create_doc(&DocId::Shops(location.clone()), &docs.shops, provenance)?;
+        self.create_doc(&DocId::Fridge(location.clone()), &docs.fridge, provenance)?;
+        Ok(())
+    }
+
+    /// Register a new location: its four docs plus the state-page entry.
+    pub fn add_location(&mut self, location: &Slug, headcount: u32, provenance: &str) -> Result<()> {
+        if self.exists(&DocId::Pantry(location.clone()))? {
+            return Err(StoreError::Exists(format!("location {location}")));
+        }
+        self.create_location_docs(location, provenance)?;
+        self.modify::<StateDoc>(&DocId::State, provenance, |s| {
+            s.locations.insert(
+                location.as_str().to_string(),
+                crate::pages::LocationMeta { headcount },
+            );
+        })?;
+        Ok(())
+    }
+
+    // ------------------------------------------------------------- log --
+
+    pub fn append_log(&mut self, e: &LogEntry) -> Result<i64> {
+        self.conn.execute(
+            "INSERT INTO cook_log (date, kind, recipe, title, location, servings, verdict, tags)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                e.date.to_string(),
+                e.kind.to_string(),
+                e.recipe.as_ref().map(|s| s.as_str().to_string()),
+                e.title,
+                e.location,
+                e.servings,
+                e.verdict,
+                serde_json::to_string(&e.tags)?,
+            ],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    /// The whole log, ordered by (date, insertion).
+    pub fn log_entries(&self) -> Result<Vec<LogEntry>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT date, kind, recipe, title, location, servings, verdict, tags
+             FROM cook_log ORDER BY date, id",
+        )?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, Option<String>>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, String>(4)?,
+                    r.get::<_, u32>(5)?,
+                    r.get::<_, String>(6)?,
+                    r.get::<_, String>(7)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows.into_iter()
+            .map(|(date, kind, recipe, title, location, servings, verdict, tags)| {
+                let corrupt = |m: String| StoreError::Corrupt(format!("log row: {m}"));
+                Ok(LogEntry {
+                    date: date.parse().map_err(|e| corrupt(format!("bad date: {e}")))?,
+                    kind: kind.parse::<CookKind>().map_err(corrupt)?,
+                    recipe: recipe
+                        .map(|s| Slug::new(s).map_err(|e| corrupt(e.to_string())))
+                        .transpose()?,
+                    title,
+                    location,
+                    servings,
+                    verdict,
+                    tags: serde_json::from_str(&tags)?,
+                })
+            })
+            .collect()
+    }
+
+    // ---------------------------------------------------------- corpus --
+
+    /// Hydrate everything: the render layer's input.
+    pub fn corpus(&self) -> Result<CorpusState> {
+        let mut locations = BTreeMap::new();
+        for id in self.list("pantry")? {
+            let DocId::Pantry(loc) = id else { unreachable!() };
+            let docs = LocationDocs {
+                pantry: self.get::<PantryDoc>(&DocId::Pantry(loc.clone()))?,
+                equipment: self.get::<EquipmentDoc>(&DocId::Equipment(loc.clone()))?,
+                shops: self.get::<ShopsDoc>(&DocId::Shops(loc.clone()))?,
+                fridge: self.get::<FridgeDoc>(&DocId::Fridge(loc.clone()))?,
+            };
+            locations.insert(loc.as_str().to_string(), docs);
+        }
+        let mut recipes = BTreeMap::new();
+        for id in self.list("recipe")? {
+            let DocId::Recipe(slug) = id else { unreachable!() };
+            recipes.insert(slug.as_str().to_string(), self.get(&DocId::Recipe(slug.clone()))?);
+        }
+        let mut techniques = BTreeMap::new();
+        for id in self.list("technique")? {
+            let DocId::Technique(slug) = id else { unreachable!() };
+            techniques.insert(slug.as_str().to_string(), self.get(&DocId::Technique(slug.clone()))?);
+        }
+        Ok(CorpusState {
+            state: self.get(&DocId::State)?,
+            queue: self.get(&DocId::Queue)?,
+            someday: self.get(&DocId::Someday)?,
+            shopping: self.get(&DocId::Shopping)?,
+            steering: self.get(&DocId::Steering)?,
+            facts: self.get(&DocId::Facts)?,
+            locations,
+            recipes,
+            techniques,
+            log: self.log_entries()?,
+        })
+    }
+
+    /// The plain view of one location, for readiness and coverage.
+    pub fn location_view(&self, location: &Slug) -> Result<LocationView> {
+        let state: StateDoc = self.get(&DocId::State)?;
+        let meta = state
+            .locations
+            .get(location.as_str())
+            .ok_or_else(|| StoreError::NotFound(format!("location {location}")))?;
+        let docs = LocationDocs {
+            pantry: self.get(&DocId::Pantry(location.clone()))?,
+            equipment: self.get(&DocId::Equipment(location.clone()))?,
+            shops: self.get(&DocId::Shops(location.clone()))?,
+            fridge: self.get(&DocId::Fridge(location.clone()))?,
+        };
+        docs.to_view(location.as_str(), meta)
+    }
+
+    /// The active location's plain view.
+    pub fn active_view(&self) -> Result<(Slug, LocationView)> {
+        let state: StateDoc = self.get(&DocId::State)?;
+        let slug = Slug::new(state.active_location.as_str())
+            .map_err(|e| StoreError::Corrupt(e.to_string()))?;
+        Ok((slug.clone(), self.location_view(&slug)?))
+    }
+
+    // ---------------------------------------------------------- export --
+
+    /// Regenerate the markdown export and commit it. One commit per change
+    /// batch; `message` carries provenance. No-ops when nothing changed.
+    pub fn export(&mut self, message: &str) -> Result<()> {
+        let files = crate::render::render(&self.corpus()?);
+        let dir = self.export_dir();
+
+        // Write the rendered tree, then remove any stale files.
+        for (rel, content) in &files {
+            let path = dir.join(rel);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(path, content)?;
+        }
+        let mut existing = Vec::new();
+        collect_files(&dir, &dir, &mut existing)?;
+        for rel in existing {
+            if !files.contains_key(&rel) {
+                std::fs::remove_file(dir.join(&rel))?;
+            }
+        }
+        remove_empty_dirs(&dir, &dir)?;
+
+        let status = self.git(&["status", "--porcelain"])?;
+        if !status.is_empty() {
+            self.git(&["add", "-A"])?;
+            self.git(&["commit", "-q", "-m", message])?;
+        }
+        Ok(())
+    }
+
+    fn git(&self, args: &[&str]) -> Result<String> {
+        let dir = self.export_dir();
+        let base = [
+            "-C",
+            dir.to_str().expect("export path is valid UTF-8"),
+            "-c",
+            "user.name=mise",
+            "-c",
+            "user.email=mise@localhost",
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "init.defaultBranch=main",
+        ];
+        let output = Command::new("git").args(base).args(args).output()?;
+        if !output.status.success() {
+            return Err(StoreError::Git {
+                args: args.iter().map(|s| s.to_string()).collect(),
+                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            });
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    }
+}
+
+/// Relative paths of all files under `dir`, skipping `.git`.
+fn collect_files(base: &Path, dir: &Path, out: &mut Vec<String>) -> Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if entry.file_name() == ".git" {
+            continue;
+        }
+        if path.is_dir() {
+            collect_files(base, &path, out)?;
+        } else {
+            let rel = path
+                .strip_prefix(base)
+                .expect("walked path is under base")
+                .to_string_lossy()
+                .into_owned();
+            out.push(rel);
+        }
+    }
+    Ok(())
+}
+
+fn remove_empty_dirs(base: &Path, dir: &Path) -> Result<bool> {
+    let mut empty = true;
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        if entry.file_name() == ".git" {
+            empty = false;
+            continue;
+        }
+        let path = entry.path();
+        if path.is_dir() {
+            if remove_empty_dirs(base, &path)? {
+                std::fs::remove_dir(&path)?;
+            } else {
+                empty = false;
+            }
+        } else {
+            empty = false;
+        }
+    }
+    Ok(empty && dir != base)
+}
