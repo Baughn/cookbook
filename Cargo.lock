@@ -872,11 +872,18 @@ name = "mise-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "axum",
  "clap",
+ "futures-util",
  "jiff",
  "mise-core",
+ "mise-server",
  "mise-store",
+ "serde",
+ "serde_json",
  "tempfile",
+ "tokio",
+ "tokio-tungstenite 0.27.0",
 ]
 
 [[package]]

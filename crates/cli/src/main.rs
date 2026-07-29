@@ -3,7 +3,7 @@
 //! through the store, and re-exports (with a git commit) after every change.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
@@ -19,6 +19,8 @@ use mise_store::pages::{
 };
 use mise_store::{DocId, Store};
 
+mod remote;
+
 #[derive(Parser)]
 #[command(name = "mise", version, about = "A living cookbook & meal planner")]
 struct Cli {
@@ -31,12 +33,33 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Initialize a fresh corpus.
+    /// Initialize a fresh corpus, or join an existing one from a server.
     Init {
+        /// Ignored with --from (the corpus comes from the server).
         #[arg(long, default_value = "home")]
         location: String,
         #[arg(long, default_value_t = 2)]
         headcount: u32,
+        /// Join: pull everything from this server and remember it.
+        #[arg(long, requires = "token_source")]
+        from: Option<String>,
+        #[arg(long, group = "token_source")]
+        token: Option<String>,
+        #[arg(long, group = "token_source")]
+        token_file: Option<PathBuf>,
+    },
+    /// The saved sync server.
+    Remote {
+        #[command(subcommand)]
+        cmd: RemoteCmd,
+    },
+    /// Sync with the server: push local changes, pull everyone else's.
+    Sync {
+        /// Override the saved server URL.
+        #[arg(long)]
+        server: Option<String>,
+        #[arg(long)]
+        token: Option<String>,
     },
     /// Show the queue with readiness annotations (default), or edit it.
     Queue {
@@ -75,6 +98,20 @@ enum Cmd {
     },
     /// Regenerate the markdown export and commit it.
     Export,
+}
+
+#[derive(Subcommand)]
+enum RemoteCmd {
+    /// Save the server URL and token for `mise sync`.
+    #[command(group = clap::ArgGroup::new("token_source").required(true).args(["token", "token_file"]))]
+    Set {
+        url: String,
+        #[arg(long)]
+        token: Option<String>,
+        #[arg(long)]
+        token_file: Option<PathBuf>,
+    },
+    Show,
 }
 
 #[derive(Subcommand)]
@@ -271,7 +308,21 @@ fn main() -> Result<()> {
     let now = Zoned::now().datetime();
 
     match cli.command {
-        Cmd::Init { location, headcount } => {
+        Cmd::Init { from: Some(url), token, token_file, .. } => {
+            let token = read_token(token, token_file)?;
+            let url = remote::normalize_url(&url)?;
+            let mut store = Store::create_bare(&root)?;
+            remote::save(&root, &remote::Remote { url: url.clone(), token: token.clone() })?;
+            let outcome = remote::sync(&mut store, &url, &token)?;
+            store.export("sync: joined corpus")?;
+            println!(
+                "joined corpus at {} from {url}: {}",
+                root.display(),
+                remote::describe(&outcome),
+            );
+            Ok(())
+        }
+        Cmd::Init { location, headcount, .. } => {
             let location = slug(&location)?;
             let mut store = Store::create(&root, &location, headcount)?;
             store.export("init: empty corpus")?;
@@ -280,15 +331,59 @@ fn main() -> Result<()> {
         }
         command => {
             let mut store = Store::open(&root)?;
-            run(&mut store, command, now)
+            run(&mut store, command, &root, now)
         }
     }
 }
 
-fn run(store: &mut Store, command: Cmd, now: DateTime) -> Result<()> {
+fn read_token(token: Option<String>, token_file: Option<PathBuf>) -> Result<String> {
+    let raw = match (token, token_file) {
+        (Some(t), _) => t,
+        (None, Some(p)) => {
+            std::fs::read_to_string(&p).with_context(|| format!("reading {}", p.display()))?
+        }
+        (None, None) => bail!("need --token or --token-file"),
+    };
+    must_trim(&raw, "token")
+}
+
+fn run(store: &mut Store, command: Cmd, root: &Path, now: DateTime) -> Result<()> {
     let today = now.date();
     match command {
         Cmd::Init { .. } => unreachable!("handled in main"),
+        Cmd::Remote { cmd: RemoteCmd::Set { url, token, token_file } } => {
+            let url = remote::normalize_url(&url)?;
+            let token = read_token(token, token_file)?;
+            remote::save(root, &remote::Remote { url: url.clone(), token })?;
+            println!("remote: {url}");
+            Ok(())
+        }
+        Cmd::Remote { cmd: RemoteCmd::Show } => {
+            match remote::load(root)? {
+                Some(r) => println!("{} (token saved)", r.url),
+                None => println!("no remote configured; `mise remote set <url> --token ...`"),
+            }
+            Ok(())
+        }
+        Cmd::Sync { server, token } => {
+            let saved = remote::load(root)?;
+            let url = match (server, &saved) {
+                (Some(url), _) => remote::normalize_url(&url)?,
+                (None, Some(r)) => r.url.clone(),
+                (None, None) => bail!("no server: pass --server or `mise remote set`"),
+            };
+            let token = match (token, saved) {
+                (Some(t), _) => t,
+                (None, Some(r)) => r.token,
+                (None, None) => bail!("no token: pass --token or `mise remote set`"),
+            };
+            let outcome = remote::sync(store, &url, &token)?;
+            if !outcome.docs_updated.is_empty() || outcome.log_added > 0 {
+                store.export(&format!("sync: {}", remote::describe(&outcome)))?;
+            }
+            println!("sync: {}", remote::describe(&outcome));
+            Ok(())
+        }
         Cmd::Export => {
             store.export("cli: export")?;
             println!("exported to {}", store.export_dir().display());

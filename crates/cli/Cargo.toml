@@ -14,6 +14,13 @@ mise-store.workspace = true
 jiff.workspace = true
 anyhow.workspace = true
 clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tokio-tungstenite.workspace = true
+futures-util.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+mise-server.workspace = true
+axum.workspace = true
