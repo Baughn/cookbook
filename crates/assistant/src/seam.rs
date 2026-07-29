@@ -35,6 +35,12 @@ pub enum ContentBlock {
         /// Base64 payload.
         data: String,
     },
+    /// Model-internal reasoning. Opaque: round-tripped verbatim (the API
+    /// verifies the signature when a tool loop continues), never part of
+    /// the visible reply, never transcribed into threads.
+    Thinking { thinking: String, signature: String },
+    /// Reasoning the API redacted; same round-trip rules.
+    RedactedThinking { data: String },
 }
 
 #[derive(Clone, Debug, PartialEq)]

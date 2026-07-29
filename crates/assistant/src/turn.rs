@@ -96,6 +96,9 @@ impl Turn {
                     name: name.clone(),
                     input: input.clone(),
                 }),
+                // Reasoning stays in the conversation (the API requires it
+                // round-tripped through tool loops) but out of the reply.
+                ContentBlock::Thinking { .. } | ContentBlock::RedactedThinking { .. } => {}
                 ContentBlock::ToolResult { .. } | ContentBlock::Image { .. } => {
                     return Err(AssistantError::Protocol(
                         "model turn contained a non-model block".into(),

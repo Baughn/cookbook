@@ -148,6 +148,12 @@ fn message_json(m: &ChatMessage) -> Value {
                 "type": "image",
                 "source": {"type": "base64", "media_type": media_type, "data": data},
             }),
+            ContentBlock::Thinking { thinking, signature } => {
+                json!({"type": "thinking", "thinking": thinking, "signature": signature})
+            }
+            ContentBlock::RedactedThinking { data } => {
+                json!({"type": "redacted_thinking", "data": data})
+            }
         })
         .collect();
     json!({"role": role, "content": content})
@@ -209,6 +215,8 @@ struct Assembler {
 enum Partial {
     Text(String),
     ToolUse { id: String, name: String, input_json: String },
+    Thinking { thinking: String, signature: String },
+    Redacted { data: String },
 }
 
 impl Assembler {
@@ -235,6 +243,13 @@ impl Assembler {
                             .to_string(),
                         input_json: String::new(),
                     }),
+                    Some("thinking") => self.blocks.push(Partial::Thinking {
+                        thinking: block["thinking"].as_str().unwrap_or_default().to_string(),
+                        signature: String::new(),
+                    }),
+                    Some("redacted_thinking") => self.blocks.push(Partial::Redacted {
+                        data: block["data"].as_str().unwrap_or_default().to_string(),
+                    }),
                     other => {
                         return Err(bad(&format!("unsupported content block {other:?}")));
                     }
@@ -253,6 +268,16 @@ impl Assembler {
                     (Partial::ToolUse { input_json, .. }, Some("input_json_delta")) => {
                         input_json
                             .push_str(data["delta"]["partial_json"].as_str().unwrap_or_default());
+                        Ok(None)
+                    }
+                    (Partial::Thinking { thinking, .. }, Some("thinking_delta")) => {
+                        thinking
+                            .push_str(data["delta"]["thinking"].as_str().unwrap_or_default());
+                        Ok(None)
+                    }
+                    (Partial::Thinking { signature, .. }, Some("signature_delta")) => {
+                        signature
+                            .push_str(data["delta"]["signature"].as_str().unwrap_or_default());
                         Ok(None)
                     }
                     (_, other) => Err(bad(&format!("delta {other:?} for current block"))),
@@ -294,6 +319,10 @@ impl Assembler {
                     };
                     Ok(ContentBlock::ToolUse { id, name, input })
                 }
+                Partial::Thinking { thinking, signature } => {
+                    Ok(ContentBlock::Thinking { thinking, signature })
+                }
+                Partial::Redacted { data } => Ok(ContentBlock::RedactedThinking { data }),
             })
             .collect::<Result<Vec<_>>>()?;
         let stop = self
@@ -382,6 +411,45 @@ mod tests {
                 },
             ],
         );
+    }
+
+    #[test]
+    fn thinking_blocks_assemble_opaquely_and_round_trip() {
+        let mut a = Assembler::default();
+        feed(&mut a, "content_block_start", r#"{"content_block":{"type":"thinking","thinking":""}}"#);
+        assert_eq!(
+            feed(&mut a, "content_block_delta", r#"{"delta":{"type":"thinking_delta","thinking":"hmm, curry twice"}}"#),
+            None,
+            "reasoning never streams as visible text",
+        );
+        feed(&mut a, "content_block_delta", r#"{"delta":{"type":"signature_delta","signature":"sig123"}}"#);
+        feed(&mut a, "content_block_stop", "{}");
+        feed(&mut a, "content_block_start", r#"{"content_block":{"type":"redacted_thinking","data":"opaque=="}}"#);
+        feed(&mut a, "content_block_stop", "{}");
+        feed(&mut a, "content_block_start", r#"{"content_block":{"type":"text","text":""}}"#);
+        feed(&mut a, "content_block_delta", r#"{"delta":{"type":"text_delta","text":"Dal it is."}}"#);
+        feed(&mut a, "message_delta", r#"{"delta":{"stop_reason":"end_turn"}}"#);
+
+        let turn = a.finish().unwrap();
+        assert_eq!(
+            turn.content,
+            vec![
+                ContentBlock::Thinking {
+                    thinking: "hmm, curry twice".into(),
+                    signature: "sig123".into(),
+                },
+                ContentBlock::RedactedThinking { data: "opaque==".into() },
+                ContentBlock::Text { text: "Dal it is.".into() },
+            ],
+        );
+
+        // …and both map back to the wire verbatim, signature included —
+        // the API checks it when a tool loop continues.
+        let msg = message_json(&ChatMessage { role: ChatRole::Assistant, content: turn.content });
+        assert_eq!(msg["content"][0]["type"], "thinking");
+        assert_eq!(msg["content"][0]["signature"], "sig123");
+        assert_eq!(msg["content"][1]["type"], "redacted_thinking");
+        assert_eq!(msg["content"][1]["data"], "opaque==");
     }
 
     #[test]

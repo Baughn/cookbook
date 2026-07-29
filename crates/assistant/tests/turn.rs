@@ -64,6 +64,24 @@ fn tool_round_trip_accumulates_narration() {
 }
 
 #[test]
+fn thinking_stays_in_the_conversation_but_out_of_the_reply() {
+    let mut turn = turn_with("plan something");
+    let step = turn
+        .absorb(ModelTurn {
+            content: vec![
+                ContentBlock::Thinking { thinking: "curry twice already".into(), signature: "s".into() },
+                text("Dal, then."),
+            ],
+            stop: StopReason::EndTurn,
+        })
+        .unwrap();
+    assert_eq!(step, Step::Done("Dal, then.".into()), "reasoning is not reply text");
+    // But the block survives in the request for the next model call.
+    let last = turn.request().messages.last().unwrap();
+    assert!(matches!(last.content[0], ContentBlock::Thinking { .. }));
+}
+
+#[test]
 fn outcomes_must_match_pending_calls() {
     let mut turn = turn_with("x");
     turn.absorb(ModelTurn {
