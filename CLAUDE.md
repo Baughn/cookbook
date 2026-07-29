@@ -1,3 +1,9 @@
+# Workflow
+
+- Commit each green chunk of work with jj (`jj commit -m ...`) as you go —
+  scaffold, then each crate or feature as its tests pass. Don't batch a whole
+  milestone into one commit.
+
 # Testing
 
 Tests follow a hierarchy:

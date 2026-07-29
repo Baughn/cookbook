@@ -57,6 +57,15 @@ Settled 2026-07-29, ahead of M1:
   change rows plus periodic snapshots in SQLite. Every doc carries a
   schema-version field from day one.
 
+Settled 2026-07-29, at M1 build start:
+
+- **Library choices.** `jiff` for dates and durations (civil dates fit the
+  presence-and-rough-date model; the clock-as-parameter design matches the
+  testing charter), `proptest` for property tests, `rusqlite` (bundled) for
+  SQLite, `clap` for the CLI. Confirmed with the user.
+- **The CLI is its own crate**, `crates/cli`, building the `mise` binary. It
+  is an edge: it reads the wall clock and passes it into `core` as data.
+
 ## Architecture
 
 ```
@@ -193,6 +202,8 @@ crates/
   assistant/   # LLM seam trait + tools + context assembly + the real
                # Anthropic client (small; module, not a separate crate)
   server/      # axum: REST + WS sync + chat streaming + static files
+  cli/         # the `mise` binary: local corpus operations, M1's surface
+
 web/           # SvelteKit PWA
 evals/         # prompt-quality checks, separate from the test suite
 docs/

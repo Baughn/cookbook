@@ -1,0 +1,23 @@
+[workspace]
+resolver = "3"
+members = ["crates/core", "crates/store", "crates/cli"]
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+
+[workspace.dependencies]
+mise-core = { path = "crates/core" }
+mise-store = { path = "crates/store" }
+
+jiff = { version = "0.2", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+automerge = "0.6"
+autosurgeon = "0.8"
+rusqlite = { version = "0.37", features = ["bundled"] }
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+proptest = "1"
+tempfile = "3"

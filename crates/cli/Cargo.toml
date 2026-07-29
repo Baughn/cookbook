@@ -1,0 +1,19 @@
+[package]
+name = "mise-cli"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "mise"
+path = "src/main.rs"
+
+[dependencies]
+mise-core.workspace = true
+mise-store.workspace = true
+jiff.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
