@@ -20,6 +20,14 @@ struct Args {
     /// $CREDENTIALS_DIRECTORY/token (systemd), then $MISE_TOKEN.
     #[arg(long)]
     token_file: Option<PathBuf>,
+    /// File holding the Anthropic API key for the assistant. Falls back to
+    /// $CREDENTIALS_DIRECTORY/anthropic (systemd), then $ANTHROPIC_API_KEY.
+    /// Without any, the server runs sync-only.
+    #[arg(long)]
+    anthropic_key_file: Option<PathBuf>,
+    /// Model for the assistant.
+    #[arg(long, default_value = mise_assistant::client::DEFAULT_MODEL)]
+    model: String,
     /// Create the corpus if it doesn't exist yet.
     #[arg(long)]
     init: bool,
@@ -28,6 +36,18 @@ struct Args {
     init_location: String,
     #[arg(long, default_value_t = 2)]
     init_headcount: u32,
+}
+
+fn read_anthropic_key(args: &Args) -> Option<String> {
+    let path = args.anthropic_key_file.clone().or_else(|| {
+        std::env::var_os("CREDENTIALS_DIRECTORY").map(|d| PathBuf::from(d).join("anthropic"))
+    });
+    let raw = match path {
+        Some(p) if p.exists() => std::fs::read_to_string(&p).ok()?,
+        _ => std::env::var("ANTHROPIC_API_KEY").ok()?,
+    };
+    let key = raw.trim().to_string();
+    (!key.is_empty()).then_some(key)
 }
 
 fn read_token(args: &Args) -> Result<String> {
@@ -85,9 +105,22 @@ async fn main() -> Result<()> {
         Err(e) => return Err(e.into()),
     };
 
+    let mut state = AppState::new(store, token);
+    match read_anthropic_key(&args) {
+        Some(api_key) => {
+            info!("assistant enabled (model {})", args.model);
+            state = state.with_chat(mise_server::ChatConfig {
+                api_key,
+                model: args.model.clone(),
+                base_url: mise_assistant::client::DEFAULT_BASE_URL.to_string(),
+            });
+        }
+        None => info!("no Anthropic key; running sync-only"),
+    }
+
     let listener = tokio::net::TcpListener::bind(args.listen).await?;
     info!("serving corpus {} on {}", root.display(), args.listen);
-    axum::serve(listener, app(AppState::new(store, token)))
+    axum::serve(listener, app(state))
         .with_graceful_shutdown(async {
             let _ = tokio::signal::ctrl_c().await;
         })

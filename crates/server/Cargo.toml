@@ -14,16 +14,20 @@ path = "src/main.rs"
 [dependencies]
 mise-store.workspace = true
 mise-core.workspace = true
+mise-assistant.workspace = true
 axum.workspace = true
 tokio.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 dotenvy.workspace = true
+futures-util.workspace = true
+jiff.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 
 [dev-dependencies]
 tokio-tungstenite.workspace = true
-futures-util.workspace = true
 tempfile.workspace = true
-jiff.workspace = true
+reqwest.workspace = true

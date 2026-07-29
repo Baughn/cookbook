@@ -1,32 +1,52 @@
 //! The Mise server: a thin, always-on replica. It holds the corpus, speaks
-//! the sync protocol over WebSocket to any client, re-exports after every
-//! session, and (from M3) will host the assistant. Caddy terminates TLS in
-//! front of it; auth is a single static bearer token — one user, no
-//! accounts, no sessions to expire.
+//! the sync protocol over WebSocket to any client, hosts the assistant
+//! over streaming HTTP, and re-exports after every session. Caddy
+//! terminates TLS in front of it; auth is a single static bearer token —
+//! one user, no accounts, no sessions to expire.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::Router;
 use axum::extract::ws::{Message as WsMessage, WebSocket};
-use axum::extract::{Query, State, WebSocketUpgrade};
+use axum::extract::{Json, Query, State, WebSocketUpgrade};
 use axum::http::{HeaderMap, StatusCode};
+use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
+use futures_util::StreamExt;
 use mise_store::Store;
 use mise_store::sync::{Peer, WireMsg};
 use tokio::sync::Mutex;
 use tracing::{info, warn};
 
+mod chat;
+
+/// Everything the assistant endpoint needs to reach the model. Absent when
+/// the deployment is sync-only (no Anthropic key configured).
+#[derive(Clone)]
+pub struct ChatConfig {
+    pub api_key: String,
+    pub model: String,
+    /// Overridable for tests and proxies.
+    pub base_url: String,
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub store: Arc<Mutex<Store>>,
     pub token: Arc<String>,
+    pub chat: Option<Arc<ChatConfig>>,
 }
 
 impl AppState {
     pub fn new(store: Store, token: String) -> AppState {
-        AppState { store: Arc::new(Mutex::new(store)), token: Arc::new(token) }
+        AppState { store: Arc::new(Mutex::new(store)), token: Arc::new(token), chat: None }
+    }
+
+    pub fn with_chat(mut self, config: ChatConfig) -> AppState {
+        self.chat = Some(Arc::new(config));
+        self
     }
 }
 
@@ -34,7 +54,39 @@ pub fn app(state: AppState) -> Router {
     Router::new()
         .route("/health", get(|| async { "ok" }))
         .route("/sync", get(ws_sync))
+        .route("/chat", post(chat_endpoint))
         .with_state(state)
+}
+
+#[derive(serde::Deserialize)]
+pub struct ChatRequest {
+    pub message: String,
+    /// Page-thread doc id (`recipe/mapo-tofu`); omitted = planning thread.
+    pub page: Option<String>,
+}
+
+/// POST /chat: one conversational exchange, streamed back as SSE (`delta`,
+/// `tool`, `done`, `error` events). The store lock is held only around
+/// store work — never across model calls — so sync sessions keep flowing
+/// while the model thinks.
+async fn chat_endpoint(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<HashMap<String, String>>,
+    Json(request): Json<ChatRequest>,
+) -> Response {
+    if !authorized(&state, &headers, &query) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let Some(config) = state.chat.clone() else {
+        return (StatusCode::SERVICE_UNAVAILABLE, "no model configured on this server")
+            .into_response();
+    };
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
+    tokio::spawn(chat::drive(state, config, request, tx));
+    let stream = futures_util::stream::poll_fn(move |cx| rx.poll_recv(cx))
+        .map(Ok::<_, std::convert::Infallible>);
+    Sse::new(stream).keep_alive(KeepAlive::default()).into_response()
 }
 
 /// Constant-time-ish comparison; the length is not treated as secret.

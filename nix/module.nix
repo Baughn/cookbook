@@ -42,6 +42,24 @@ in
       default = true;
       description = "Create an empty corpus on first start.";
     };
+
+    anthropicKeyFile = lib.mkOption {
+      type = lib.types.nullOr lib.types.path;
+      default = null;
+      description = ''
+        File containing the Anthropic API key for the assistant, handed to
+        the service via systemd credentials. Keep it out of the Nix store —
+        with agenix:
+        `services.mise.anthropicKeyFile = config.age.secrets.anthropic.path;`
+        Leave null to run sync-only.
+      '';
+    };
+
+    model = lib.mkOption {
+      type = lib.types.str;
+      default = "claude-opus-5";
+      description = "Model the assistant uses.";
+    };
   };
 
   config = lib.mkIf cfg.enable {
@@ -61,11 +79,14 @@ in
       serviceConfig = {
         ExecStart =
           "${lib.getExe cfg.package} --root ${cfg.root} --listen ${cfg.listen}"
+          + " --model ${cfg.model}"
           + lib.optionalString cfg.init " --init";
         User = "mise";
         Group = "mise";
         StateDirectory = "mise";
-        LoadCredential = "token:${cfg.tokenFile}";
+        LoadCredential =
+          [ "token:${cfg.tokenFile}" ]
+          ++ lib.optional (cfg.anthropicKeyFile != null) "anthropic:${cfg.anthropicKeyFile}";
         Restart = "on-failure";
         RestartSec = 5;
 
