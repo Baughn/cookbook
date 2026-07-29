@@ -9,6 +9,7 @@ pub mod error;
 pub mod pages;
 pub mod render;
 pub mod store;
+pub mod sync;
 
 pub use docid::DocId;
 pub use error::StoreError;

@@ -32,9 +32,11 @@ CREATE TABLE docs (
 CREATE TABLE doc_changes (
   doc_id TEXT NOT NULL REFERENCES docs(id),
   seq    INTEGER NOT NULL,
+  hash   TEXT NOT NULL,
   change BLOB NOT NULL,
   PRIMARY KEY (doc_id, seq)
 ) STRICT;
+CREATE UNIQUE INDEX ux_doc_changes_hash ON doc_changes(doc_id, hash);
 CREATE TABLE doc_snapshots (
   doc_id   TEXT NOT NULL REFERENCES docs(id),
   upto_seq INTEGER NOT NULL,
@@ -43,6 +45,7 @@ CREATE TABLE doc_snapshots (
 ) STRICT;
 CREATE TABLE cook_log (
   id       INTEGER PRIMARY KEY,
+  uid      TEXT NOT NULL,
   date     TEXT NOT NULL,
   kind     TEXT NOT NULL,
   recipe   TEXT,
@@ -52,6 +55,7 @@ CREATE TABLE cook_log (
   verdict  TEXT NOT NULL,
   tags     TEXT NOT NULL
 ) STRICT;
+CREATE UNIQUE INDEX ux_cook_log_uid ON cook_log(uid);
 CREATE TABLE threads (
   id   INTEGER PRIMARY KEY,
   page TEXT NOT NULL
@@ -67,8 +71,21 @@ CREATE TABLE blobs (
   hash TEXT PRIMARY KEY,
   ext  TEXT NOT NULL
 ) STRICT;
-PRAGMA user_version = 1;
+PRAGMA user_version = 2;
 ";
+
+pub(crate) fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Content-addressed identity prefix for a log row: append-only rows have no
+/// CRDT, so cross-replica dedupe keys on content. The full uid is
+/// `<hash16>-<n>` where `n` disambiguates genuinely repeated identical cooks.
+fn log_content_hash(e: &LogEntry) -> String {
+    use sha2::{Digest, Sha256};
+    let canonical = serde_json::to_string(e).expect("log entries serialize");
+    hex(&Sha256::digest(canonical.as_bytes()))[..16].to_string()
+}
 
 /// Default source tiers for a fresh location; every one of these is an
 /// ordinary edit away from being something else.
@@ -122,7 +139,9 @@ impl Store {
         if !db.exists() {
             return Err(StoreError::NoCorpus(root.to_path_buf()));
         }
-        Ok(Store { conn: Connection::open(&db)?, root: root.to_path_buf() })
+        let conn = Connection::open(&db)?;
+        migrate(&conn)?;
+        Ok(Store { conn, root: root.to_path_buf() })
     }
 
     pub fn root(&self) -> &Path {
@@ -135,7 +154,7 @@ impl Store {
 
     // ------------------------------------------------------------ docs --
 
-    fn load_doc(&self, id: &DocId) -> Result<AutoCommit> {
+    pub(crate) fn load_doc(&self, id: &DocId) -> Result<AutoCommit> {
         let key = id.to_string();
         let exists: Option<String> = self
             .conn
@@ -196,29 +215,76 @@ impl Store {
 
     /// Persist one committed change from `doc`, snapshotting on cadence.
     fn persist_change(&mut self, key: &str, doc: &mut AutoCommit) -> Result<()> {
-        let change_bytes = doc
+        let change = doc
             .get_last_local_change()
             .expect("commit reported a change")
-            .raw_bytes()
-            .to_vec();
+            .clone();
+        self.append_changes(key, &[change], doc)?;
+        Ok(())
+    }
+
+    /// Append changes to a doc's history, deduplicating by change hash —
+    /// sync can deliver a change along more than one path. `doc` must
+    /// already contain the changes (it supplies snapshot bytes on cadence).
+    /// Returns how many rows were actually new.
+    pub(crate) fn append_changes(
+        &mut self,
+        key: &str,
+        changes: &[Change],
+        doc: &mut AutoCommit,
+    ) -> Result<usize> {
         let tx = self.conn.transaction()?;
-        let seq: i64 = tx.query_row(
+        let mut seq: i64 = tx.query_row(
             "SELECT COALESCE(MAX(seq), 0) FROM doc_changes WHERE doc_id = ?1",
             [key],
             |r| r.get::<_, i64>(0),
-        )? + 1;
-        tx.execute(
-            "INSERT INTO doc_changes (doc_id, seq, change) VALUES (?1, ?2, ?3)",
-            params![key, seq, change_bytes],
         )?;
-        if seq % SNAPSHOT_EVERY == 0 {
+        let mut inserted = 0;
+        for change in changes {
+            let hash = hex(&change.hash().0);
+            let known: Option<i64> = tx
+                .query_row(
+                    "SELECT seq FROM doc_changes WHERE doc_id = ?1 AND hash = ?2",
+                    params![key, hash],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if known.is_some() {
+                continue;
+            }
+            seq += 1;
             tx.execute(
-                "INSERT INTO doc_snapshots (doc_id, upto_seq, snapshot) VALUES (?1, ?2, ?3)",
-                params![key, seq, doc.save()],
+                "INSERT INTO doc_changes (doc_id, seq, hash, change) VALUES (?1, ?2, ?3, ?4)",
+                params![key, seq, hash, change.raw_bytes()],
             )?;
+            inserted += 1;
+            if seq % SNAPSHOT_EVERY == 0 {
+                tx.execute(
+                    "INSERT INTO doc_snapshots (doc_id, upto_seq, snapshot) VALUES (?1, ?2, ?3)",
+                    params![key, seq, doc.save()],
+                )?;
+            }
         }
         tx.commit()?;
+        Ok(inserted)
+    }
+
+    /// Make sure a doc row exists (sync may introduce docs we've never seen).
+    pub(crate) fn ensure_doc_row(&self, id: &DocId) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR IGNORE INTO docs (id, kind) VALUES (?1, ?2)",
+            params![id.to_string(), id.kind()],
+        )?;
         Ok(())
+    }
+
+    /// Every doc id in the store, in id order.
+    pub(crate) fn all_doc_ids(&self) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare("SELECT id FROM docs ORDER BY id")?;
+        let ids = stmt
+            .query_map([], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(ids)
     }
 
     /// Create a new doc from an initial value. `provenance` lands in the
@@ -286,11 +352,29 @@ impl Store {
 
     // ------------------------------------------------------------- log --
 
-    pub fn append_log(&mut self, e: &LogEntry) -> Result<i64> {
-        self.conn.execute(
-            "INSERT INTO cook_log (date, kind, recipe, title, location, servings, verdict, tags)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+    /// Append a cook. The row's uid is its content hash plus an occurrence
+    /// index, so the same cook logged on two devices dedupes on sync while a
+    /// genuinely repeated identical cook stays two rows.
+    pub fn append_log(&mut self, e: &LogEntry) -> Result<String> {
+        let prefix = log_content_hash(e);
+        let n: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM cook_log WHERE uid LIKE ?1 || '-%'",
+            [&prefix],
+            |r| r.get(0),
+        )?;
+        let uid = format!("{prefix}-{n}");
+        self.insert_log_row(&uid, e)?;
+        Ok(uid)
+    }
+
+    /// Idempotent insert of a log row with a known uid (the sync path).
+    pub(crate) fn insert_log_row(&mut self, uid: &str, e: &LogEntry) -> Result<bool> {
+        let inserted = self.conn.execute(
+            "INSERT OR IGNORE INTO cook_log
+               (uid, date, kind, recipe, title, location, servings, verdict, tags)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
+                uid,
                 e.date.to_string(),
                 e.kind.to_string(),
                 e.recipe.as_ref().map(|s| s.as_str().to_string()),
@@ -301,14 +385,34 @@ impl Store {
                 serde_json::to_string(&e.tags)?,
             ],
         )?;
-        Ok(self.conn.last_insert_rowid())
+        Ok(inserted > 0)
     }
 
-    /// The whole log, ordered by (date, insertion).
+    pub(crate) fn log_uids(&self) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare("SELECT uid FROM cook_log ORDER BY uid")?;
+        let uids = stmt
+            .query_map([], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(uids)
+    }
+
+    /// All log rows with their uids, in (date, uid) order.
+    pub(crate) fn log_rows(&self) -> Result<Vec<(String, LogEntry)>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT uid FROM cook_log ORDER BY date, uid")?;
+        let uids = stmt
+            .query_map([], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        drop(stmt);
+        Ok(uids.into_iter().zip(self.log_entries()?).collect())
+    }
+
+    /// The whole log, ordered by (date, uid) — deterministic across replicas.
     pub fn log_entries(&self) -> Result<Vec<LogEntry>> {
         let mut stmt = self.conn.prepare(
             "SELECT date, kind, recipe, title, location, servings, verdict, tags
-             FROM cook_log ORDER BY date, id",
+             FROM cook_log ORDER BY date, uid",
         )?;
         let rows = stmt
             .query_map([], |r| {
@@ -462,6 +566,96 @@ impl Store {
         }
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     }
+}
+
+/// Bring an existing database up to the current schema. Fresh databases are
+/// created at the current version by `SCHEMA` directly.
+fn migrate(conn: &Connection) -> Result<()> {
+    let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    match version {
+        2 => Ok(()),
+        1 => migrate_v1_to_v2(conn),
+        other => Err(StoreError::Corrupt(format!(
+            "unsupported schema version {other} (this build understands 1..=2)"
+        ))),
+    }
+}
+
+/// v1 → v2: change rows gain a content-hash column (sync dedupe), log rows
+/// gain a content-derived uid (append-merge identity). Both are derivable
+/// from the stored bytes, so the migration is a pure backfill.
+fn migrate_v1_to_v2(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "BEGIN;
+         ALTER TABLE doc_changes ADD COLUMN hash TEXT;
+         ALTER TABLE cook_log ADD COLUMN uid TEXT;",
+    )?;
+    {
+        let mut stmt = conn.prepare("SELECT doc_id, seq, change FROM doc_changes")?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, Vec<u8>>(2)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for (doc_id, seq, bytes) in rows {
+            let change = Change::from_bytes(bytes)?;
+            conn.execute(
+                "UPDATE doc_changes SET hash = ?1 WHERE doc_id = ?2 AND seq = ?3",
+                params![hex(&change.hash().0), doc_id, seq],
+            )?;
+        }
+    }
+    {
+        let mut stmt = conn.prepare(
+            "SELECT id, date, kind, recipe, title, location, servings, verdict, tags
+             FROM cook_log ORDER BY date, id",
+        )?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, Option<String>>(3)?,
+                    r.get::<_, String>(4)?,
+                    r.get::<_, String>(5)?,
+                    r.get::<_, u32>(6)?,
+                    r.get::<_, String>(7)?,
+                    r.get::<_, String>(8)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut seen: std::collections::BTreeMap<String, i64> = std::collections::BTreeMap::new();
+        for (id, date, kind, recipe, title, location, servings, verdict, tags) in rows {
+            let corrupt = |m: String| StoreError::Corrupt(format!("log row {id}: {m}"));
+            let entry = LogEntry {
+                date: date.parse().map_err(|e| corrupt(format!("bad date: {e}")))?,
+                kind: kind.parse::<CookKind>().map_err(corrupt)?,
+                recipe: recipe
+                    .map(|s| Slug::new(s).map_err(|e| corrupt(e.to_string())))
+                    .transpose()?,
+                title,
+                location,
+                servings,
+                verdict,
+                tags: serde_json::from_str(&tags)?,
+            };
+            let prefix = log_content_hash(&entry);
+            let n = seen.entry(prefix.clone()).or_insert(0);
+            conn.execute(
+                "UPDATE cook_log SET uid = ?1 WHERE id = ?2",
+                params![format!("{prefix}-{n}"), id],
+            )?;
+            *n += 1;
+        }
+    }
+    conn.execute_batch(
+        "CREATE UNIQUE INDEX ux_doc_changes_hash ON doc_changes(doc_id, hash);
+         CREATE UNIQUE INDEX ux_cook_log_uid ON cook_log(uid);
+         PRAGMA user_version = 2;
+         COMMIT;",
+    )?;
+    Ok(())
 }
 
 /// Relative paths of all files under `dir`, skipping `.git`.

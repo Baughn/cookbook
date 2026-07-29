@@ -1,0 +1,396 @@
+//! Replica sync at the store level, no transport: two real stores in temp
+//! dirs shuttle wire messages until done. Two clients converging — offline
+//! edits included — is the M2 promise; converged stores must also render
+//! byte-identical exports.
+
+mod support;
+
+use std::collections::BTreeMap;
+use std::path::Path;
+
+use jiff::civil::Date;
+use mise_core::types::{CookKind, LogEntry, Slug};
+use mise_store::pages::{
+    DishRefDoc, PantryDoc, PantryItemDoc, QueueDoc, QueueEntryDoc, RecipeDoc, StateDoc,
+};
+use mise_store::render::render;
+use mise_store::sync::{Peer, SyncOutcome};
+use mise_store::{DocId, Store};
+use proptest::collection::vec;
+use proptest::prelude::*;
+
+fn slug(s: &str) -> Slug {
+    Slug::new(s).unwrap()
+}
+
+/// Drive a full sync session between two stores, no transport.
+fn run_sync(a: &mut Store, b: &mut Store) -> (SyncOutcome, SyncOutcome) {
+    let mut pa = Peer::start(a, true).unwrap();
+    let mut pb = Peer::start(b, false).unwrap();
+    let mut msg = pa.initial_round(a).unwrap();
+    let mut rounds = 0;
+    loop {
+        rounds += 1;
+        assert!(rounds < 64, "sync did not terminate");
+        let reply = pb.handle(b, &msg).unwrap().expect("responder always replies");
+        match pa.handle(a, &reply).unwrap() {
+            Some(next) => msg = next,
+            None => break,
+        }
+    }
+    (pa.outcome().clone(), pb.outcome().clone())
+}
+
+fn exports_equal(a: &Store, b: &Store) -> bool {
+    render(&a.corpus().unwrap()) == render(&b.corpus().unwrap())
+}
+
+fn create_at(dir: &Path, name: &str) -> Store {
+    Store::create(&dir.join(name), &slug("home"), 2).unwrap()
+}
+
+#[test]
+fn fresh_replica_pulls_everything() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut a = create_at(dir.path(), "a");
+    a.modify::<PantryDoc>(&DocId::Pantry(slug("home")), "seed", |p| {
+        p.items.insert(
+            "miso".into(),
+            PantryItemDoc {
+                name: "miso".into(),
+                presence: "have".into(),
+                bought: None,
+                tier: Some("town".into()),
+                note: None,
+            },
+        );
+    })
+    .unwrap();
+    a.append_log(&LogEntry {
+        date: Date::constant(2026, 7, 28),
+        kind: CookKind::Meal,
+        recipe: None,
+        title: "Mapo tofu".into(),
+        location: "home".into(),
+        servings: 4,
+        verdict: "great".into(),
+        tags: BTreeMap::new(),
+    })
+    .unwrap();
+
+    // The second device starts with nothing at all.
+    let mut b = Store::create_bare(&dir.path().join("b")).unwrap();
+    let (out_a, out_b) = run_sync(&mut a, &mut b);
+
+    assert!(out_a.docs_updated.is_empty(), "{out_a:?}");
+    assert_eq!(out_a.log_sent, 1);
+    assert!(out_b.docs_updated.contains("location/home/pantry"));
+    assert_eq!(out_b.log_added, 1);
+    assert_eq!(a.corpus().unwrap(), b.corpus().unwrap());
+    assert!(exports_equal(&a, &b));
+}
+
+#[test]
+fn offline_edits_converge_and_resync_is_idempotent() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut a = create_at(dir.path(), "a");
+    let mut b = Store::create_bare(&dir.path().join("b")).unwrap();
+    run_sync(&mut a, &mut b);
+
+    // Both sides edit offline: a new recipe on A, queue + pantry on B.
+    a.create_doc(
+        &DocId::Recipe(slug("duck-curry")),
+        &RecipeDoc {
+            schema_version: 1,
+            title: "Duck curry".into(),
+            servings: 4,
+            effort: "project".into(),
+            lead: None,
+            tags: BTreeMap::from([("protein".to_string(), "duck".to_string())]),
+            equipment: vec![],
+            ingredients: vec![],
+            retired: false,
+            body: "Brown the legs.".into(),
+        },
+        "offline on a",
+    )
+    .unwrap();
+    b.modify::<QueueDoc>(&DocId::Queue, "offline on b", |q| {
+        q.entries.insert(
+            "duck-curry".into(),
+            QueueEntryDoc {
+                dishes: vec![DishRefDoc { recipe: Some("duck-curry".into()), title: "Duck curry".into() }],
+                reason: Some("uses the duck legs".into()),
+                added: "2026-07-29".into(),
+            },
+        );
+    })
+    .unwrap();
+    b.modify::<PantryDoc>(&DocId::Pantry(slug("home")), "offline on b", |p| {
+        p.items.insert(
+            "duck-legs".into(),
+            PantryItemDoc {
+                name: "duck legs".into(),
+                presence: "have".into(),
+                bought: Some("2026-07-29".into()),
+                tier: Some("butcher".into()),
+                note: None,
+            },
+        );
+    })
+    .unwrap();
+
+    let (out_a, out_b) = run_sync(&mut a, &mut b);
+    assert!(out_a.docs_updated.contains("queue"), "{out_a:?}");
+    assert!(out_a.docs_updated.contains("location/home/pantry"));
+    assert!(out_b.docs_updated.contains("recipe/duck-curry"), "{out_b:?}");
+    assert_eq!(a.corpus().unwrap(), b.corpus().unwrap());
+    assert!(exports_equal(&a, &b));
+
+    // Nothing left to say: a second session moves no data.
+    let (out_a, out_b) = run_sync(&mut a, &mut b);
+    assert_eq!(out_a, SyncOutcome::default(), "{out_a:?}");
+    assert_eq!(out_b, SyncOutcome::default(), "{out_b:?}");
+}
+
+#[test]
+fn same_cook_logged_on_both_devices_dedupes() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut a = create_at(dir.path(), "a");
+    let mut b = Store::create_bare(&dir.path().join("b")).unwrap();
+    run_sync(&mut a, &mut b);
+
+    let entry = LogEntry {
+        date: Date::constant(2026, 7, 29),
+        kind: CookKind::Meal,
+        recipe: None,
+        title: "Mapo tofu".into(),
+        location: "home".into(),
+        servings: 4,
+        verdict: "fine".into(),
+        tags: BTreeMap::new(),
+    };
+    // The same cook, logged independently on both devices…
+    a.append_log(&entry).unwrap();
+    b.append_log(&entry).unwrap();
+    // …plus a genuine second identical cook on A only.
+    a.append_log(&entry).unwrap();
+
+    run_sync(&mut a, &mut b);
+    assert_eq!(a.log_entries().unwrap().len(), 2, "dedupe kept the repeat");
+    assert_eq!(a.corpus().unwrap(), b.corpus().unwrap());
+}
+
+// ------------------------------------------------------------ properties --
+
+#[derive(Clone, Debug)]
+enum Op {
+    Pantry { k: u8, presence: u8 },
+    Queue { k: u8, title: String },
+    Log { day: u8, title: String },
+}
+
+fn arb_op() -> impl Strategy<Value = Op> {
+    let word = || proptest::string::string_regex("[a-z]{1,8}").unwrap();
+    prop_oneof![
+        (any::<u8>(), any::<u8>()).prop_map(|(k, presence)| Op::Pantry { k, presence }),
+        (any::<u8>(), word()).prop_map(|(k, title)| Op::Queue { k, title }),
+        (any::<u8>(), word()).prop_map(|(day, title)| Op::Log { day, title }),
+    ]
+}
+
+fn apply(store: &mut Store, op: &Op) {
+    match op {
+        Op::Pantry { k, presence } => {
+            store
+                .modify::<PantryDoc>(&DocId::Pantry(slug("home")), "prop", |p| {
+                    let key = format!("item{}", k % 5);
+                    p.items.insert(
+                        key.clone(),
+                        PantryItemDoc {
+                            name: key,
+                            presence: ["have", "low", "out"][(*presence % 3) as usize].into(),
+                            bought: None,
+                            tier: None,
+                            note: None,
+                        },
+                    );
+                })
+                .unwrap();
+        }
+        Op::Queue { k, title } => {
+            store
+                .modify::<QueueDoc>(&DocId::Queue, "prop", |q| {
+                    q.entries.insert(
+                        format!("q{}", k % 5),
+                        QueueEntryDoc {
+                            dishes: vec![DishRefDoc { recipe: None, title: title.clone() }],
+                            reason: None,
+                            added: "2026-07-29".into(),
+                        },
+                    );
+                })
+                .unwrap();
+        }
+        Op::Log { day, title } => {
+            store
+                .append_log(&LogEntry {
+                    date: Date::constant(2026, 7, i8::try_from(1 + day % 28).unwrap()),
+                    kind: CookKind::Meal,
+                    recipe: None,
+                    title: title.clone(),
+                    location: "home".into(),
+                    servings: 2,
+                    verdict: "fine".into(),
+                    tags: BTreeMap::new(),
+                })
+                .unwrap();
+        }
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: 16, ..ProptestConfig::default() })]
+
+    /// Arbitrary divergent edits on two synced replicas: one session
+    /// reconverges them, states equal, exports byte-identical.
+    #[test]
+    fn divergent_stores_reconverge(
+        ops_a in vec(arb_op(), 0..8),
+        ops_b in vec(arb_op(), 0..8),
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut a = create_at(dir.path(), "a");
+        let mut b = Store::create_bare(&dir.path().join("b")).unwrap();
+        run_sync(&mut a, &mut b);
+
+        for op in &ops_a {
+            apply(&mut a, op);
+        }
+        for op in &ops_b {
+            apply(&mut b, op);
+        }
+        run_sync(&mut a, &mut b);
+
+        prop_assert_eq!(a.corpus().unwrap(), b.corpus().unwrap());
+        prop_assert!(exports_equal(&a, &b));
+
+        let (out_a, out_b) = run_sync(&mut a, &mut b);
+        prop_assert_eq!(out_a, SyncOutcome::default());
+        prop_assert_eq!(out_b, SyncOutcome::default());
+    }
+}
+
+// ------------------------------------------------------------- migration --
+
+/// The M1 (v1) schema, verbatim, so migration stays honest about its past.
+const SCHEMA_V1: &str = "
+CREATE TABLE docs (
+  id   TEXT PRIMARY KEY,
+  kind TEXT NOT NULL
+) STRICT;
+CREATE TABLE doc_changes (
+  doc_id TEXT NOT NULL REFERENCES docs(id),
+  seq    INTEGER NOT NULL,
+  change BLOB NOT NULL,
+  PRIMARY KEY (doc_id, seq)
+) STRICT;
+CREATE TABLE doc_snapshots (
+  doc_id   TEXT NOT NULL REFERENCES docs(id),
+  upto_seq INTEGER NOT NULL,
+  snapshot BLOB NOT NULL,
+  PRIMARY KEY (doc_id, upto_seq)
+) STRICT;
+CREATE TABLE cook_log (
+  id       INTEGER PRIMARY KEY,
+  date     TEXT NOT NULL,
+  kind     TEXT NOT NULL,
+  recipe   TEXT,
+  title    TEXT NOT NULL,
+  location TEXT NOT NULL,
+  servings INTEGER NOT NULL,
+  verdict  TEXT NOT NULL,
+  tags     TEXT NOT NULL
+) STRICT;
+CREATE TABLE threads (
+  id   INTEGER PRIMARY KEY,
+  page TEXT NOT NULL
+) STRICT;
+CREATE TABLE thread_messages (
+  id        INTEGER PRIMARY KEY,
+  thread_id INTEGER NOT NULL REFERENCES threads(id),
+  role      TEXT NOT NULL,
+  content   TEXT NOT NULL,
+  created   TEXT NOT NULL
+) STRICT;
+CREATE TABLE blobs (
+  hash TEXT PRIMARY KEY,
+  ext  TEXT NOT NULL
+) STRICT;
+PRAGMA user_version = 1;
+";
+
+#[test]
+fn v1_corpus_migrates_on_open() {
+    use automerge::AutoCommit;
+    use autosurgeon::reconcile;
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("corpus");
+    std::fs::create_dir_all(root.join("export")).unwrap();
+
+    // Fabricate a v1 database with one real doc change and two log rows,
+    // one of them a duplicated cook.
+    {
+        let conn = rusqlite::Connection::open(root.join("mise.db")).unwrap();
+        conn.execute_batch(SCHEMA_V1).unwrap();
+        let mut doc = AutoCommit::new();
+        reconcile(&mut doc, StateDoc::new("home", 2)).unwrap();
+        doc.commit();
+        let change = doc.get_last_local_change().unwrap().raw_bytes().to_vec();
+        conn.execute("INSERT INTO docs (id, kind) VALUES ('state', 'state')", []).unwrap();
+        conn.execute(
+            "INSERT INTO doc_changes (doc_id, seq, change) VALUES ('state', 1, ?1)",
+            rusqlite::params![change],
+        )
+        .unwrap();
+        for _ in 0..2 {
+            conn.execute(
+                "INSERT INTO cook_log (date, kind, recipe, title, location, servings, verdict, tags)
+                 VALUES ('2026-07-28', 'meal', NULL, 'Mapo tofu', 'home', 4, 'fine', '{}')",
+                [],
+            )
+            .unwrap();
+        }
+        std::process::Command::new("git")
+            .args(["-C"])
+            .arg(root.join("export"))
+            .args(["init", "-q"])
+            .output()
+            .unwrap();
+    }
+
+    let store = Store::open(&root).unwrap();
+    let state: StateDoc = store.get(&DocId::State).unwrap();
+    assert_eq!(state.active_location, "home");
+    assert_eq!(store.log_entries().unwrap().len(), 2);
+
+    // Backfill happened: hashes and distinct uids exist.
+    let conn = rusqlite::Connection::open(root.join("mise.db")).unwrap();
+    let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+    assert_eq!(version, 2);
+    let uids: Vec<String> = conn
+        .prepare("SELECT uid FROM cook_log ORDER BY uid")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(uids.len(), 2);
+    assert_ne!(uids[0], uids[1], "occurrence index disambiguates");
+    assert_eq!(uids[0].split('-').next(), uids[1].split('-').next(), "same content hash");
+    let null_hashes: i64 = conn
+        .query_row("SELECT COUNT(*) FROM doc_changes WHERE hash IS NULL", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(null_hashes, 0);
+}
