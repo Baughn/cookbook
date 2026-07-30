@@ -1,6 +1,6 @@
 # Implementation plan
 
-*Last updated: 2026-07-29 (M3 complete). Companion to [design.md](design.md); this document
+*Last updated: 2026-07-30 (M4 complete). Companion to [design.md](design.md); this document
 covers the technical shape and build order. Decisions here resolve the "Open
 questions" section of the design doc.*
 
@@ -156,6 +156,41 @@ Settled 2026-07-29, at M3 build start:
   seed a lived-in corpus and score mechanical checks (explored before
   proposing, reasons on the queue, pantry/log/fridge actually changed);
   transcripts print for human judgment.
+
+Settled 2026-07-30, at M4 build start:
+
+- **The clock threads into mutations.** Every mutating store API takes a
+  `jiff::Timestamp`, stamped into the Automerge change beside the
+  provenance message — the store still never reads a clock; edges pass
+  `Zoned::now()`, tests script it. Sync carries original times for free
+  (they live in the change bytes). Changes from pre-clock builds show no
+  time, forever — they're immutable.
+- **Revert semantics.** `Store::history(doc)` lists (hash, message, time)
+  per change; `Store::revert(doc, hash)` restores the page to its state
+  as of that change, recorded as a *new forward change* — history only
+  grows, and a revert is itself visible and revertible. Prose bodies
+  restore through the char-safe splice path. Property: revert reaches
+  every point in history exactly.
+- **The JSON API.** Bearer-authed under `/api`: `queue` (the readiness/
+  coverage/someday view — one structured type in `mise-assistant::views`
+  that both the tool string and the JSON render from), `pages` (browse
+  metadata + doc handles), `page/{path}`, `history/{doc}`, `revert`
+  (POST), `thread/{id}`. Mutations beyond revert stay conversational
+  (/chat) or CLI — the API is not a second editing surface.
+- **The web app.** SvelteKit static-adapter SPA (Svelte 5 + TS +
+  Pico.css, npm with committed lockfile), served whole by `mise-server
+  --static-dir` with index.html fallback. Queue home + planning thread;
+  generic page view (frontmatter as metadata chips, markdown via marked)
+  with recent-changes/revert and the page's thread; browse by tag chips.
+  One token prompt, localStorage, 401 loops back to it. Chat streams over
+  fetch with a TS SSE framer mirroring the Rust one, vitest-covered.
+- **E2E.** Playwright (`npm run e2e` in `web/`) drives the planning-
+  session flow against the real server binary and a scripted fake
+  Anthropic endpoint (`mise-server --anthropic-base-url`); deterministic,
+  no model, run manually like the browsers it needs.
+- **Packaging.** `packages.web` via `buildNpmPackage` (offline, locked);
+  the NixOS module serves it by default (`services.mise.webApp`, null for
+  sync/API-only); `nodejs_24` joins the devshell.
 
 ## Architecture
 
