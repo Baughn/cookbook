@@ -1,2 +1,4 @@
 /target
 .env
+# Shelf photos for the recon eval: personal data, never in the repo.
+/evals/fixtures/private/

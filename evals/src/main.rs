@@ -356,11 +356,99 @@ async fn calculator_page(report: &mut Report) -> Result<()> {
     Ok(())
 }
 
+/// Photo recon against real shelves. Photos live in `fixtures/private/`
+/// (gitignored — shelf photos are personal data, like the corpus); the
+/// scenario runs once per photo and skips politely when there are none.
+/// The seeded pantry deliberately won't match anyone's real shelf: recon's
+/// job is exactly that gap, and what the model saw is human judgment —
+/// read the printed proposals against the photos.
+async fn pantry_recon(report: &mut Report) -> Result<()> {
+    use base64::Engine as _;
+
+    struct NoFetch;
+    impl mise_assistant::fetch::Fetch for NoFetch {
+        async fn fetch(&mut self, url: &str) -> std::result::Result<String, String> {
+            Err(format!("no network in this scenario (asked for {url})"))
+        }
+    }
+
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/private");
+    let mut photos: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
+        .map(|entries| {
+            entries
+                .filter_map(|e| e.ok().map(|e| e.path()))
+                .filter(|p| {
+                    matches!(
+                        p.extension().and_then(|e| e.to_str()),
+                        Some("jpg" | "jpeg" | "png" | "webp")
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    photos.sort();
+    if photos.is_empty() {
+        println!("  (skipped: no photos in {} — drop shelf photos there to run this)", dir.display());
+        return Ok(());
+    }
+
+    for path in photos {
+        println!("  --- photo: {} ---", path.file_name().unwrap().to_string_lossy());
+        let media_type = match path.extension().and_then(|e| e.to_str()) {
+            Some("jpg" | "jpeg") => "image/jpeg",
+            Some("png") => "image/png",
+            _ => "image/webp",
+        };
+        let photo = mise_assistant::recon::Photo {
+            media_type: media_type.into(),
+            data: base64::engine::general_purpose::STANDARD.encode(std::fs::read(&path)?),
+        };
+
+        let tmp = tempfile::tempdir()?;
+        let mut store = seed(&tmp.path().join("corpus"))?;
+        let pantry_id = DocId::Pantry(slug("home"));
+        let before: mise_store::pages::PantryDoc = store.get(&pantry_id)?;
+        let (tools, reply, proposals) = chat_full(
+            &mut store,
+            &ThreadId::Page(pantry_id.clone()),
+            "Here's the pantry shelf — reconcile it against the page.",
+            NoFetch,
+            Some(&photo),
+        )
+        .await?;
+
+        report.check(
+            "proposed instead of editing (propose_pantry_diff, no pantry_set/remove)",
+            tools.iter().any(|t| t == "propose_pantry_diff")
+                && !tools.iter().any(|t| t == "pantry_set" || t == "pantry_remove"),
+        );
+        let after: mise_store::pages::PantryDoc = store.get(&pantry_id)?;
+        report.check("the photo touched nothing", after == before);
+        let lines: usize = proposals.iter().map(|p| p.lines.len()).sum();
+        report.check("at least one proposal line", lines > 0);
+        report.check("the reply summarizes the proposal", !reply.trim().is_empty());
+        for p in &proposals {
+            for l in &p.lines {
+                println!("    ⇒ {}: {} ({})", l.item, l.presence, l.reason);
+            }
+        }
+        println!("    ^ judge against the photo: misses, inventions, wrong presences.");
+    }
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<ExitCode> {
     let _ = dotenvy::dotenv();
     let requested: Vec<String> = std::env::args().skip(1).collect();
-    let all = ["plan-week", "pantry-in-passing", "debrief", "draft-from-url", "calculator-page"];
+    let all = [
+        "plan-week",
+        "pantry-in-passing",
+        "debrief",
+        "draft-from-url",
+        "calculator-page",
+        "pantry-recon",
+    ];
     let run_list: Vec<&str> = if requested.is_empty() {
         all.to_vec()
     } else {
@@ -376,6 +464,7 @@ async fn main() -> Result<ExitCode> {
             "debrief" => debrief(&mut report).await?,
             "draft-from-url" => draft_from_url(&mut report).await?,
             "calculator-page" => calculator_page(&mut report).await?,
+            "pantry-recon" => pantry_recon(&mut report).await?,
             _ => unreachable!(),
         }
     }
