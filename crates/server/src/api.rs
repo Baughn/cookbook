@@ -1,6 +1,9 @@
 //! The JSON API the web app consumes. Read views are the same structures
-//! the assistant's tools render from; mutations are revert-only — everything
-//! else edits through conversation (/chat) or the CLI.
+//! the assistant's tools render from. Mutations are revert plus a small
+//! allowlist of tap-shaped edits under `/api/edit/{action}` — each one
+//! *is* the corresponding assistant tool (same validation, same
+//! normalization, `ui:` provenance), so this never becomes a second
+//! editing surface with its own rules. Prose stays conversational.
 
 // Handlers speak the store's Result and map every error once in `fail`;
 // the Err size is the store's business, and none of this is hot.
@@ -217,6 +220,80 @@ pub(crate) async fn revert(
     match result {
         Ok(()) => Json(json!({"ok": true})).into_response(),
         Err(e) => fail(e),
+    }
+}
+
+/// Item-list edits the UI may make directly, each mapped to the assistant
+/// tool that implements it. Small, idempotent, timestamped at the edge —
+/// tap-shaped, so an offline queue can replay them later. Deliberately
+/// absent: anything with free text a conversation should own (recipe
+/// bodies, queue reasons, steering).
+const UI_ACTIONS: &[(&str, &str)] = &[
+    ("pantry-set", "pantry_set"),
+    ("pantry-remove", "pantry_remove"),
+    ("equipment-set", "equipment_set"),
+    ("equipment-remove", "equipment_remove"),
+    ("fridge-add", "fridge_add"),
+    ("fridge-remove", "fridge_remove"),
+    ("shopping-add", "shopping_add"),
+    ("shopping-update", "shopping_update"),
+];
+
+pub(crate) async fn edit(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<HashMap<String, String>>,
+    Path(action): Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    use mise_assistant::tools::{self, ToolCtx};
+    use mise_assistant::turn::ToolCall;
+
+    if !authorized(&state, &headers, &query) {
+        return unauthorized();
+    }
+    let (tool, input) = if action == "recipe-status" {
+        // recipe_edit, narrowed to the status field: only these two keys
+        // pass, so no payload can smuggle a body edit through.
+        #[derive(Deserialize)]
+        struct In {
+            slug: String,
+            status: String,
+        }
+        match serde_json::from_value::<In>(body) {
+            Ok(a) => ("recipe_edit", json!({"slug": a.slug, "status": a.status})),
+            Err(e) => {
+                return (StatusCode::BAD_REQUEST, Json(json!({"error": e.to_string()})))
+                    .into_response();
+            }
+        }
+    } else {
+        match UI_ACTIONS.iter().find(|(name, _)| *name == action) {
+            Some((_, tool)) => (*tool, body),
+            None => {
+                return fail(StoreError::NotFound(format!("edit action {action}")));
+            }
+        }
+    };
+
+    let mut store = state.store.lock().await;
+    let ctx = ToolCtx { now: Zoned::now(), provenance: "ui".into() };
+    let call = ToolCall { id: "ui".into(), name: tool.into(), input };
+    match tools::execute(&mut store, &ctx, &call) {
+        Ok(outcome) if outcome.is_error => {
+            (StatusCode::BAD_REQUEST, Json(json!({"error": outcome.content}))).into_response()
+        }
+        Ok(outcome) => {
+            if let Err(e) = store.export(&format!("ui: {}", outcome.content)) {
+                return fail(e);
+            }
+            Json(json!({"ok": true, "result": outcome.content})).into_response()
+        }
+        Err(mise_assistant::AssistantError::Store(e)) => fail(*e),
+        Err(e) => {
+            warn!("edit action failed: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
     }
 }
 

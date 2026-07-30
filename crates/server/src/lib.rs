@@ -73,6 +73,7 @@ pub fn app(state: AppState) -> Router {
         .route("/api/page/{*path}", get(api::page))
         .route("/api/history/{*doc}", get(api::history))
         .route("/api/revert", post(api::revert))
+        .route("/api/edit/{action}", post(api::edit))
         .route("/api/thread/{*thread}", get(api::thread));
     if let Some(dir) = &state.static_dir {
         // The SvelteKit build is a static SPA: unknown paths fall back to

@@ -207,3 +207,97 @@ async fn threads_and_auth() {
         .unwrap();
     assert!(resp.status().is_success());
 }
+
+async fn post_json(url: &str, body: Value) -> (u16, Value) {
+    let resp = reqwest::Client::new()
+        .post(url)
+        .bearer_auth(TOKEN)
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    let status = resp.status().as_u16();
+    (status, resp.json().await.unwrap_or(Value::Null))
+}
+
+/// The tap surface: each edit action is the corresponding assistant tool —
+/// same validation, `ui:` provenance in the history, export refreshed.
+#[tokio::test]
+async fn edit_actions_mutate_through_the_tool_layer() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = spawn(dir.path()).await;
+
+    // A missing wok blocks mapo-tofu; add it through the tap.
+    let (status, body) =
+        post_json(&format!("{url}/api/edit/equipment-set"), serde_json::json!({"item": "wok"}))
+            .await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["ok"], true);
+
+    let queue = get_json(&format!("{url}/api/queue")).await;
+    let verdict = &queue["entries"][0]["dishes"][0]["verdict"]["kind"];
+    assert_ne!(verdict, "missing-equipment", "the tap landed: {queue}");
+
+    // Pantry set with a bad presence bounces off the tool's validation.
+    let (status, body) = post_json(
+        &format!("{url}/api/edit/pantry-set"),
+        serde_json::json!({"item": "miso", "presence": "plenty"}),
+    )
+    .await;
+    assert_eq!(status, 400);
+    assert!(body["error"].as_str().unwrap().contains("presence"), "{body}");
+
+    // Provenance in the doc's history says ui, not chat.
+    let history = get_json(&format!("{url}/api/history/location/home/equipment")).await;
+    let messages: Vec<&str> =
+        history["changes"].as_array().unwrap().iter().map(|c| c["message"].as_str().unwrap()).collect();
+    assert!(messages.iter().any(|m| m.starts_with("ui: equipment home: set wok")), "{messages:?}");
+
+    // Unknown actions don't exist; no token, no edit.
+    let (status, _) =
+        post_json(&format!("{url}/api/edit/recipe-edit"), serde_json::json!({"slug": "x"})).await;
+    assert_eq!(status, 404);
+    let resp = reqwest::Client::new()
+        .post(format!("{url}/api/edit/equipment-set"))
+        .json(&serde_json::json!({"item": "wok"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 401);
+}
+
+/// recipe-status flips only the status: nothing else in the payload makes
+/// it through to the recipe.
+#[tokio::test]
+async fn recipe_status_narrows_to_the_status_field() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = spawn(dir.path()).await;
+
+    let (status, body) = post_json(
+        &format!("{url}/api/edit/recipe-status"),
+        serde_json::json!({
+            "slug": "mapo-tofu",
+            "status": "retired",
+            "title": "Hijacked",
+            "body": "Free-text through the back door."
+        }),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+
+    let page = get_json(&format!("{url}/api/page/recipes/mapo-tofu")).await;
+    let content = page["content"].as_str().unwrap();
+    assert!(content.contains("status: retired"), "{content}");
+    assert!(content.contains("# Mapo tofu"), "title untouched: {content}");
+    assert!(!content.contains("Hijacked"));
+    assert!(!content.contains("back door"));
+
+    // And a bad status is the tool's error, verbatim.
+    let (status, body) = post_json(
+        &format!("{url}/api/edit/recipe-status"),
+        serde_json::json!({"slug": "mapo-tofu", "status": "paused"}),
+    )
+    .await;
+    assert_eq!(status, 400);
+    assert!(body["error"].as_str().unwrap().contains("unknown recipe status"), "{body}");
+}
