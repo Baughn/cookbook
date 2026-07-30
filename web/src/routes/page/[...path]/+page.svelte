@@ -99,7 +99,10 @@
 	{/if}
 	{#if doc}
 		<hr />
-		<History {doc} onReverted={reload} />
+		<!-- Keyed on content: any edit on the page refreshes its history. -->
+		{#key content}
+			<History {doc} onReverted={reload} />
+		{/key}
 		<h3>Thread</h3>
 		<Thread thread={doc} onExchangeDone={reload} />
 	{/if}

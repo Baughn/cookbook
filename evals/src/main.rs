@@ -134,12 +134,22 @@ fn seed(root: &std::path::Path) -> Result<Store> {
 }
 
 async fn chat(store: &mut Store, thread: &ThreadId, message: &str) -> Result<Vec<String>> {
+    chat_with(store, thread, message, mise_assistant::fetch::HttpFetch::new()).await
+}
+
+/// Real model, chosen network: scenarios script the fetch so a fixture
+/// page stands in for the live web.
+async fn chat_with<F: mise_assistant::fetch::Fetch>(
+    store: &mut Store,
+    thread: &ThreadId,
+    message: &str,
+    mut fetcher: F,
+) -> Result<Vec<String>> {
     println!("\n>>> {message}\n");
     let mut client = AnthropicClient::new(
         std::env::var("ANTHROPIC_API_KEY").context("ANTHROPIC_API_KEY not set")?,
     );
     let mut clock = Zoned::now;
-    let mut fetcher = mise_assistant::fetch::HttpFetch::new();
     let exchange = run_exchange(&mut client, &mut fetcher, store, thread, message, &mut clock, &mut |e| {
         match e {
             ExchangeEvent::TextDelta(d) => print!("{d}"),
@@ -239,11 +249,62 @@ async fn debrief(report: &mut Report) -> Result<()> {
     Ok(())
 }
 
+/// A messy real-world-shaped page: no JSON-LD, the recipe buried under a
+/// life story. The extraction strips the chrome; the *model* must strip
+/// the narration and draft in house style — that's what's being judged.
+async fn draft_from_url(report: &mut Report) -> Result<()> {
+    struct FixtureFetch;
+    impl mise_assistant::fetch::Fetch for FixtureFetch {
+        async fn fetch(&mut self, _url: &str) -> std::result::Result<String, String> {
+            Ok(include_str!("../fixtures/tonkatsu.html").to_string())
+        }
+    }
+
+    let dir = tempfile::tempdir()?;
+    let mut store = seed(&dir.path().join("corpus"))?;
+    let seeded: Vec<String> =
+        store.list("recipe")?.iter().map(std::string::ToString::to_string).collect();
+    let tools = chat_with(
+        &mut store,
+        &ThreadId::Planning,
+        "Ran into this and want to keep it: \
+         https://grandmas-kitchen-stories.example/tonkatsu — add it to the cookbook.",
+        FixtureFetch,
+    )
+    .await?;
+
+    report.check("fetched the page", tools.iter().any(|t| t == "fetch_url"));
+    report.check("created a recipe", tools.iter().any(|t| t == "recipe_add"));
+    let new_ids: Vec<DocId> = store
+        .list("recipe")?
+        .into_iter()
+        .filter(|id| !seeded.contains(&id.to_string()))
+        .collect();
+    report.check("exactly one new recipe page", new_ids.len() == 1);
+    if let Some(id) = new_ids.first() {
+        let recipe: RecipeDoc = store.get(id)?;
+        report.check("nobody asked to cook it: status draft", recipe.status == "draft");
+        report.check("ingredients made it over", recipe.ingredients.len() >= 4);
+        report.check("a real method body", recipe.body.as_str().len() > 100);
+        let page = format!(
+            "{} {} {}",
+            recipe.title,
+            recipe.ingredients.iter().map(|i| i.text.clone()).collect::<Vec<_>>().join(" "),
+            recipe.body.as_str(),
+        );
+        report.check(
+            "the life story stayed on the blog",
+            !page.contains("Mrs. Tanaka") && !page.contains("rainy") && !page.contains("Osaka"),
+        );
+    }
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<ExitCode> {
     let _ = dotenvy::dotenv();
     let requested: Vec<String> = std::env::args().skip(1).collect();
-    let all = ["plan-week", "pantry-in-passing", "debrief"];
+    let all = ["plan-week", "pantry-in-passing", "debrief", "draft-from-url"];
     let run_list: Vec<&str> = if requested.is_empty() {
         all.to_vec()
     } else {
@@ -257,6 +318,7 @@ async fn main() -> Result<ExitCode> {
             "plan-week" => plan_week(&mut report).await?,
             "pantry-in-passing" => pantry_in_passing(&mut report).await?,
             "debrief" => debrief(&mut report).await?,
+            "draft-from-url" => draft_from_url(&mut report).await?,
             _ => unreachable!(),
         }
     }

@@ -12,38 +12,67 @@ import { fileURLToPath } from 'node:url';
 const repo = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const TOKEN = 'e2e-token-0123456789abcdef';
 
-// --- scripted model: first call queues dal, second call closes ---
+// --- scripted model, dispatching on the conversation itself ---
 const sse = (events) =>
 	events.map(([event, data]) => `event: ${event}\ndata: ${data}\n\n`).join('');
-let calls = 0;
+const toolTurn = (name, input) =>
+	sse([
+		['message_start', '{}'],
+		[
+			'content_block_start',
+			JSON.stringify({ content_block: { type: 'tool_use', id: 'c1', name } })
+		],
+		[
+			'content_block_delta',
+			JSON.stringify({ delta: { type: 'input_json_delta', partial_json: JSON.stringify(input) } })
+		],
+		['content_block_stop', '{}'],
+		['message_delta', '{"delta":{"stop_reason":"tool_use"}}'],
+		['message_stop', '{}']
+	]);
+const textTurn = (text) =>
+	sse([
+		['message_start', '{}'],
+		['content_block_start', '{"content_block":{"type":"text","text":""}}'],
+		['content_block_delta', JSON.stringify({ delta: { type: 'text_delta', text } })],
+		['content_block_stop', '{}'],
+		['message_delta', '{"delta":{"stop_reason":"end_turn"}}'],
+		['message_stop', '{}']
+	]);
+
 const fake = createServer((req, res) => {
-	res.setHeader('content-type', 'text/event-stream');
-	const first = calls++ === 0;
-	res.end(
-		first
-			? sse([
-					['message_start', '{}'],
-					[
-						'content_block_start',
-						'{"content_block":{"type":"tool_use","id":"c1","name":"queue_add"}}'
-					],
-					[
-						'content_block_delta',
-						'{"delta":{"type":"input_json_delta","partial_json":"{\\"title\\":\\"Dal\\",\\"reason\\":\\"cheap\\"}"}}'
-					],
-					['content_block_stop', '{}'],
-					['message_delta', '{"delta":{"stop_reason":"tool_use"}}'],
-					['message_stop', '{}']
-				])
-			: sse([
-					['message_start', '{}'],
-					['content_block_start', '{"content_block":{"type":"text","text":""}}'],
-					['content_block_delta', '{"delta":{"type":"text_delta","text":"Queued dal."}}'],
-					['content_block_stop', '{}'],
-					['message_delta', '{"delta":{"stop_reason":"end_turn"}}'],
-					['message_stop', '{}']
-				])
-	);
+	let body = '';
+	req.on('data', (chunk) => (body += chunk));
+	req.on('end', () => {
+		res.setHeader('content-type', 'text/event-stream');
+		const request = JSON.parse(body);
+		const last = request.messages.at(-1);
+		const blocks = Array.isArray(last.content) ? last.content : [];
+		const afterTools = blocks.some((b) => b.type === 'tool_result');
+		// Dispatch on the latest actual question — threads accumulate, so
+		// earlier questions must not leak into later exchanges.
+		const asked = request.messages
+			.filter((m) => m.role === 'user')
+			.flatMap((m) => (Array.isArray(m.content) ? m.content : [{ type: 'text', text: m.content }]))
+			.filter((b) => b.type === 'text')
+			.map((b) => b.text)
+			.at(-1) ?? '';
+		if (afterTools) {
+			res.end(textTurn(asked.includes('Draft a new recipe') ? 'Drafted tonkatsu.' : 'Queued dal.'));
+		} else if (asked.includes('Draft a new recipe')) {
+			res.end(
+				toolTurn('recipe_add', {
+					slug: 'tonkatsu',
+					title: 'Tonkatsu',
+					status: 'draft',
+					tags: { cuisine: 'japanese' },
+					body: 'Bread the pork. Fry it.'
+				})
+			);
+		} else {
+			res.end(toolTurn('queue_add', { title: 'Dal', reason: 'cheap' }));
+		}
+	});
 });
 await new Promise((resolve) => fake.listen(0, '127.0.0.1', resolve));
 const fakeUrl = `http://127.0.0.1:${fake.address().port}`;

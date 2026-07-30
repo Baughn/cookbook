@@ -1,6 +1,6 @@
 # Implementation plan
 
-*Last updated: 2026-07-30 (M4 complete; M5–M8 replanned). Companion to [design.md](design.md); this document
+*Last updated: 2026-07-30 (M5 complete). Companion to [design.md](design.md); this document
 covers the technical shape and build order. Decisions here resolve the "Open
 questions" section of the design doc.*
 
@@ -216,8 +216,10 @@ Settled 2026-07-30, after M4 (planning M5–M8):
 - **Header nav and a real cookbook page.** Persistent nav: Queue,
   Cookbook, the active location's standing pages (equipment, pantry).
   The cookbook page is the app's face — recipes by the browse axes, a
-  drafts shelf, a new-recipe flow that opens a page thread on a fresh
-  slug. The current everything-list survives as a debug corner.
+  drafts shelf, and a new-recipe box that asks the planning assistant
+  to draft (a page thread can't exist before its page does; the draft's
+  own thread takes over once it lands). The current everything-list
+  survives as a debug corner.
 - **Friends fork, they don't share.** Tenancy is one corpus per person:
   the NixOS module grows an `instances` attrset (own root, token, port,
   per-instance Anthropic key), Caddy routes per name, and "forking" is
@@ -228,6 +230,33 @@ Settled 2026-07-30, after M4 (planning M5–M8):
   part is offline data, and that work is cheapest once the client has
   stopped moving. Store mode ships online-first; offline + install
   becomes the closing milestone.
+
+Settled 2026-07-30, at M5 build:
+
+- **No status migration — the old shape is forever-readable.** The
+  recipe doc keeps `status` as a string; a tolerant field hydrator maps
+  the pre-enum shape (`retired` bool, no `status`) on read. That covers
+  current docs, *historical heads* (revert hydrates them), and changes
+  synced from old builds — a one-shot migration could fix none of those,
+  so none exists to go wrong. Reconcile always writes `status`.
+- **First-cook promotion lives in `Store::append_log`.** The signature
+  grew provenance + timestamp; no caller can log a cook and forget the
+  rule. The sync insert path doesn't promote — the origin device did,
+  and its doc change is in flight.
+- **`/api/edit/{action}` executes the assistant's own tools.** An
+  allowlist (pantry, equipment, fridge, shopping, recipe-status) maps
+  each action to the matching tool under `ui:` provenance — same
+  validation, same normalization, then an export. `recipe-status`
+  forwards only `slug` + `status`, so no payload smuggles free text.
+- **`/api/location` is the editors' read path.** Item editors consume
+  the structured active-location view; the markdown export is rendered,
+  linked, and never parsed by the app. Editors on a non-active
+  location's page stay hidden until the M7 location selector.
+- **`Fetch` is a seam like `Model`.** Drivers intercept `fetch_url` and
+  run it outside the store lock; tests and evals script the network
+  (the eval fixture is a life-story page with no JSON-LD). `HttpFetch`
+  re-validates every redirect hop: http(s) only, private addresses and
+  local hostnames refused, 20 s budget, 2 MB cap.
 
 ## Architecture
 
@@ -408,11 +437,11 @@ from the design doc, end to end in a browser.
 
 **M5 — Cookbook & direct hands.** Header nav (Queue, Cookbook, standing
 pages); the cookbook page (recipes by metadata axes, drafts shelf,
-new-recipe flow via a page thread on a fresh slug); recipe status enum +
-migration; typed tap-shaped mutation endpoints with in-place item editors
-on equipment/pantry/staples; `fetch_url` tool (JSON-LD → Readability →
-Markdown pipeline, fixture tests, messy-page drafting evals). Deliverable:
-draft a recipe from a URL, and fix the equipment list without opening a
+new-recipe box via the planning assistant); recipe status enum; typed
+tap-shaped mutation endpoints with in-place item editors on
+equipment/pantry; `fetch_url` tool (JSON-LD → Readability → Markdown
+pipeline, fixture tests, messy-page drafting evals). Deliverable: draft a
+recipe from a URL, and fix the equipment list without opening a
 conversation.
 
 **M6 — Store mode, online-first.** Tiered shopping list with
