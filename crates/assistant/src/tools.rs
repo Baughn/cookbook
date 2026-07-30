@@ -254,6 +254,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
                     "status": s("draft or active. Default active. Use draft for a recipe \
                                  nobody asked to cook yet — a URL worth keeping, an idea to \
                                  flesh out; the first logged cook promotes it."),
+                    "source": s("Where it came from: the URL you drafted it from, if any."),
                 }),
                 &["slug", "title"],
             ),
@@ -277,6 +278,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
                     "ingredients": ingredients_schema(),
                     "body": s("Replacement method body, markdown."),
                     "status": s("draft, active, or retired."),
+                    "source": s("Set (or replace) the URL the recipe came from."),
                 }),
                 &["slug"],
             ),
@@ -676,6 +678,7 @@ fn recipe_add(store: &mut Store, ctx: &ToolCtx, input: &Value) -> ToolResult {
         ingredients: Vec<IngredientIn>,
         body: Option<String>,
         status: Option<String>,
+        source: Option<String>,
     }
     let a: In = parse(input)?;
     let s = slug(&a.slug)?;
@@ -697,6 +700,7 @@ fn recipe_add(store: &mut Store, ctx: &ToolCtx, input: &Value) -> ToolResult {
         tags: clean_tags(a.tags)?,
         equipment: clean_equipment(a.equipment)?,
         ingredients: clean_ingredients(a.ingredients)?,
+        source: a.source.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(String::from),
         status,
         body: a.body.as_deref().unwrap_or("").trim().into(),
     };
@@ -739,6 +743,7 @@ fn recipe_edit(store: &mut Store, ctx: &ToolCtx, input: &Value) -> ToolResult {
         ingredients: Option<Vec<IngredientIn>>,
         body: Option<String>,
         status: Option<String>,
+        source: Option<String>,
     }
     let a: In = parse(input)?;
     let s = slug(&a.slug)?;
@@ -786,6 +791,10 @@ fn recipe_edit(store: &mut Store, ctx: &ToolCtx, input: &Value) -> ToolResult {
             }
             if let Some(st) = status {
                 r.status = st;
+            }
+            if let Some(src) = &a.source {
+                let src = src.trim();
+                r.source = (!src.is_empty()).then(|| src.to_string());
             }
         })
         .map_err(Fail::from)?;

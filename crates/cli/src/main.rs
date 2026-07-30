@@ -578,6 +578,7 @@ fn run_recipe(store: &mut Store, cmd: RecipeCmd, at: jiff::Timestamp) -> Result<
                 tags: parse_tags(&tags)?,
                 equipment,
                 ingredients: vec![],
+                source: None,
                 status: "active".into(),
                 body: body_text.as_str().into(),
             };

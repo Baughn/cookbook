@@ -26,7 +26,14 @@
 {#if parts.meta.length > 0}
 	<p class="frontmatter">
 		{#each parts.meta as [key, value] (key)}
-			<small><b>{key}</b> {value}&ensp;</small>
+			<small>
+				<b>{key}</b>
+				{#if value.startsWith('http://') || value.startsWith('https://')}
+					<a href={value} rel="noreferrer external">{value}</a>
+				{:else}
+					{value}
+				{/if}&ensp;
+			</small>
 		{/each}
 	</p>
 {/if}

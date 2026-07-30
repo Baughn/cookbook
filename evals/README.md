@@ -17,8 +17,10 @@ prints the transcript plus a checklist: the mechanical parts (did it look
 before proposing? did the queue/pantry/log actually change?) are scored
 automatically; tone and judgment are yours to read.
 
-Scenarios: `plan-week`, `pantry-in-passing`, `debrief`, `draft-from-url`.
-The last one scripts the network with `fixtures/tonkatsu.html` — a
-life-story-heavy page with no recipe JSON-LD — and checks the drafted
-recipe kept the substance (draft status, ingredients, method) and left
-the narration on the blog.
+Scenarios: `plan-week`, `pantry-in-passing`, `debrief`, `draft-from-url`,
+`calculator-page`. The URL scenarios script the network with fixture
+pages: `tonkatsu.html` (life-story-heavy, no JSON-LD — the draft must
+keep the substance, record the source URL, and leave the narration on
+the blog) and `pancake-calculator.html` (quantities computed
+client-side and absent from the fetch — the assistant must ask instead
+of inventing numbers).

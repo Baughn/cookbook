@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <title>The Pancake Calculator | Absurdly Optimized</title>
+  <meta name="description" content="Dial in tang, fluff, and hurry; we compute the batter.">
+</head>
+<body>
+  <nav><a href="/">Home</a> <a href="/recipes">Recipes</a> <a href="/method">Methodology</a></nav>
+  <article>
+    <h1>The Pancake Calculator</h1>
+    <p>Most pancake recipes are a single point in a five-dimensional space.
+    This page is the whole space. Tell it what dairy you have and how you
+    like your pancakes, and it computes the batter: the acid–base pairing,
+    the hydration, the rest time. The sliders below drive every quantity
+    on this page.</p>
+
+    <form class="calculator">
+      <fieldset>
+        <legend>What's in your fridge?</legend>
+        <label><input type="checkbox" checked> plain yogurt</label>
+        <label><input type="checkbox" checked> milk</label>
+        <label><input type="checkbox"> buttermilk</label>
+        <label><input type="checkbox" checked> lemon</label>
+      </fieldset>
+      <label>Eggs on hand <input type="number" value="3"></label>
+      <label>Tang <input type="range" min="1" max="5" value="4"></label>
+      <label>Fluff <input type="range" min="1" max="5" value="5"></label>
+      <label><input type="checkbox" checked> In a hurry (skip the rest)</label>
+    </form>
+
+    <h2>Your batter</h2>
+    <p class="computed">Quantities appear here once the calculator runs.
+    (JavaScript required — the numbers on this page are computed, not
+    written.)</p>
+    <ul>
+      <li>flour — <span class="js-amount">…</span></li>
+      <li>yogurt + milk — <span class="js-amount">…</span></li>
+      <li>eggs — <span class="js-amount">…</span></li>
+      <li>baking soda — <span class="js-amount">…</span> (paired to your tang setting)</li>
+      <li>baking powder — <span class="js-amount">…</span></li>
+      <li>salt, butter for the pan</li>
+    </ul>
+
+    <h2>Method</h2>
+    <ol>
+      <li>Whisk the dry ingredients (amounts above) in a large bowl.</li>
+      <li>Whisk the dairy blend, eggs, and melted butter in another.</li>
+      <li>Fold together until just combined — your fluff setting assumes
+      visible streaks of flour remain.</li>
+      <li>Rest the batter for the time shown above, unless you told us
+      you're in a hurry.</li>
+      <li>Cook on a medium griddle until bubbles set; flip once.</li>
+    </ol>
+
+    <p>Why does tang change the soda? See the <a href="/method">methodology
+    page</a> for the acid budget — the short version is that yogurt and
+    lemon both spend soda, and the calculator balances the books so your
+    pancakes rise instead of tasting soapy.</p>
+  </article>
+  <footer>© Absurdly Optimized.</footer>
+</body>
+</html>

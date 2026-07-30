@@ -114,6 +114,7 @@ fn offline_edits_converge_and_resync_is_idempotent() {
             tags: BTreeMap::from([("protein".to_string(), "duck".to_string())]),
             equipment: vec![],
             ingredients: vec![],
+            source: None,
             status: "active".into(),
             body: "Brown the legs.".into(),
         },

@@ -116,7 +116,9 @@ Each recipe is a living page:
   next time you open it, the tamari substitution and the "reduce longer" note
   are simply part of the recipe, with the change history available if you want
   to see what the original said.
-- Links: techniques used, plausible variations, related recipes.
+- Links: techniques used, plausible variations, related recipes — and,
+  when the recipe was drafted from somewhere, its source URL. A page
+  that used a source says so.
 - Its own persistent thread, for deep dives: scaling questions, "could this
   work with tofu", "why did step 4 fail".
 

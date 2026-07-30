@@ -318,6 +318,9 @@ fn recipe_page(r: &RecipeDoc) -> String {
     if !r.equipment.is_empty() {
         pairs.push(("equipment", r.equipment.iter().map(|e| esc(e)).collect::<Vec<_>>().join(",")));
     }
+    if let Some(source) = &r.source {
+        pairs.push(("source", esc(source)));
+    }
     pairs.push(("status", r.status.to_string()));
 
     let mut out = String::new();

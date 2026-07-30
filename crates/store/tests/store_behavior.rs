@@ -136,6 +136,7 @@ fn every_doc_id_export_path_exists_in_the_render() {
                 tags: Default::default(),
                 equipment: vec![],
                 ingredients: vec![],
+                source: None,
                 status: "active".into(),
                 body: "".into(),
             },
@@ -197,6 +198,7 @@ fn recipe_with_body(root: &std::path::Path, body: &str) -> Store {
                 tags: Default::default(),
                 equipment: vec![],
                 ingredients: vec![],
+                source: None,
                 status: "active".into(),
                 body: body.into(),
             },
@@ -405,6 +407,7 @@ fn first_cook_promotes_a_draft_and_only_a_draft() {
         tags: BTreeMap::new(),
         equipment: vec![],
         ingredients: vec![],
+        source: None,
         status: status.into(),
         body: "Cook.".into(),
     };

@@ -290,6 +290,10 @@ pub struct RecipeDoc {
     /// Required equipment slugs, in page order.
     pub equipment: Vec<String>,
     pub ingredients: Vec<IngredientDoc>,
+    /// Where it came from, when it came from somewhere: the URL the page
+    /// was drafted from. References render in the export; a page that
+    /// used a source and doesn't say so is lying by omission.
+    pub source: Option<String>,
     /// "draft" | "active" | "retired".
     pub status: String,
     /// The method, written for the primary kitchen.
@@ -306,6 +310,7 @@ impl PartialEq for RecipeDoc {
             && self.tags == other.tags
             && self.equipment == other.equipment
             && self.ingredients == other.ingredients
+            && self.source == other.source
             && self.status == other.status
             && self.body.as_str() == other.body.as_str()
     }

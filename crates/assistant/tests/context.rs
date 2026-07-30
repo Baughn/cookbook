@@ -60,6 +60,7 @@ fn page_threads_carry_their_page() {
                 tags: Default::default(),
                 equipment: vec![],
                 ingredients: vec![],
+                source: None,
                 status: "active".into(),
                 body: "Fry the paste.".into(),
             },

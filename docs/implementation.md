@@ -257,6 +257,13 @@ Settled 2026-07-30, at M5 build:
   (the eval fixture is a life-story page with no JSON-LD). `HttpFetch`
   re-validates every redirect hop: http(s) only, private addresses and
   local hostnames refused, 20 s budget, 2 MB cap.
+- **Drafted-from-somewhere is structural.** `RecipeDoc.source` holds
+  the URL a page was drafted from; the export renders it in
+  frontmatter, the web app links it. And when a fetch returns a
+  recipe's shape without its substance (a client-side calculator, a
+  paywall), the prompt says ask, don't invent — the gap goes in the
+  reply as a question, never in the page as a caveat. Both are evals
+  (`draft-from-url`, `calculator-page`).
 
 ## Architecture
 
