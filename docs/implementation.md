@@ -233,12 +233,12 @@ Settled 2026-07-30, after M4 (planning M5–M8):
 
 Settled 2026-07-30, at M5 build:
 
-- **No status migration — the old shape is forever-readable.** The
-  recipe doc keeps `status` as a string; a tolerant field hydrator maps
-  the pre-enum shape (`retired` bool, no `status`) on read. That covers
-  current docs, *historical heads* (revert hydrates them), and changes
-  synced from old builds — a one-shot migration could fix none of those,
-  so none exists to go wrong. Reconcile always writes `status`.
+- **No status migration, no compat shim.** The status enum replaced the
+  `retired` bool before any corpus existed outside development, so the
+  pre-enum doc shape simply never shipped: no migrator, no tolerant
+  hydrator, nothing to go wrong. (Post-deployment schema changes will
+  need the tolerant-hydrate treatment — revert hydrates *historical*
+  doc states, which a one-shot migration can never fix.)
 - **First-cook promotion lives in `Store::append_log`.** The signature
   grew provenance + timestamp; no caller can log a cook and forget the
   rule. The sync insert path doesn't promote — the origin device did,
