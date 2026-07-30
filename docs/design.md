@@ -263,7 +263,16 @@ editable, revertible.
 
 ## The conversation model
 
-Two layers, one shared world:
+Two layers, one shared world — plus one standing side table:
+
+### The drafting table
+
+Where recipes are negotiated into existence: the cookbook's new-recipe
+box. A URL or a description goes in; a draft page comes out — or a
+question, when the substance needs the cook's input first. Its own
+persistent thread (`threads/drafting`), so planning stays planning and a
+half-finished negotiation survives a page reload; once the draft exists,
+its page thread takes over.
 
 ### The planning assistant (global)
 

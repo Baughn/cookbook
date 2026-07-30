@@ -49,17 +49,12 @@ const fake = createServer((req, res) => {
 		const last = request.messages.at(-1);
 		const blocks = Array.isArray(last.content) ? last.content : [];
 		const afterTools = blocks.some((b) => b.type === 'tool_result');
-		// Dispatch on the latest actual question — threads accumulate, so
-		// earlier questions must not leak into later exchanges.
-		const asked = request.messages
-			.filter((m) => m.role === 'user')
-			.flatMap((m) => (Array.isArray(m.content) ? m.content : [{ type: 'text', text: m.content }]))
-			.filter((b) => b.type === 'text')
-			.map((b) => b.text)
-			.at(-1) ?? '';
+		// The drafting thread and the planning thread get different scripts;
+		// the system prompt says which table we're at.
+		const drafting = JSON.stringify(request.system ?? '').includes('drafting table');
 		if (afterTools) {
-			res.end(textTurn(asked.includes('Draft a new recipe') ? 'Drafted tonkatsu.' : 'Queued dal.'));
-		} else if (asked.includes('Draft a new recipe')) {
+			res.end(textTurn(drafting ? 'Drafted tonkatsu.' : 'Queued dal.'));
+		} else if (drafting) {
 			res.end(
 				toolTurn('recipe_add', {
 					slug: 'tonkatsu',

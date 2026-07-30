@@ -24,12 +24,22 @@ test('cookbook: drafts land on the shelf, first tap promotes', async ({ page }) 
 	// Ask for a draft; the scripted model recipe_adds tonkatsu as draft.
 	await page.getByPlaceholder('Describe a dish', { exact: false }).fill('tonkatsu, from that video');
 	await page.getByRole('button', { name: 'Draft' }).click();
+	// The reply stays on screen — an exchange that ends with a question
+	// must not vanish — and the fresh draft is linked from the box.
+	await expect(page.getByText('Drafted tonkatsu.')).toBeVisible();
 	await expect(page.getByRole('heading', { name: 'Drafts' })).toBeVisible();
-	const draftLink = page.getByRole('link', { name: 'Tonkatsu' });
+	const draftLink = page.getByRole('link', { name: 'Tonkatsu', exact: true }).first();
 	await expect(draftLink).toBeVisible();
 
+	// The conversation lives on the drafting thread; planning stays clean.
+	await page.goto('/page/threads/drafting');
+	await expect(page.getByText('tonkatsu, from that video')).toBeVisible();
+	await page.goto('/');
+	await expect(page.getByText('tonkatsu, from that video')).not.toBeVisible();
+
 	// The draft's page carries status taps; promoting moves it up.
-	await draftLink.click();
+	await page.goto('/cookbook');
+	await page.getByRole('link', { name: 'Tonkatsu', exact: true }).first().click();
 	await expect(page.getByRole('heading', { name: 'Tonkatsu', exact: true })).toBeVisible();
 	const statusGroup = page.getByRole('group', { name: 'recipe status' });
 	await expect(statusGroup.getByRole('button', { name: 'draft' })).toBeVisible();

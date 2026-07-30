@@ -51,7 +51,7 @@ async fn exchange(
 
     let message = request.message.trim().to_string();
     let thread = match &request.page {
-        Some(p) => ThreadId::Page(mise_store::DocId::parse(p)?),
+        Some(p) => mise_store::ThreadId::parse(p)?,
         None => ThreadId::Planning,
     };
 

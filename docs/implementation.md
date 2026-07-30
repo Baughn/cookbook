@@ -216,9 +216,12 @@ Settled 2026-07-30, after M4 (planning M5–M8):
 - **Header nav and a real cookbook page.** Persistent nav: Queue,
   Cookbook, the active location's standing pages (equipment, pantry).
   The cookbook page is the app's face — recipes by the browse axes, a
-  drafts shelf, and a new-recipe box that asks the planning assistant
-  to draft (a page thread can't exist before its page does; the draft's
-  own thread takes over once it lands). The current everything-list
+  drafts shelf, and a new-recipe box on its own **drafting thread**
+  (`ThreadId::Drafting`): a page thread can't exist before its page
+  does, and planning shouldn't collect drafting chatter. The box shows
+  the current session (a reply that ends in a question stays on
+  screen), links fresh drafts, and the full transcript exports to
+  threads/drafting.md like any thread. The current everything-list
   survives as a debug corner.
 - **Friends fork, they don't share.** Tenancy is one corpus per person:
   the NixOS module grows an `instances` attrset (own root, token, port,
@@ -444,7 +447,7 @@ from the design doc, end to end in a browser.
 
 **M5 — Cookbook & direct hands.** Header nav (Queue, Cookbook, standing
 pages); the cookbook page (recipes by metadata axes, drafts shelf,
-new-recipe box via the planning assistant); recipe status enum; typed
+new-recipe box on the drafting thread); recipe status enum; typed
 tap-shaped mutation endpoints with in-place item editors on
 equipment/pantry; `fetch_url` tool (JSON-LD → Readability → Markdown
 pipeline, fixture tests, messy-page drafting evals). Deliverable: draft a

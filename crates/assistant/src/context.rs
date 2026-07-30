@@ -55,6 +55,14 @@ with one-line reasoning each. Land what's accepted on the queue \
 (queue_add, with the reason) and put what's missing on the shopping list \
 by source tier. Dishes with lead time need their act-now step called out.";
 
+const DRAFTING: &str = "\
+This is the drafting table: the cookbook's new-recipe box talks here. \
+The user brings a URL or a description; draft the page (recipe_add — \
+status draft, source recorded when there is one) in the cookbook's own \
+voice, then point at it. Anything that must be answered before the page \
+can be honest gets asked here first. Parking an idea on the someday \
+shelf is fine; the weekly queue belongs to the planning thread.";
+
 const PAGE: &str = "\
 This is the thread of one page (shown under \"This page\" below); keep the \
 conversation close to it. After a cook, debrief: fold durable lessons into \
@@ -78,6 +86,7 @@ pub fn assemble(
     system.push_str("\n\n");
     system.push_str(match thread {
         ThreadId::Planning => PLANNING,
+        ThreadId::Drafting => DRAFTING,
         ThreadId::Page(_) => PAGE,
     });
     system.push_str("\n\n## The corpus now\n");
@@ -109,6 +118,7 @@ pub fn assemble(
 pub fn provenance(thread: &ThreadId) -> String {
     match thread {
         ThreadId::Planning => "planning thread".to_string(),
+        ThreadId::Drafting => "drafting thread".to_string(),
         ThreadId::Page(id) => format!("thread {id}"),
     }
 }

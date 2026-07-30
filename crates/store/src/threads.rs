@@ -17,12 +17,15 @@ use serde::{Deserialize, Serialize};
 use crate::docid::DocId;
 use crate::error::StoreError;
 
-/// Identity of one thread: the global planning assistant, or a page thread.
-/// The string form doubles as the SQLite key and the export path under
-/// `threads/`: `planning`, `recipe/mapo-tofu`, `location/home/pantry`.
+/// Identity of one thread: the global planning assistant, the drafting
+/// table (recipes negotiated into existence before their page exists —
+/// a page thread can't precede its page), or a page thread. The string
+/// form doubles as the SQLite key and the export path under `threads/`:
+/// `planning`, `drafting`, `recipe/mapo-tofu`, `location/home/pantry`.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ThreadId {
     Planning,
+    Drafting,
     Page(DocId),
 }
 
@@ -30,6 +33,7 @@ impl ThreadId {
     pub fn parse(s: &str) -> Result<ThreadId, StoreError> {
         match s {
             "planning" => Ok(ThreadId::Planning),
+            "drafting" => Ok(ThreadId::Drafting),
             other => Ok(ThreadId::Page(DocId::parse(other)?)),
         }
     }
@@ -39,6 +43,7 @@ impl fmt::Display for ThreadId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ThreadId::Planning => write!(f, "planning"),
+            ThreadId::Drafting => write!(f, "drafting"),
             ThreadId::Page(id) => write!(f, "{id}"),
         }
     }

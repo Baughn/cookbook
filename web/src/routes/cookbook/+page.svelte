@@ -6,12 +6,15 @@
 	let error: string | null = $state(null);
 	let filter: string | null = $state(null);
 
-	// The new-recipe flow speaks to the planning thread; once the draft
-	// page exists, its own thread takes over.
+	// The new-recipe box speaks to the drafting thread — planning stays
+	// planning. This shows only the current session; the full transcript
+	// lives at threads/drafting like any other thread.
 	let draft = $state('');
 	let busy = $state(false);
 	let streaming = $state('');
 	let toolNotes: string[] = $state([]);
+	let session: { role: 'user' | 'assistant'; content: string }[] = $state([]);
+	let newDrafts: PageInfo[] = $state([]);
 
 	async function reload() {
 		pages = (await api.pages()).pages;
@@ -36,19 +39,26 @@
 		error = null;
 		streaming = '';
 		toolNotes = [];
+		session = [...session, { role: 'user', content: what }];
+		const before = new Set(pages.map((p) => p.path));
 		try {
-			await chat(`Draft a new recipe for the cookbook: ${what}`, null, {
+			await chat(what, 'drafting', {
 				onDelta: (text) => (streaming += text),
 				onTool: (name) => (toolNotes = [...toolNotes, name]),
-				onDone: () => {},
+				onDone: (reply) => {
+					if (reply) session = [...session, { role: 'assistant', content: reply }];
+				},
 				onError: (message) => (error = message)
 			});
 			draft = '';
 			await reload();
+			newDrafts = pages.filter((p) => p.path.startsWith('recipes/') && !before.has(p.path));
 		} catch (e) {
 			error = String(e);
 		} finally {
 			busy = false;
+			streaming = '';
+			toolNotes = [];
 		}
 	}
 
@@ -126,25 +136,47 @@
 {/if}
 
 <h3>New recipe</h3>
-<form onsubmit={draftRecipe}>
-	<div role="group">
-		<input
-			type="text"
-			placeholder="Describe a dish, or paste a URL…"
-			bind:value={draft}
-			disabled={busy}
-		/>
-		<button type="submit" disabled={busy}>Draft</button>
-	</div>
-</form>
-{#if busy}
-	<article aria-busy="true">
-		{#each toolNotes as note, i (i)}
-			<small>⚙ {note}</small><br />
-		{/each}
-		<p style="white-space: pre-wrap">{streaming}</p>
-	</article>
-{/if}
+<section aria-label="drafting">
+	{#each session as turn, i (i)}
+		<article class={turn.role}>
+			<header><small>{turn.role}</small></header>
+			<p style="white-space: pre-wrap">{turn.content}</p>
+		</article>
+	{/each}
+	{#if busy}
+		<article class="assistant" aria-busy="true">
+			{#each toolNotes as note, i (i)}
+				<small>⚙ {note}</small><br />
+			{/each}
+			<p style="white-space: pre-wrap">{streaming}</p>
+		</article>
+	{/if}
+	{#if newDrafts.length > 0}
+		<p>
+			{#each newDrafts as d (d.path)}
+				→ <a href={link(d)}><b>{d.title ?? d.path}</b></a>&ensp;
+			{/each}
+		</p>
+	{/if}
+	<form onsubmit={draftRecipe}>
+		<div role="group">
+			<input
+				type="text"
+				placeholder={session.length === 0 ? 'Describe a dish, or paste a URL…' : 'Answer, or refine…'}
+				bind:value={draft}
+				disabled={busy}
+			/>
+			<button type="submit" disabled={busy}>Draft</button>
+		</div>
+	</form>
+	<p><small><a href="/page/threads/drafting">Past drafting conversations</a></small></p>
+</section>
+
+<style>
+	article.user {
+		margin-left: 2rem;
+	}
+</style>
 
 {#if techniques.length > 0}
 	<h3>Techniques</h3>

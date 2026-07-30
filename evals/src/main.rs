@@ -269,7 +269,7 @@ async fn draft_from_url(report: &mut Report) -> Result<()> {
     let url = "https://grandmas-kitchen-stories.example/tonkatsu";
     let (tools, _) = chat_with(
         &mut store,
-        &ThreadId::Planning,
+        &ThreadId::Drafting,
         &format!("Ran into this and want to keep it: {url} — add it to the cookbook."),
         FixtureFetch,
     )
@@ -320,7 +320,7 @@ async fn calculator_page(report: &mut Report) -> Result<()> {
     let seeded = store.list("recipe")?.len();
     let (tools, reply) = chat_with(
         &mut store,
-        &ThreadId::Planning,
+        &ThreadId::Drafting,
         "Keep this one: https://absurdly-optimized.example/pancakes?tang=4&fluff=5 \
          — add it to the cookbook.",
         FixtureFetch,
@@ -332,7 +332,13 @@ async fn calculator_page(report: &mut Report) -> Result<()> {
         "did not invent a recipe from a quantity-less page",
         !tools.iter().any(|t| t == "recipe_add") && store.list("recipe")?.len() == seeded,
     );
-    report.check("came back with a question", reply.contains('?'));
+    // Whether the ask reads as a question or an imperative ("read me the
+    // list") is human judgment; mechanically we check the reply put the
+    // gap in front of the user at all.
+    let named_the_gap = ["amount", "quantit", "number", "slider"]
+        .iter()
+        .any(|w| reply.to_lowercase().contains(w));
+    report.check("named the missing quantities in the reply", named_the_gap);
     Ok(())
 }
 

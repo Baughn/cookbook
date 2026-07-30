@@ -499,7 +499,7 @@ fn run_chat(
 
     let message = must_trim(&message, "message")?;
     let thread = match &page {
-        Some(p) => ThreadId::Page(DocId::parse(p).map_err(|e| anyhow::Error::msg(e.to_string()))?),
+        Some(p) => ThreadId::parse(p).map_err(|e| anyhow::Error::msg(e.to_string()))?,
         None => ThreadId::Planning,
     };
     if let ThreadId::Page(id) = &thread
