@@ -1,6 +1,6 @@
 # Implementation plan
 
-*Last updated: 2026-07-30 (M4 complete). Companion to [design.md](design.md); this document
+*Last updated: 2026-07-30 (M4 complete; M5–M8 replanned). Companion to [design.md](design.md); this document
 covers the technical shape and build order. Decisions here resolve the "Open
 questions" section of the design doc.*
 
@@ -192,6 +192,43 @@ Settled 2026-07-30, at M4 build start:
   the NixOS module serves it by default (`services.mise.webApp`, null for
   sync/API-only); `nodejs_24` joins the devshell.
 
+Settled 2026-07-30, after M4 (planning M5–M8):
+
+- **Typed mutations narrow — not reverse — "not a second editing
+  surface."** Direct edits in the UI are a design promise (update path
+  #4); they arrive as a small set of typed endpoints calling exactly the
+  store operations the assistant's tools and CLI already use — add/remove
+  an equipment item, set a pantry entry, check off a list item. No
+  free-text document PUT; prose bodies stay conversational. Endpoints
+  are *tap-shaped* — small, idempotent, timestamped ops — so the M8
+  offline queue is a replay buffer, not a rewrite.
+- **Recipe status is an enum.** `draft` / `active` / `retired` replaces
+  the retired flag. Drafts (curiosity, a URL worth keeping) show on the
+  cookbook's drafts shelf but stay out of steering rotation until a
+  first cook promotes them.
+- **`fetch_url` tool.** One deliberate URL at a time — the bulk-import
+  non-goal stands. Server-side pipeline: schema.org `Recipe` JSON-LD
+  when present (most recipe sites; exact ingredients/steps, zero life
+  story), else Readability extraction (`dom_smoothie`) rendered to
+  Markdown (`htmd`). Size cap, timeout, http(s) only, private ranges
+  blocked. The pipeline is deterministic — fixture-HTML tests in the
+  suite; draft quality from messy pages is an eval.
+- **Header nav and a real cookbook page.** Persistent nav: Queue,
+  Cookbook, the active location's standing pages (equipment, pantry).
+  The cookbook page is the app's face — recipes by the browse axes, a
+  drafts shelf, a new-recipe flow that opens a page thread on a fresh
+  slug. The current everything-list survives as a debug corner.
+- **Friends fork, they don't share.** Tenancy is one corpus per person:
+  the NixOS module grows an `instances` attrset (own root, token, port,
+  per-instance Anthropic key), Caddy routes per name, and "forking" is
+  copying a corpus or `--init`. No app code — every corpus stays
+  single-user, so the multi-user non-goal survives untouched. Built when
+  the first friend asks, not before.
+- **PWA lands last.** The install shell is trivial; the pride-worthy
+  part is offline data, and that work is cheapest once the client has
+  stopped moving. Store mode ships online-first; offline + install
+  becomes the closing milestone.
+
 ## Architecture
 
 ```
@@ -369,18 +406,30 @@ warning), recipe/technique/pantry pages with recent-changes + revert, thread
 UI with streaming, browse by metadata. Deliverable: the planning-session flow
 from the design doc, end to end in a browser.
 
-**M5 — Store mode.** PWA install + service worker + IndexedDB, tiered
-shopping list with bought/unfindable taps, offline queue-and-sync, photo
-capture → recon diff, terse store-mode assistant surface. Deliverable: the
-store flow, airplane-mode test included.
+**M5 — Cookbook & direct hands.** Header nav (Queue, Cookbook, standing
+pages); the cookbook page (recipes by metadata axes, drafts shelf,
+new-recipe flow via a page thread on a fresh slug); recipe status enum +
+migration; typed tap-shaped mutation endpoints with in-place item editors
+on equipment/pantry/staples; `fetch_url` tool (JSON-LD → Readability →
+Markdown pipeline, fixture tests, messy-page drafting evals). Deliverable:
+draft a recipe from a URL, and fix the equipment list without opening a
+conversation.
 
-**M6 — Locations & trip prep.** Location selector (sticky, confirmed),
+**M6 — Store mode, online-first.** Tiered shopping list with
+bought/unfindable taps, photo capture → recon diff, terse store-mode
+assistant surface. Deliverable: the store flow, with connectivity.
+
+**M7 — Locations & trip prep.** Location selector (sticky, confirmed),
 per-location readiness/coverage, bring-from-home packing list, arrival
 photo-recon ritual, confidence decay for secondary locations. Deliverable:
 the cottage flow.
 
+**M8 — Offline & install.** PWA manifest + service worker + IndexedDB,
+offline tap queue replaying through sync, install polish. Deliverable: the
+store flow again, airplane mode included.
+
 First-run bootstrapping (seeding from project.txt, photo recon of shelves)
-is M3+M5 machinery pointed at an empty corpus — it needs no dedicated
+is M3+M6 machinery pointed at an empty corpus — it needs no dedicated
 milestone, just a first-run path in the assistant prompt.
 
 ## Risks / watch items

@@ -1,7 +1,7 @@
 # Design: a living cookbook & meal planner
 
 *Working title: **Mise** (as in mise en place — placeholder, rename freely).*
-*Last updated: 2026-07-29. This document covers UX and features, not implementation.*
+*Last updated: 2026-07-30. This document covers UX and features, not implementation.*
 
 ## Vision
 
@@ -120,14 +120,17 @@ Each recipe is a living page:
 - Its own persistent thread, for deep dives: scaling questions, "could this
   work with tofu", "why did step 4 fail".
 
-Recipes enter the cookbook when a queue idea gets fleshed out, or when a cook
-happens — not by bulk import. The cookbook is *what I make*, not *all recipes
-that exist*. One-off experiments that flopped stay in the log but don't clutter
-the cookbook.
+Recipes enter the cookbook when a queue idea gets fleshed out, when a cook
+happens, or as a **draft** — out of curiosity, or from a URL you deliberately
+handed the assistant — never by bulk import. The cookbook is *what I make*,
+not *all recipes that exist*: drafts sit on their own shelf, out of steering's
+rotation, until a first cook promotes them. One-off experiments that flopped
+stay in the log but don't clutter the cookbook.
 
 Repertoire also shrinks. A recipe you've gone off can be **retired**: out of
 steering's rotation and the browse surface, but never deleted — the history
-and lessons keep their value, and un-retiring is one edit.
+and lessons keep their value, and un-retiring is one edit. Draft, active,
+retired: one status field, and moving between them is one edit.
 
 The cookbook is human-browsable, not only assistant-mediated: by cuisine,
 protein, format, effort class — conveniently the same metadata the steering
@@ -401,9 +404,14 @@ guilt UI.
 - **Standalone rating system.** Verdicts live in debriefs and the log, not a
   star widget.
 - **Bulk recipe import / web clipper.** The cookbook grows by cooking.
+  Handing the assistant one URL you chose is a different thing — it drafts
+  the page in house style, life story omitted; what's excluded is wholesale
+  clipping.
 - **Multi-user support.** Cooking for one (guests are a conversation, not a
   feature). A location may carry "usually cooking for 2 here" as a standing
-  fact — that's a property of the place, not a second user account.
+  fact — that's a property of the place, not a second user account. Friends
+  who want the app get their own corpus — forked or fresh, never shared
+  state — so every corpus stays single-user.
 - **Nutrition logging.** Awareness only, as above.
 - **Silent inventory auto-deduction.** Updates go through the debrief touch.
 
