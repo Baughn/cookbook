@@ -20,7 +20,7 @@
 			});
 	});
 
-	let recipes = $derived(pages.filter((p) => p.path.startsWith('recipes/') && !p.retired));
+	let recipes = $derived(pages.filter((p) => p.path.startsWith('recipes/') && p.status !== 'retired'));
 	let techniques = $derived(pages.filter((p) => p.path.startsWith('techniques/')));
 	let others = $derived(
 		pages.filter((p) => !p.path.startsWith('recipes/') && !p.path.startsWith('techniques/'))

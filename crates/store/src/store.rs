@@ -444,7 +444,13 @@ impl Store {
     /// Append a cook. The row's uid is its content hash plus an occurrence
     /// index, so the same cook logged on two devices dedupes on sync while a
     /// genuinely repeated identical cook stays two rows.
-    pub fn append_log(&mut self, e: &LogEntry) -> Result<String> {
+    ///
+    /// A first cook promotes a draft recipe to active — that rule lives here
+    /// so no caller can log a cook and forget it. Promotion is a doc change
+    /// (stamped with `provenance`/`at`) that syncs like any other; the log
+    /// row itself is clockless. The sync insert path does not promote — the
+    /// origin device already did, and its doc change is on the way.
+    pub fn append_log(&mut self, e: &LogEntry, provenance: &str, at: Timestamp) -> Result<String> {
         let prefix = log_content_hash(e);
         let n: i64 = self.conn.query_row(
             "SELECT COUNT(*) FROM cook_log WHERE uid LIKE ?1 || '-%'",
@@ -453,6 +459,16 @@ impl Store {
         )?;
         let uid = format!("{prefix}-{n}");
         self.insert_log_row(&uid, e)?;
+        if let Some(slug) = &e.recipe {
+            let id = DocId::Recipe(slug.clone());
+            if self.exists(&id)? {
+                self.modify::<crate::pages::RecipeDoc>(&id, provenance, at, |r| {
+                    if r.status == "draft" {
+                        r.status = "active".to_string();
+                    }
+                })?;
+            }
+        }
         Ok(uid)
     }
 
@@ -595,7 +611,7 @@ impl Store {
                     r.tags = value.tags;
                     r.equipment = value.equipment;
                     r.ingredients = value.ingredients;
-                    r.retired = value.retired;
+                    r.status = value.status;
                 })?;
                 let old_body = {
                     let value: crate::pages::RecipeDoc = hydrate(&old)?;

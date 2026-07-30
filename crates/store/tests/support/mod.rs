@@ -317,7 +317,7 @@ fn parse_recipe(content: &str) -> RecipeDoc {
         tags,
         equipment,
         ingredients,
-        retired: fm["retired"] == "yes",
+        status: fm["status"].clone(),
         body: body.into(),
     }
 }
@@ -618,11 +618,11 @@ fn arb_recipe_doc() -> impl Strategy<Value = RecipeDoc> {
         arb_kv("axis"),
         vec(slug_str("tool", 6), 0..3),
         vec((text1(), proptest::option::of(slug_str("item", 8))), 0..5),
-        any::<bool>(),
+        prop_oneof![Just("draft"), Just("active"), Just("retired")].prop_map(str::to_string),
         body(),
     )
         .prop_map(
-            |((title, servings, effort, lead), tags, equipment, ingredients, retired, body)| {
+            |((title, servings, effort, lead), tags, equipment, ingredients, status, body)| {
                 RecipeDoc {
                     schema_version: 1,
                     title,
@@ -635,7 +635,7 @@ fn arb_recipe_doc() -> impl Strategy<Value = RecipeDoc> {
                         .into_iter()
                         .map(|(text, pantry)| IngredientDoc { text, pantry })
                         .collect(),
-                    retired,
+                    status,
                     body: body.as_str().into(),
                 }
             },

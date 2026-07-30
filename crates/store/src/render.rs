@@ -318,7 +318,7 @@ fn recipe_page(r: &RecipeDoc) -> String {
     if !r.equipment.is_empty() {
         pairs.push(("equipment", r.equipment.iter().map(|e| esc(e)).collect::<Vec<_>>().join(",")));
     }
-    pairs.push(("retired", (if r.retired { "yes" } else { "no" }).to_string()));
+    pairs.push(("status", r.status.to_string()));
 
     let mut out = String::new();
     frontmatter(&mut out, &pairs);

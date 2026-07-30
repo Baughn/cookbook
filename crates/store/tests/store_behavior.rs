@@ -136,7 +136,7 @@ fn every_doc_id_export_path_exists_in_the_render() {
                 tags: Default::default(),
                 equipment: vec![],
                 ingredients: vec![],
-                retired: false,
+                status: "active".into(),
                 body: "".into(),
             },
             "test",
@@ -197,7 +197,7 @@ fn recipe_with_body(root: &std::path::Path, body: &str) -> Store {
                 tags: Default::default(),
                 equipment: vec![],
                 ingredients: vec![],
-                retired: false,
+                status: "active".into(),
                 body: body.into(),
             },
             "test",
@@ -380,4 +380,156 @@ proptest::proptest! {
         let now: PantryDoc = store.get(&id).unwrap();
         proptest::prop_assert_eq!(&now, &snapshots[k]);
     }
+}
+
+// ----------------------------------------------------- recipe status --
+
+/// The exact shape recipe docs had before the status enum: a `retired`
+/// bool, no `status`. Reconciling this writes what old builds wrote.
+#[derive(autosurgeon::Reconcile)]
+struct PreStatusRecipeDoc {
+    schema_version: u32,
+    title: String,
+    servings: u32,
+    effort: String,
+    lead: Option<String>,
+    tags: std::collections::BTreeMap<String, String>,
+    equipment: Vec<String>,
+    ingredients: Vec<String>,
+    retired: bool,
+    body: autosurgeon::Text,
+}
+
+/// Inject a pre-status recipe doc as if an old build had synced it in.
+fn inject_pre_status_recipe(root: &std::path::Path, slug_str: &str, retired: bool) {
+    use automerge::AutoCommit;
+    let mut doc = AutoCommit::new();
+    autosurgeon::reconcile(
+        &mut doc,
+        PreStatusRecipeDoc {
+            schema_version: 1,
+            title: format!("Old {slug_str}"),
+            servings: 2,
+            effort: "weekday".into(),
+            lead: None,
+            tags: std::collections::BTreeMap::new(),
+            equipment: vec![],
+            ingredients: vec![],
+            retired,
+            body: "Fry it.".into(),
+        },
+    )
+    .unwrap();
+    doc.commit();
+    let change = doc.get_last_local_change().unwrap();
+    let key = DocId::Recipe(slug(slug_str)).to_string();
+    let conn = rusqlite::Connection::open(root.join("mise.db")).unwrap();
+    conn.execute(
+        "INSERT INTO docs (id, kind) VALUES (?1, 'recipe')",
+        rusqlite::params![key],
+    )
+    .unwrap();
+    let hash: String = change.hash().0.iter().map(|b| format!("{b:02x}")).collect();
+    conn.execute(
+        "INSERT INTO doc_changes (doc_id, seq, hash, change) VALUES (?1, 1, ?2, ?3)",
+        rusqlite::params![key, hash, change.raw_bytes().to_vec()],
+    )
+    .unwrap();
+}
+
+/// Pre-enum docs stay readable forever — current state, edits on top, and
+/// historical heads (revert hydrates them) — with `retired` mapped into
+/// the status field.
+#[test]
+fn pre_status_recipes_hydrate_edit_and_revert() {
+    use mise_store::pages::RecipeDoc;
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("corpus");
+    {
+        let store = Store::create(&root, &slug("home"), 2, ts(0)).unwrap();
+        drop(store);
+    }
+    inject_pre_status_recipe(&root, "tonkatsu", true);
+    inject_pre_status_recipe(&root, "dal", false);
+
+    let mut store = Store::open(&root).unwrap();
+    let old: RecipeDoc = store.get(&DocId::Recipe(slug("tonkatsu"))).unwrap();
+    assert_eq!(old.status, "retired");
+    let old: RecipeDoc = store.get(&DocId::Recipe(slug("dal"))).unwrap();
+    assert_eq!(old.status, "active");
+
+    // A new-build edit writes `status` while keeping the mapped value.
+    let id = DocId::Recipe(slug("tonkatsu"));
+    store
+        .modify::<RecipeDoc>(&id, "test: rename", ts(5), |r| {
+            r.title = "Tonkatsu, properly".into();
+        })
+        .unwrap();
+    let edited: RecipeDoc = store.get(&id).unwrap();
+    assert_eq!(edited.status, "retired");
+
+    // Revert to the pre-enum head hydrates the old shape.
+    let history = store.history(&id).unwrap();
+    store.revert(&id, &history[0].hash, "test: revert", ts(9)).unwrap();
+    let back: RecipeDoc = store.get(&id).unwrap();
+    assert_eq!(back.title, "Old tonkatsu");
+    assert_eq!(back.status, "retired");
+}
+
+/// The first logged cook promotes a draft to active; the rule lives in the
+/// store so no surface can forget it. Non-drafts are untouched — no doc
+/// change at all.
+#[test]
+fn first_cook_promotes_a_draft_and_only_a_draft() {
+    use std::collections::BTreeMap;
+
+    use mise_core::types::{CookKind, LogEntry};
+    use mise_store::pages::RecipeDoc;
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::create(&dir.path().join("c"), &slug("home"), 2, ts(0)).unwrap();
+    let recipe = |status: &str| RecipeDoc {
+        schema_version: 1,
+        title: "Dish".into(),
+        servings: 2,
+        effort: "weekday".into(),
+        lead: None,
+        tags: BTreeMap::new(),
+        equipment: vec![],
+        ingredients: vec![],
+        status: status.into(),
+        body: "Cook.".into(),
+    };
+    store
+        .create_doc(&DocId::Recipe(slug("fresh-idea")), &recipe("draft"), "test: add", ts(1))
+        .unwrap();
+    store
+        .create_doc(&DocId::Recipe(slug("old-flame")), &recipe("retired"), "test: add", ts(1))
+        .unwrap();
+    let cook = |s: &str| LogEntry {
+        date: jiff::civil::Date::constant(2026, 7, 30),
+        kind: CookKind::Meal,
+        recipe: Some(slug(s)),
+        title: "Dish".into(),
+        location: "home".into(),
+        servings: 2,
+        verdict: "fine".into(),
+        tags: BTreeMap::new(),
+    };
+
+    store.append_log(&cook("fresh-idea"), "test: first cook", ts(2)).unwrap();
+    let promoted: RecipeDoc = store.get(&DocId::Recipe(slug("fresh-idea"))).unwrap();
+    assert_eq!(promoted.status, "active");
+    let history = store.history(&DocId::Recipe(slug("fresh-idea"))).unwrap();
+    assert_eq!(history.len(), 2);
+    assert_eq!(history[1].message, "test: first cook");
+
+    // A second cook, and cooks of non-draft recipes, change nothing.
+    store.append_log(&cook("fresh-idea"), "test: second cook", ts(3)).unwrap();
+    store.append_log(&cook("old-flame"), "test: cook retired", ts(3)).unwrap();
+    assert_eq!(store.history(&DocId::Recipe(slug("fresh-idea"))).unwrap().len(), 2);
+    let retired: RecipeDoc = store.get(&DocId::Recipe(slug("old-flame"))).unwrap();
+    assert_eq!(retired.status, "retired");
+    assert_eq!(store.history(&DocId::Recipe(slug("old-flame"))).unwrap().len(), 1);
 }

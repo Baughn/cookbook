@@ -44,7 +44,7 @@ export interface PageInfo {
 	title?: string;
 	tags?: Record<string, string>;
 	effort?: string;
-	retired?: boolean;
+	status?: string;
 }
 
 export interface ChangeInfo {

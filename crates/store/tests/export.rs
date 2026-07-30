@@ -44,7 +44,7 @@ fn store_with(c: &CorpusState, root: &Path) -> Store {
             .unwrap();
     }
     for entry in &c.log {
-        store.append_log(entry).unwrap();
+        store.append_log(entry, p, t0()).unwrap();
     }
     for messages in c.threads.values() {
         for m in messages {

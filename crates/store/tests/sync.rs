@@ -80,7 +80,7 @@ fn fresh_replica_pulls_everything() {
         servings: 4,
         verdict: "great".into(),
         tags: BTreeMap::new(),
-    })
+    }, "test: log", t0())
     .unwrap();
 
     // The second device starts with nothing at all.
@@ -114,7 +114,7 @@ fn offline_edits_converge_and_resync_is_idempotent() {
             tags: BTreeMap::from([("protein".to_string(), "duck".to_string())]),
             equipment: vec![],
             ingredients: vec![],
-            retired: false,
+            status: "active".into(),
             body: "Brown the legs.".into(),
         },
         "offline on a",
@@ -177,10 +177,10 @@ fn same_cook_logged_on_both_devices_dedupes() {
         tags: BTreeMap::new(),
     };
     // The same cook, logged independently on both devices…
-    a.append_log(&entry).unwrap();
-    b.append_log(&entry).unwrap();
+    a.append_log(&entry, "test: log", t0()).unwrap();
+    b.append_log(&entry, "test: log", t0()).unwrap();
     // …plus a genuine second identical cook on A only.
-    a.append_log(&entry).unwrap();
+    a.append_log(&entry, "test: log", t0()).unwrap();
 
     run_sync(&mut a, &mut b);
     assert_eq!(a.log_entries().unwrap().len(), 2, "dedupe kept the repeat");
@@ -291,7 +291,7 @@ fn apply(store: &mut Store, op: &Op) {
                     servings: 2,
                     verdict: "fine".into(),
                     tags: BTreeMap::new(),
-                })
+                }, "test: log", t0())
                 .unwrap();
         }
         Op::Thread { k, text } => {

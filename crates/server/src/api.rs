@@ -87,7 +87,7 @@ pub(crate) async fn pages(
                     page["title"] = json!(recipe.title);
                     page["tags"] = json!(recipe.tags);
                     page["effort"] = json!(recipe.effort);
-                    page["retired"] = json!(recipe.retired);
+                    page["status"] = json!(recipe.status);
                 }
                 if let Some(technique) = path
                     .strip_prefix("techniques/")

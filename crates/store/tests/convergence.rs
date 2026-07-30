@@ -75,7 +75,7 @@ fn base_replica() -> Replica {
             text: "400 g something".to_string(),
             pantry: Some("rice".to_string()),
         }],
-        retired: false,
+        status: "active".into(),
         body: "Heat the wok. Add oil. Fry the aromatics. Serve.".into(),
     };
     Replica {

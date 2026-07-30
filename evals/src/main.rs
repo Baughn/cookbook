@@ -89,7 +89,7 @@ fn seed(root: &std::path::Path) -> Result<Store> {
                 tags,
                 equipment: vec![],
                 ingredients: vec![],
-                retired: false,
+                status: "active".into(),
                 body: "Cook it well.".into(),
             },
             p,
@@ -128,7 +128,7 @@ fn seed(root: &std::path::Path) -> Result<Store> {
             servings: 4,
             verdict: "fine".into(),
             tags: BTreeMap::new(),
-        })?;
+        }, "eval: seed log", Zoned::now().timestamp())?;
     }
     Ok(store)
 }

@@ -140,7 +140,7 @@ mod tests {
     use jiff::civil::Date;
 
     use super::*;
-    use crate::types::{EffortClass, IngredientLine, PantryItem};
+    use crate::types::{EffortClass, IngredientLine, PantryItem, RecipeStatus};
 
     fn slug(s: &str) -> Slug {
         Slug::new(s).unwrap()
@@ -192,7 +192,7 @@ mod tests {
             tags: BTreeMap::new(),
             equipment: equipment.iter().map(|e| slug(e)).collect(),
             ingredients,
-            retired: false,
+            status: RecipeStatus::Active,
         }
     }
 

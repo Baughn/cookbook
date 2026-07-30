@@ -290,9 +290,32 @@ pub struct RecipeDoc {
     /// Required equipment slugs, in page order.
     pub equipment: Vec<String>,
     pub ingredients: Vec<IngredientDoc>,
-    pub retired: bool,
+    /// "draft" | "active" | "retired".
+    #[autosurgeon(hydrate = "hydrate_status")]
+    pub status: String,
     /// The method, written for the primary kitchen.
     pub body: Text,
+}
+
+/// Recipes written before the status enum carry `retired: bool` and no
+/// `status`. Hydrate accepts either shape — current docs, *historical*
+/// states (revert hydrates old heads), and changes synced in from old
+/// builds — while reconcile always writes `status`. This makes the old
+/// shape forever-readable, so no doc migration exists to go wrong.
+fn hydrate_status<'a, D: autosurgeon::ReadDoc>(
+    doc: &D,
+    obj: &automerge::ObjId,
+    prop: autosurgeon::Prop<'a>,
+) -> std::result::Result<String, autosurgeon::HydrateError> {
+    if doc.get(obj, &prop)?.is_some() {
+        return String::hydrate(doc, obj, prop);
+    }
+    let retired = matches!(
+        doc.get(obj, &autosurgeon::Prop::from("retired"))?.map(|(v, _)| v),
+        Some(automerge::Value::Scalar(s))
+            if matches!(s.as_ref(), automerge::ScalarValue::Boolean(true))
+    );
+    Ok(if retired { "retired" } else { "active" }.to_string())
 }
 
 impl PartialEq for RecipeDoc {
@@ -305,7 +328,7 @@ impl PartialEq for RecipeDoc {
             && self.tags == other.tags
             && self.equipment == other.equipment
             && self.ingredients == other.ingredients
-            && self.retired == other.retired
+            && self.status == other.status
             && self.body.as_str() == other.body.as_str()
     }
 }
@@ -347,7 +370,7 @@ impl RecipeDoc {
                     })
                 })
                 .collect::<Result<Vec<_>>>()?,
-            retired: self.retired,
+            status: self.status.parse().map_err(corrupt)?,
         })
     }
 }

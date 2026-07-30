@@ -251,6 +251,9 @@ pub fn tool_defs() -> Vec<ToolDef> {
                     "lead_step": s("The act-now step: \"start the marinade\"."),
                     "ingredients": ingredients_schema(),
                     "body": s("Method body, markdown."),
+                    "status": s("draft or active. Default active. Use draft for a recipe \
+                                 nobody asked to cook yet — a URL worth keeping, an idea to \
+                                 flesh out; the first logged cook promotes it."),
                 }),
                 &["slug", "title"],
             ),
@@ -273,7 +276,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
                     "clear_lead": b("Remove the lead time entirely."),
                     "ingredients": ingredients_schema(),
                     "body": s("Replacement method body, markdown."),
-                    "retired": b("Retire (or unretire) the recipe."),
+                    "status": s("draft, active, or retired."),
                 }),
                 &["slug"],
             ),
@@ -644,6 +647,10 @@ fn parse_effort(s: &str) -> std::result::Result<String, Fail> {
     s.parse::<EffortClass>().map(|e| e.to_string()).map_err(user)
 }
 
+fn parse_status(s: &str) -> std::result::Result<String, Fail> {
+    s.parse::<mise_core::types::RecipeStatus>().map(|e| e.to_string()).map_err(user)
+}
+
 fn recipe_add(store: &mut Store, ctx: &ToolCtx, input: &Value) -> ToolResult {
     #[derive(Deserialize)]
     struct In {
@@ -660,9 +667,14 @@ fn recipe_add(store: &mut Store, ctx: &ToolCtx, input: &Value) -> ToolResult {
         #[serde(default)]
         ingredients: Vec<IngredientIn>,
         body: Option<String>,
+        status: Option<String>,
     }
     let a: In = parse(input)?;
     let s = slug(&a.slug)?;
+    let status = parse_status(a.status.as_deref().unwrap_or("active"))?;
+    if status == "retired" {
+        return Err(user("a new recipe can be draft or active, not retired"));
+    }
     let servings = a.servings.unwrap_or(2);
     if servings == 0 {
         return Err(user("servings must be at least 1"));
@@ -677,7 +689,7 @@ fn recipe_add(store: &mut Store, ctx: &ToolCtx, input: &Value) -> ToolResult {
         tags: clean_tags(a.tags)?,
         equipment: clean_equipment(a.equipment)?,
         ingredients: clean_ingredients(a.ingredients)?,
-        retired: false,
+        status,
         body: a.body.as_deref().unwrap_or("").trim().into(),
     };
     store
@@ -718,7 +730,7 @@ fn recipe_edit(store: &mut Store, ctx: &ToolCtx, input: &Value) -> ToolResult {
         clear_lead: bool,
         ingredients: Option<Vec<IngredientIn>>,
         body: Option<String>,
-        retired: Option<bool>,
+        status: Option<String>,
     }
     let a: In = parse(input)?;
     let s = slug(&a.slug)?;
@@ -735,6 +747,7 @@ fn recipe_edit(store: &mut Store, ctx: &ToolCtx, input: &Value) -> ToolResult {
     if a.clear_lead && lead.is_some() {
         return Err(user("clear_lead contradicts lead_minutes/lead_step"));
     }
+    let status = a.status.as_deref().map(parse_status).transpose()?;
     let body = a.body.map(|b| b.trim().to_string());
     let msg = ctx.msg(&format!("recipe edit {s}"));
 
@@ -763,8 +776,8 @@ fn recipe_edit(store: &mut Store, ctx: &ToolCtx, input: &Value) -> ToolResult {
             } else if let Some(l) = lead {
                 r.lead = Some(l);
             }
-            if let Some(ret) = a.retired {
-                r.retired = ret;
+            if let Some(st) = status {
+                r.status = st;
             }
         })
         .map_err(Fail::from)?;
@@ -1045,7 +1058,9 @@ fn log_append(store: &mut Store, ctx: &ToolCtx, input: &Value) -> ToolResult {
         verdict: a.verdict.as_deref().unwrap_or("fine").trim().to_string(),
         tags: entry_tags,
     };
-    store.append_log(&entry).map_err(Fail::from)?;
+    store
+        .append_log(&entry, &ctx.msg(&format!("log {}", entry.title)), ctx.at())
+        .map_err(Fail::from)?;
     Ok(format!("logged: {} on {} at {loc}", entry.title, entry.date))
 }
 

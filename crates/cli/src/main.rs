@@ -454,7 +454,7 @@ fn run(store: &mut Store, command: Cmd, root: &Path, now: Zoned) -> Result<()> {
         Cmd::Equipment { cmd } => run_equipment(store, cmd, at),
         Cmd::Pantry { cmd } => run_pantry(store, cmd, today, at),
         Cmd::Fridge { cmd } => run_fridge(store, cmd, today, at),
-        Cmd::Log { cmd } => run_log(store, cmd, today),
+        Cmd::Log { cmd } => run_log(store, cmd, today, at),
         Cmd::Location { cmd } => match cmd {
             LocationCmd::Add { name, headcount } => {
                 let name = slug(&name)?;
@@ -577,7 +577,7 @@ fn run_recipe(store: &mut Store, cmd: RecipeCmd, at: jiff::Timestamp) -> Result<
                 tags: parse_tags(&tags)?,
                 equipment,
                 ingredients: vec![],
-                retired: false,
+                status: "active".into(),
                 body: body_text.as_str().into(),
             };
             let msg = format!("cli: recipe add {s}");
@@ -765,7 +765,7 @@ fn run_fridge(store: &mut Store, cmd: FridgeCmd, today: Date, at: jiff::Timestam
     }
 }
 
-fn run_log(store: &mut Store, cmd: LogCmd, today: Date) -> Result<()> {
+fn run_log(store: &mut Store, cmd: LogCmd, today: Date, at: jiff::Timestamp) -> Result<()> {
     match cmd {
         LogCmd::Add { title, recipe, kind, servings, verdict, date, tags, location } => {
             let loc = resolve_location(store, location)?;
@@ -793,7 +793,7 @@ fn run_log(store: &mut Store, cmd: LogCmd, today: Date) -> Result<()> {
                 verdict: verdict.trim().to_string(),
                 tags: entry_tags,
             };
-            store.append_log(&entry)?;
+            store.append_log(&entry, &format!("cli: log {}", entry.title), at)?;
             store.export(&format!("cli: log {}", entry.title))?;
             println!("logged: {} on {} at {}", entry.title, entry.date, loc);
             Ok(())

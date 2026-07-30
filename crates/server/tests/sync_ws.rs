@@ -99,7 +99,7 @@ async fn two_clients_converge_through_the_server() {
         servings: 4,
         verdict: "great".into(),
         tags: BTreeMap::new(),
-    })
+    }, "test: log", jiff::Timestamp::UNIX_EPOCH)
     .unwrap();
     b.modify::<QueueDoc>(&DocId::Queue, "offline on b", jiff::Timestamp::UNIX_EPOCH, |q| {
         q.entries.insert(

@@ -114,7 +114,7 @@ fn arb_recipe() -> impl Strategy<Value = RecipeMeta> {
                 .enumerate()
                 .map(|(i, (pantry,))| IngredientLine { text: format!("ingredient {i}"), pantry })
                 .collect(),
-            retired: false,
+            status: RecipeStatus::Active,
         })
 }
 

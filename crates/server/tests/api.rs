@@ -36,7 +36,7 @@ fn seeded(dir: &Path) -> Store {
                 tags: [("cuisine".to_string(), "sichuan".to_string())].into(),
                 equipment: vec!["wok".into()],
                 ingredients: vec![],
-                retired: false,
+                status: "active".into(),
                 body: "Fry the paste.".into(),
             },
             "seed",

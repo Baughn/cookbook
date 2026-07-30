@@ -100,6 +100,39 @@ impl FromStr for EffortClass {
     }
 }
 
+/// Where a recipe stands in the repertoire. Drafts (curiosity, a URL worth
+/// keeping) stay out of rotation until a first cook promotes them; retired
+/// recipes leave rotation and the browse surface but keep their history.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RecipeStatus {
+    Draft,
+    Active,
+    Retired,
+}
+
+impl fmt::Display for RecipeStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            RecipeStatus::Draft => "draft",
+            RecipeStatus::Active => "active",
+            RecipeStatus::Retired => "retired",
+        })
+    }
+}
+
+impl FromStr for RecipeStatus {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "draft" => Ok(RecipeStatus::Draft),
+            "active" => Ok(RecipeStatus::Active),
+            "retired" => Ok(RecipeStatus::Retired),
+            other => Err(format!("unknown recipe status {other:?} (draft|active|retired)")),
+        }
+    }
+}
+
 /// Explicit recipe metadata: a duration plus a named act-now step. Minutes
 /// granularity keeps the type exact and the export deterministic.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -140,7 +173,7 @@ pub struct RecipeMeta {
     /// Equipment slugs the recipe needs (wok, stand-mixer, ...).
     pub equipment: BTreeSet<Slug>,
     pub ingredients: Vec<IngredientLine>,
-    pub retired: bool,
+    pub status: RecipeStatus,
 }
 
 /// Presence, never gram counts.
