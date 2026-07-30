@@ -1,0 +1,49 @@
+// The M4 deliverable: the planning-session flow from the design doc, end
+// to end in a browser — against the real server and a scripted model.
+
+import { expect, test } from '@playwright/test';
+
+const TOKEN = 'e2e-token-0123456789abcdef';
+
+test('planning session: token, queue, chat, edits land', async ({ page }) => {
+	await page.goto('/');
+
+	// One kitchen, one token.
+	await page.getByPlaceholder('Bearer token', { exact: false }).fill(TOKEN);
+	await page.getByRole('button', { name: 'Enter' }).click();
+
+	// The queue home shows readiness against the location.
+	await expect(page.getByRole('heading', { name: 'Queue — home' })).toBeVisible();
+	await expect(page.getByText('Mapo tofu')).toBeVisible();
+	await expect(page.getByText('missing equipment here: wok')).toBeVisible();
+	await expect(page.getByText('nothing cooked')).toBeVisible();
+
+	// Ask the planning thread; the scripted model queues dal and replies.
+	await page.getByPlaceholder('Plan the week…').fill('plan something cheap');
+	await page.getByRole('button', { name: 'Send' }).click();
+	await expect(page.getByText('Queued dal.')).toBeVisible();
+
+	// The exchange's edit landed and the queue reloaded.
+	await expect(page.getByText('Dal', { exact: true })).toBeVisible();
+	await expect(page.getByText('why: cheap')).toBeVisible();
+});
+
+test('recipe page: rendered markdown, history, thread', async ({ page }) => {
+	await page.goto('/');
+	const gate = page.getByPlaceholder('Bearer token', { exact: false });
+	if (await gate.isVisible()) {
+		await gate.fill(TOKEN);
+		await page.getByRole('button', { name: 'Enter' }).click();
+	}
+
+	await page.goto('/page/recipes/mapo-tofu');
+	await expect(page.getByRole('heading', { name: 'Mapo tofu', exact: true })).toBeVisible();
+	// Frontmatter renders as metadata, not as an accidental heading.
+	await expect(page.getByText('schema-version')).toBeVisible();
+	await expect(page.getByRole('heading', { name: 'Ingredients' })).toBeVisible();
+
+	// Doc-backed pages carry their history and their own thread.
+	await page.getByText('Recent changes', { exact: false }).click();
+	await expect(page.getByText('cli: recipe add mapo-tofu')).toBeVisible();
+	await expect(page.getByPlaceholder('Ask about this page…')).toBeVisible();
+});

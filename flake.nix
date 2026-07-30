@@ -24,6 +24,17 @@
             mainProgram = "mise-server";
           };
         };
+        web = pkgs.buildNpmPackage {
+          pname = "mise-web";
+          version = "0.1.0";
+          src = ./web;
+          npmDepsHash = "sha256-55M+eJGaYmXAq05SvbMJS6S8XthfwTBpFlq1qxZf8tQ=";
+          installPhase = ''
+            runHook preInstall
+            cp -r build $out
+            runHook postInstall
+          '';
+        };
         default = mise;
       });
 
@@ -32,7 +43,7 @@
 
       devShells = forAllSystems (pkgs: {
         default = pkgs.mkShell {
-          packages = with pkgs; [ cargo rustc clippy rustfmt git ];
+          packages = with pkgs; [ cargo rustc clippy rustfmt git nodejs_24 ];
         };
       });
     };

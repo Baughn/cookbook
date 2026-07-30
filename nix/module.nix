@@ -60,6 +60,13 @@ in
       default = "claude-opus-5";
       description = "Model the assistant uses.";
     };
+
+    webApp = lib.mkOption {
+      type = lib.types.nullOr lib.types.package;
+      default = self.packages.${pkgs.stdenv.hostPlatform.system}.web;
+      defaultText = lib.literalExpression "mise.packages.\${system}.web";
+      description = "Built web app served at /; null for sync/API only.";
+    };
   };
 
   config = lib.mkIf cfg.enable {
@@ -80,6 +87,7 @@ in
         ExecStart =
           "${lib.getExe cfg.package} --root ${cfg.root} --listen ${cfg.listen}"
           + " --model ${cfg.model}"
+          + lib.optionalString (cfg.webApp != null) " --static-dir ${cfg.webApp}"
           + lib.optionalString cfg.init " --init";
         User = "mise";
         Group = "mise";

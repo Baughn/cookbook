@@ -28,6 +28,9 @@ struct Args {
     /// Model for the assistant.
     #[arg(long, default_value = mise_assistant::client::DEFAULT_MODEL)]
     model: String,
+    /// Anthropic API endpoint override (proxies, scripted E2E fakes).
+    #[arg(long, default_value = mise_assistant::client::DEFAULT_BASE_URL)]
+    anthropic_base_url: String,
     /// Directory with the built web app; served at /. Omit for sync/API only.
     #[arg(long)]
     static_dir: Option<PathBuf>,
@@ -115,7 +118,7 @@ async fn main() -> Result<()> {
             state = state.with_chat(mise_server::ChatConfig {
                 api_key,
                 model: args.model.clone(),
-                base_url: mise_assistant::client::DEFAULT_BASE_URL.to_string(),
+                base_url: args.anthropic_base_url.clone(),
             });
         }
         None => info!("no Anthropic key; running sync-only"),
