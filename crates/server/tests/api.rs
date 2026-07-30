@@ -301,3 +301,22 @@ async fn recipe_status_narrows_to_the_status_field() {
     assert_eq!(status, 400);
     assert!(body["error"].as_str().unwrap().contains("unknown recipe status"), "{body}");
 }
+
+/// The structured location view feeds the item editors — the exported
+/// markdown is never parsed by the app.
+#[tokio::test]
+async fn location_view_is_structured() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = spawn(dir.path()).await;
+
+    post_json(
+        &format!("{url}/api/edit/pantry-set"),
+        serde_json::json!({"item": "miso", "presence": "low", "tier": "shop"}),
+    )
+    .await;
+    let loc = get_json(&format!("{url}/api/location")).await;
+    assert_eq!(loc["location"], "home");
+    assert_eq!(loc["view"]["pantry"]["miso"]["presence"], "low");
+    assert_eq!(loc["view"]["pantry"]["miso"]["tier"], "shop");
+    assert!(loc["view"]["tiers"].as_array().unwrap().iter().any(|t| t["id"] == "shop"));
+}

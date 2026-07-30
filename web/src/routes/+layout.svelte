@@ -20,7 +20,10 @@
 	</ul>
 	<ul>
 		<li><a href="/">Queue</a></li>
-		<li><a href="/browse">Browse</a></li>
+		<li><a href="/cookbook">Cookbook</a></li>
+		<li><a href="/pantry">Pantry</a></li>
+		<li><a href="/equipment">Equipment</a></li>
+		<li><a href="/browse"><small>All pages</small></a></li>
 	</ul>
 </nav>
 

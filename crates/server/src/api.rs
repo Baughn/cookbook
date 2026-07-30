@@ -111,6 +111,25 @@ pub(crate) async fn pages(
     }
 }
 
+/// The active location as structured data — what the item editors read.
+/// The markdown export stays render-only; nothing in the app parses it.
+pub(crate) async fn location(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<HashMap<String, String>>,
+) -> Response {
+    if !authorized(&state, &headers, &query) {
+        return unauthorized();
+    }
+    let store = state.store.lock().await;
+    match store.active_view() {
+        Ok((slug, view)) => {
+            Json(json!({"location": slug.as_str(), "view": view})).into_response()
+        }
+        Err(e) => fail(e),
+    }
+}
+
 fn known_doc_ids(corpus: &mise_store::pages::CorpusState) -> Vec<DocId> {
     let mut ids = vec![
         DocId::State,

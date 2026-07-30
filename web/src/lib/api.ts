@@ -2,7 +2,7 @@
 // localStorage after first entry; 401 anywhere sends the user back to the
 // token prompt.
 
-import type { ChangeInfo, PageInfo, QueueView, ThreadMessage } from './types';
+import type { ChangeInfo, LocationView, PageInfo, QueueView, ThreadMessage } from './types';
 import { SseFrames } from './sse';
 
 const TOKEN_KEY = 'mise-token';
@@ -63,6 +63,16 @@ export const api = {
 			method: 'POST',
 			headers: { 'content-type': 'application/json' },
 			body: JSON.stringify({ doc, hash })
+		});
+	},
+	location: () => getJson<LocationView>('/api/location'),
+	// One tap: pantry-set, equipment-remove, recipe-status, … — each is
+	// the matching assistant tool under ui: provenance.
+	edit: async (action: string, body: Record<string, unknown>) => {
+		await request(`/api/edit/${action}`, {
+			method: 'POST',
+			headers: { 'content-type': 'application/json' },
+			body: JSON.stringify(body)
 		});
 	}
 };

@@ -47,6 +47,28 @@ export interface PageInfo {
 	status?: string;
 }
 
+export interface PantryItem {
+	slug: string;
+	name: string;
+	presence: 'have' | 'low' | 'out';
+	bought: string | null;
+	tier: string | null;
+	note: string | null;
+}
+
+export interface LocationView {
+	location: string;
+	view: {
+		name: string;
+		headcount: number;
+		tiers: { id: string; name: string }[];
+		pantry: Record<string, PantryItem>;
+		equipment: string[];
+		fridge: { dish: string; servings: number; date: string }[];
+		freezer: { dish: string; servings: number; date: string }[];
+	};
+}
+
 export interface ChangeInfo {
 	hash: string;
 	message: string;
