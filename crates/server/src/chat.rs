@@ -48,12 +48,20 @@ async fn exchange(
     tx: &Tx,
 ) -> Result<()> {
     use mise_assistant::AssistantError;
+    use mise_assistant::recon;
 
     let message = request.message.trim().to_string();
     let thread = match &request.page {
         Some(p) => mise_store::ThreadId::parse(p)?,
         None => ThreadId::Planning,
     };
+    let photo = request.image.as_ref().map(|i| recon::Photo {
+        media_type: i.media_type.clone(),
+        data: i.data.clone(),
+    });
+    if let Some(p) = &photo {
+        p.validate().map_err(AssistantError::Protocol)?;
+    }
 
     let started = Zoned::now();
     let ctx = ToolCtx { now: started.clone(), provenance: provenance(&thread) };
@@ -65,8 +73,18 @@ async fn exchange(
         {
             return Err(AssistantError::Protocol(format!("no page {id} to talk about")));
         }
-        store.append_thread_message(&thread, Role::User, &message, now)?;
-        context::assemble(&store, &thread, now)?
+        // The photo rides only this exchange: the thread stores a
+        // placeholder, the image block goes on the wire below.
+        let stored = match &photo {
+            Some(_) => recon::transcript_text(&message),
+            None => message.clone(),
+        };
+        store.append_thread_message(&thread, Role::User, &stored, now)?;
+        let (system, mut history) = context::assemble(&store, &thread, now)?;
+        if let (Some(p), Some(last)) = (&photo, history.last_mut()) {
+            last.content.insert(0, p.block());
+        }
+        (system, history)
     };
 
     let mut client =
@@ -91,6 +109,14 @@ async fn exchange(
                         // The network never holds the store lock.
                         outcomes
                             .push(mise_assistant::fetch::execute_fetch(&mut fetcher, call).await);
+                    } else if call.name == recon::PROPOSE_PANTRY_DIFF {
+                        // Validated, forwarded to the UI as tappable
+                        // lines, never applied here.
+                        let (outcome, proposal) = recon::execute_propose(call);
+                        if let Some(p) = &proposal {
+                            send(tx, "proposal", json!(p));
+                        }
+                        outcomes.push(outcome);
                     } else {
                         let mut store = state.store.lock().await;
                         outcomes.push(tools::execute(&mut store, &ctx, call)?);
@@ -112,7 +138,11 @@ async fn exchange(
             }
             store.append_thread_message(&thread, Role::Assistant, &reply, replied)?;
         }
-        let mut summary: String = message.chars().take(60).collect();
+        let mut summary: String = if message.is_empty() && photo.is_some() {
+            "[photo]".to_string()
+        } else {
+            message.chars().take(60).collect()
+        };
         if summary.len() < message.len() {
             summary.push('…');
         }

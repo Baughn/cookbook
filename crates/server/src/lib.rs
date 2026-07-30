@@ -67,7 +67,12 @@ pub fn app(state: AppState) -> Router {
     let mut router = Router::new()
         .route("/health", get(|| async { "ok" }))
         .route("/sync", get(ws_sync))
-        .route("/chat", post(chat_endpoint))
+        // A downscaled photo in base64 blows straight past axum's 2 MB
+        // default; the Photo validator enforces the real ceiling.
+        .route(
+            "/chat",
+            post(chat_endpoint).layer(axum::extract::DefaultBodyLimit::max(12 * 1024 * 1024)),
+        )
         .route("/api/queue", get(api::queue))
         .route("/api/pages", get(api::pages))
         .route("/api/page/{*path}", get(api::page))
@@ -91,6 +96,16 @@ pub struct ChatRequest {
     pub message: String,
     /// Page-thread doc id (`recipe/mapo-tofu`); omitted = planning thread.
     pub page: Option<String>,
+    /// A photo riding this exchange (pantry recon). Transient: attached to
+    /// the outgoing model turn, never stored.
+    pub image: Option<ChatImage>,
+}
+
+#[derive(serde::Deserialize)]
+pub struct ChatImage {
+    pub media_type: String,
+    /// Base64 payload; the client downscales before upload.
+    pub data: String,
 }
 
 /// POST /chat: one conversational exchange, streamed back as SSE (`delta`,
