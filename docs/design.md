@@ -165,6 +165,14 @@ conversational ("actually I bought an immersion blender").
    updates as a side effect.
 2. **Photos.** Snap the fridge, the pantry shelf, or a store shelf; the
    assistant reconciles what it sees against the list and shows the diff.
+   The diff is a **proposal, never an edit**: models misread shelves —
+   invented jars, missed bags — so each proposed line waits for a one-tap
+   accept, with apply-all for when the whole thing is right. Corrections
+   that a tap can't express ("you missed the rice; that's gochujang, not
+   miso") are just words on the same thread, and they outrank the photo:
+   the human looking at the shelf beats the model looking at a picture of
+   it. The photo itself is transient — the conversation keeps a note that
+   one was taken, the applied changes are what persist.
 3. **Cook-time inference.** Marking a recipe as made prompts a light-touch
    "used up the coconut milk?" as part of the debrief, rather than silent
    auto-deduction.

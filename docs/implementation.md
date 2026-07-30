@@ -1,6 +1,6 @@
 # Implementation plan
 
-*Last updated: 2026-07-30 (M5 complete). Companion to [design.md](design.md); this document
+*Last updated: 2026-07-30 (M6 build started). Companion to [design.md](design.md); this document
 covers the technical shape and build order. Decisions here resolve the "Open
 questions" section of the design doc.*
 
@@ -192,7 +192,7 @@ Settled 2026-07-30, at M4 build start:
   the NixOS module serves it by default (`services.mise.webApp`, null for
   sync/API-only); `nodejs_24` joins the devshell.
 
-Settled 2026-07-30, after M4 (planning M5–M8):
+Settled 2026-07-30, after M4 (planning M5 and beyond):
 
 - **Typed mutations narrow — not reverse — "not a second editing
   surface."** Direct edits in the UI are a design promise (update path
@@ -200,7 +200,7 @@ Settled 2026-07-30, after M4 (planning M5–M8):
   store operations the assistant's tools and CLI already use — add/remove
   an equipment item, set a pantry entry, check off a list item. No
   free-text document PUT; prose bodies stay conversational. Endpoints
-  are *tap-shaped* — small, idempotent, timestamped ops — so the M8
+  are *tap-shaped* — small, idempotent, timestamped ops — so the M9
   offline queue is a replay buffer, not a rewrite.
 - **Recipe status is an enum.** `draft` / `active` / `retired` replaces
   the retired flag. Drafts (curiosity, a URL worth keeping) show on the
@@ -254,7 +254,7 @@ Settled 2026-07-30, at M5 build:
 - **`/api/location` is the editors' read path.** Item editors consume
   the structured active-location view; the markdown export is rendered,
   linked, and never parsed by the app. Editors on a non-active
-  location's page stay hidden until the M7 location selector.
+  location's page stay hidden until the M8 location selector.
 - **`Fetch` is a seam like `Model`.** Drivers intercept `fetch_url` and
   run it outside the store lock; tests and evals script the network
   (the eval fixture is a life-story page with no JSON-LD). `HttpFetch`
@@ -267,6 +267,34 @@ Settled 2026-07-30, at M5 build:
   paywall), the prompt says ask, don't invent — the gap goes in the
   reply as a question, never in the page as a caveat. Both are evals
   (`draft-from-url`, `calculator-page`).
+
+Settled 2026-07-30, at M6 build:
+
+- **Pantry recon before store mode.** The nearest store is a 40-minute
+  drive; a milestone that can't be exercised can't be trusted. Photo recon
+  is the shared machinery behind the store-shelf snap, the arrival ritual,
+  and first-run bootstrapping — built first against the home pantry, where
+  it gets tested daily, it leaves store mode (M7) as a thin surface over
+  proven parts.
+- **Recon proposes; the user applies.** Misreads are the expected case —
+  invented jars, missed bags — so a photo never edits the pantry.
+  `propose_pantry_diff` is intercepted by the drivers like `fetch_url`,
+  validated, forwarded to the UI, and *never touches the store*. Each
+  proposal line is exactly one `pantry-set` tap on the existing edit
+  endpoints; the whole-proposal correction path ("you missed the rice;
+  that's gochujang, not miso") is free text on the same thread, and the
+  prompt ranks it above the photo, which ranks above the page.
+- **Photos are conversation input, not corpus state.** The image block
+  rides only the live exchange; the stored thread turn carries a
+  `[photo attached]` placeholder and the assistant's reply summarizes what
+  it proposed, so the transcript stands alone. Nothing binary enters the
+  store, sync, or the export — the applied taps are what endure. (Debrief
+  photos on the log are a separate, unbuilt question.)
+- **Recon quality is an eval; recon photos are private.** The scripted
+  suite covers everything below the seam (validation, events, taps). The
+  judgment call — what the model sees on a real shelf — runs as an eval
+  against photos in `evals/fixtures/private/`, which is gitignored: shelf
+  photos are corpus-adjacent personal data and never enter the repo.
 
 ## Architecture
 
@@ -454,16 +482,28 @@ pipeline, fixture tests, messy-page drafting evals). Deliverable: draft a
 recipe from a URL, and fix the equipment list without opening a
 conversation.
 
-**M6 — Store mode, online-first.** Tiered shopping list with
-bought/unfindable taps, photo capture → recon diff, terse store-mode
+**M6 — Pantry recon.** Photo recon pointed at the home pantry — the shared
+machinery for the store-shelf snap (M7) and the cottage arrival ritual (M8),
+built first against the shelves that get looked at daily. Photo capture on
+pantry-page threads (client-side downscale), image blocks through the Model
+seam, and the `propose_pantry_diff` tool: the assistant *proposes* a diff,
+never applies it — misreads are the expected case, so accepted lines are
+per-line taps onto the existing edit endpoints, and the correction path is
+free text on the same thread ("you missed the rice; that's gochujang, not
+miso"), which outranks the photo. Photos are conversation input, not corpus
+state: the thread stores a placeholder, the applied taps are what endure.
+Deliverable: snap the pantry shelf, tap the diff into truth.
+
+**M7 — Store mode, online-first.** Tiered shopping list with
+bought/unfindable taps, M6 recon pointed at store shelves, terse store-mode
 assistant surface. Deliverable: the store flow, with connectivity.
 
-**M7 — Locations & trip prep.** Location selector (sticky, confirmed),
+**M8 — Locations & trip prep.** Location selector (sticky, confirmed),
 per-location readiness/coverage, bring-from-home packing list, arrival
-photo-recon ritual, confidence decay for secondary locations. Deliverable:
-the cottage flow.
+recon ritual (M6 machinery), confidence decay for secondary locations.
+Deliverable: the cottage flow.
 
-**M8 — Offline & install.** PWA manifest + service worker + IndexedDB,
+**M9 — Offline & install.** PWA manifest + service worker + IndexedDB,
 offline tap queue replaying through sync, install polish. Deliverable: the
 store flow again, airplane mode included.
 
