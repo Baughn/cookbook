@@ -80,3 +80,17 @@ export interface ThreadMessage {
 	content: string;
 	created: string;
 }
+
+// A recon proposal streamed off the propose_pantry_diff tool: each line is
+// exactly one pantry-set tap, waiting for the user to accept it.
+export interface ReconLine {
+	item: string;
+	presence: 'have' | 'low' | 'out';
+	name?: string;
+	reason: string;
+}
+
+export interface ReconProposal {
+	location?: string;
+	lines: ReconLine[];
+}

@@ -92,19 +92,22 @@
 		</p>
 	{/if}
 	<Markdown {content} />
-	{#if editorLocation?.kind === 'pantry'}
-		<PantryEditor location={editorLocation.location} onChanged={reload} />
-	{:else if editorLocation?.kind === 'equipment'}
-		<EquipmentEditor location={editorLocation.location} onChanged={reload} />
-	{/if}
+	<!-- Keyed on content: edits from anywhere (taps, recon, revert)
+	     refresh the editors and history alike. -->
+	{#key content}
+		{#if editorLocation?.kind === 'pantry'}
+			<PantryEditor location={editorLocation.location} onChanged={reload} />
+		{:else if editorLocation?.kind === 'equipment'}
+			<EquipmentEditor location={editorLocation.location} onChanged={reload} />
+		{/if}
+	{/key}
 	{#if doc}
 		<hr />
-		<!-- Keyed on content: any edit on the page refreshes its history. -->
 		{#key content}
 			<History {doc} onReverted={reload} />
 		{/key}
 		<h3>Thread</h3>
-		<Thread thread={doc} onExchangeDone={reload} />
+		<Thread thread={doc} onExchangeDone={reload} photos={editorLocation?.kind === 'pantry'} />
 	{/if}
 {:else}
 	<article aria-busy="true">Loading…</article>

@@ -1,11 +1,19 @@
 <script lang="ts">
-	import { api, chat } from '$lib/api';
-	import type { ThreadMessage } from '$lib/types';
+	import { api, chat, type ChatImage } from '$lib/api';
+	import { downscale } from '$lib/photo';
+	import ReconProposal from '$lib/components/ReconProposal.svelte';
+	import type { ReconProposal as Proposal, ThreadMessage } from '$lib/types';
 
 	let {
 		thread,
-		onExchangeDone
-	}: { thread: string; onExchangeDone?: () => void } = $props();
+		onExchangeDone,
+		photos = false
+	}: {
+		thread: string;
+		onExchangeDone?: () => void;
+		/// Offer the camera — pantry pages, where a photo means recon.
+		photos?: boolean;
+	} = $props();
 
 	let messages: ThreadMessage[] = $state([]);
 	let draft = $state('');
@@ -13,6 +21,9 @@
 	let streaming = $state('');
 	let toolNotes: string[] = $state([]);
 	let error: string | null = $state(null);
+	let photoFile: File | null = $state(null);
+	let photoInput: HTMLInputElement | undefined = $state();
+	let proposal: Proposal | null = $state(null);
 
 	async function reload() {
 		messages = (await api.thread(thread)).messages;
@@ -26,20 +37,34 @@
 	async function send(e: SubmitEvent) {
 		e.preventDefault();
 		const message = draft.trim();
-		if (!message || busy) return;
+		if ((!message && !photoFile) || busy) return;
 		draft = '';
 		busy = true;
 		error = null;
 		streaming = '';
 		toolNotes = [];
-		messages = [...messages, { role: 'user', content: message, created: '' }];
+		proposal = null;
+		let image: ChatImage | undefined;
 		try {
-			await chat(message, thread === 'planning' ? null : thread, {
-				onDelta: (text) => (streaming += text),
-				onTool: (name) => (toolNotes = [...toolNotes, name]),
-				onDone: () => {},
-				onError: (message) => (error = message)
-			});
+			if (photoFile) {
+				image = await downscale(photoFile);
+				photoFile = null;
+			}
+			// Mirror the server's transcript placeholder until reload.
+			const shown = image ? (message ? `${message}\n\n[photo attached]` : '[photo attached]') : message;
+			messages = [...messages, { role: 'user', content: shown, created: '' }];
+			await chat(
+				message,
+				thread === 'planning' ? null : thread,
+				{
+					onDelta: (text) => (streaming += text),
+					onTool: (name) => (toolNotes = [...toolNotes, name]),
+					onProposal: (p) => (proposal = p),
+					onDone: () => {},
+					onError: (message) => (error = message)
+				},
+				image
+			);
 			await reload();
 			onExchangeDone?.();
 		} catch (e) {
@@ -49,6 +74,12 @@
 			streaming = '';
 			toolNotes = [];
 		}
+	}
+
+	function pickPhoto(e: Event) {
+		const input = e.currentTarget as HTMLInputElement;
+		photoFile = input.files?.[0] ?? null;
+		input.value = '';
 	}
 </script>
 
@@ -67,19 +98,55 @@
 			<p style="white-space: pre-wrap">{streaming}</p>
 		</article>
 	{/if}
+	{#if proposal}
+		<ReconProposal {proposal} onApplied={() => onExchangeDone?.()} />
+	{/if}
 	{#if error}
 		<article class="error"><p>⚠ {error}</p></article>
 	{/if}
 	<form onsubmit={send}>
 		<div role="group">
+			{#if photos}
+				<input
+					bind:this={photoInput}
+					type="file"
+					accept="image/*"
+					capture="environment"
+					onchange={pickPhoto}
+					aria-label="shelf photo"
+					style="display: none"
+				/>
+				<button
+					type="button"
+					class={photoFile ? '' : 'outline'}
+					title={photoFile ? `attached: ${photoFile.name} (tap to replace)` : 'Snap the shelf'}
+					aria-label="attach photo"
+					disabled={busy}
+					onclick={() => photoInput?.click()}
+				>
+					📷
+				</button>
+			{/if}
 			<input
 				type="text"
-				placeholder={thread === 'planning' ? 'Plan the week…' : 'Ask about this page…'}
+				placeholder={photos
+					? 'Snap the shelf, or ask…'
+					: thread === 'planning'
+						? 'Plan the week…'
+						: 'Ask about this page…'}
 				bind:value={draft}
 				disabled={busy}
 			/>
-			<button type="submit" disabled={busy}>Send</button>
+			<button type="submit" disabled={busy || (!draft.trim() && !photoFile)}>Send</button>
 		</div>
+		{#if photoFile}
+			<small>
+				📷 {photoFile.name} attached — sent with your next message, kept only for this exchange.
+				<button type="button" class="outline" style="width: auto; padding: 0 0.4rem" onclick={() => (photoFile = null)}>
+					✕
+				</button>
+			</small>
+		{/if}
 	</form>
 </section>
 
@@ -89,5 +156,9 @@
 	}
 	article.error {
 		border-color: var(--pico-del-color, #b71c1c);
+	}
+	div[role='group'] > button:first-child {
+		width: auto;
+		flex-grow: 0;
 	}
 </style>

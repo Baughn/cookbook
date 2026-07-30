@@ -2,7 +2,14 @@
 // localStorage after first entry; 401 anywhere sends the user back to the
 // token prompt.
 
-import type { ChangeInfo, LocationView, PageInfo, QueueView, ThreadMessage } from './types';
+import type {
+	ChangeInfo,
+	LocationView,
+	PageInfo,
+	QueueView,
+	ReconProposal,
+	ThreadMessage
+} from './types';
 import { SseFrames } from './sse';
 
 const TOKEN_KEY = 'mise-token';
@@ -82,14 +89,26 @@ export interface ChatEvents {
 	onTool: (name: string) => void;
 	onDone: (reply: string) => void;
 	onError: (message: string) => void;
+	onProposal?: (proposal: ReconProposal) => void;
+}
+
+/// A photo riding one exchange (pantry recon); transient, never stored.
+export interface ChatImage {
+	media_type: string;
+	data: string;
 }
 
 /// One chat exchange, streamed. `page` omitted = the planning thread.
-export async function chat(message: string, page: string | null, events: ChatEvents) {
+export async function chat(
+	message: string,
+	page: string | null,
+	events: ChatEvents,
+	image?: ChatImage
+) {
 	const response = await request('/chat', {
 		method: 'POST',
 		headers: { 'content-type': 'application/json' },
-		body: JSON.stringify(page ? { message, page } : { message })
+		body: JSON.stringify({ message, ...(page ? { page } : {}), ...(image ? { image } : {}) })
 	});
 	const reader = response.body!.getReader();
 	const decoder = new TextDecoder();
@@ -101,6 +120,7 @@ export async function chat(message: string, page: string | null, events: ChatEve
 			const data = frame.data ? JSON.parse(frame.data) : {};
 			if (frame.event === 'delta') events.onDelta(data.text ?? '');
 			else if (frame.event === 'tool') events.onTool(data.name ?? '?');
+			else if (frame.event === 'proposal') events.onProposal?.(data as ReconProposal);
 			else if (frame.event === 'done') events.onDone(data.reply ?? '');
 			else if (frame.event === 'error') events.onError(data.message ?? 'unknown error');
 		}
