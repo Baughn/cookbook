@@ -49,10 +49,40 @@ const fake = createServer((req, res) => {
 		const last = request.messages.at(-1);
 		const blocks = Array.isArray(last.content) ? last.content : [];
 		const afterTools = blocks.some((b) => b.type === 'tool_result');
+		// Recon: a photo in the last turn draws a proposal; a correction
+		// mentioning what was missed draws a revised one. The proposal's
+		// tool result ("tappable lines") marks the turn after either.
+		const hasImage = blocks.some((b) => b.type === 'image');
+		const lastText = blocks
+			.filter((b) => b.type === 'text')
+			.map((b) => b.text)
+			.join(' ');
+		const afterProposal = blocks.some(
+			(b) => b.type === 'tool_result' && String(b.content).includes('tappable')
+		);
 		// The drafting thread and the planning thread get different scripts;
 		// the system prompt says which table we're at.
 		const drafting = JSON.stringify(request.system ?? '').includes('drafting table');
-		if (afterTools) {
+		if (afterProposal) {
+			res.end(textTurn('Proposed pantry updates — tap what fits, correct the rest.'));
+		} else if (hasImage) {
+			res.end(
+				toolTurn('propose_pantry_diff', {
+					location: 'home',
+					lines: [
+						{ item: 'miso', presence: 'out', reason: 'no jar visible' },
+						{ item: 'rice', presence: 'have', name: 'Rice', reason: 'big bag, back left' }
+					]
+				})
+			);
+		} else if (lastText.includes('missed')) {
+			res.end(
+				toolTurn('propose_pantry_diff', {
+					location: 'home',
+					lines: [{ item: 'dashi', presence: 'have', name: 'Dashi', reason: 'taking your word' }]
+				})
+			);
+		} else if (afterTools) {
 			res.end(textTurn(drafting ? 'Drafted tonkatsu.' : 'Queued dal.'));
 		} else if (drafting) {
 			res.end(
