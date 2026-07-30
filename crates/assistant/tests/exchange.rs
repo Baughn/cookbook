@@ -3,6 +3,7 @@
 
 use jiff::civil::DateTime;
 use mise_assistant::exchange::{ExchangeEvent, run_exchange};
+use mise_assistant::fetch::Fetch;
 use mise_assistant::seam::{ContentBlock, Model, ModelTurn, StopReason, TurnRequest};
 use mise_core::types::Slug;
 use mise_store::pages::QueueDoc;
@@ -31,6 +32,19 @@ impl Model for Scripted {
         }
         Ok(turn)
     }
+}
+
+/// Scripted network: url → HTML, no network anywhere near the tests.
+struct ScriptedFetch(std::collections::BTreeMap<String, String>);
+
+impl Fetch for ScriptedFetch {
+    async fn fetch(&mut self, url: &str) -> Result<String, String> {
+        self.0.get(url).cloned().ok_or_else(|| format!("no route to {url}"))
+    }
+}
+
+fn no_fetch() -> ScriptedFetch {
+    ScriptedFetch(std::collections::BTreeMap::new())
 }
 
 /// A scripted clock ticking one second per reading.
@@ -71,6 +85,7 @@ async fn exchange_persists_thread_executes_tools_and_streams() {
     let mut tool_names = Vec::new();
     let exchange = run_exchange(
         &mut model,
+        &mut no_fetch(),
         &mut store,
         &ThreadId::Planning,
         "plan something cheap",
@@ -123,7 +138,7 @@ async fn exchange_persists_thread_executes_tools_and_streams() {
                 .unwrap()
         }
     };
-    run_exchange(&mut model2, &mut store, &ThreadId::Planning, "queue dal?", &mut later, &mut |_| {})
+    run_exchange(&mut model2, &mut no_fetch(), &mut store, &ThreadId::Planning, "queue dal?", &mut later, &mut |_| {})
         .await
         .unwrap();
     assert_eq!(model2.seen[0].messages.len(), 3, "prior turns + new user message");
@@ -146,11 +161,87 @@ async fn stalled_clock_cannot_invert_the_transcript() {
     let mut frozen = || {
         DateTime::constant(2026, 7, 29, 18, 0, 0, 0).to_zoned(jiff::tz::TimeZone::UTC).unwrap()
     };
-    run_exchange(&mut model, &mut store, &ThreadId::Planning, "hello?", &mut frozen, &mut |_| {})
+    run_exchange(&mut model, &mut no_fetch(), &mut store, &ThreadId::Planning, "hello?", &mut frozen, &mut |_| {})
         .await
         .unwrap();
     let msgs = store.thread_messages(&ThreadId::Planning).unwrap();
     assert_eq!(msgs[0].role, Role::User);
     assert_eq!(msgs[1].role, Role::Assistant);
     assert!(msgs[1].created > msgs[0].created);
+}
+
+/// fetch_url is intercepted by the driver and never touches the store:
+/// the scripted network's page comes back extracted, an unknown URL comes
+/// back as an error result, and the exchange carries on.
+#[tokio::test]
+async fn fetch_url_flows_through_the_scripted_network() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store =
+        Store::create(&dir.path().join("corpus"), &Slug::new("home").unwrap(), 2, jiff::Timestamp::UNIX_EPOCH).unwrap();
+    let mut model = Scripted {
+        turns: vec![
+            ModelTurn {
+                content: vec![
+                    ContentBlock::ToolUse {
+                        id: "f1".into(),
+                        name: "fetch_url".into(),
+                        input: json!({"url": "https://example.com/mapo"}),
+                    },
+                    ContentBlock::ToolUse {
+                        id: "f2".into(),
+                        name: "fetch_url".into(),
+                        input: json!({"url": "https://example.com/nowhere"}),
+                    },
+                ],
+                stop: StopReason::ToolUse,
+            },
+            ModelTurn {
+                content: vec![ContentBlock::Text { text: "Drafted.".into() }],
+                stop: StopReason::EndTurn,
+            },
+        ],
+        seen: vec![],
+    };
+    let mut net = ScriptedFetch(
+        [(
+            "https://example.com/mapo".to_string(),
+            r#"<html><head><script type="application/ld+json">
+               {"@type":"Recipe","name":"Mapo tofu",
+                "recipeIngredient":["tofu"],"recipeInstructions":["Cook it."]}
+               </script></head><body>filler</body></html>"#
+                .to_string(),
+        )]
+        .into(),
+    );
+
+    run_exchange(
+        &mut model,
+        &mut net,
+        &mut store,
+        &ThreadId::Planning,
+        "have a look at https://example.com/mapo",
+        &mut ticking(),
+        &mut |_| {},
+    )
+    .await
+    .unwrap();
+
+    // The second request carries both tool results: extracted markdown for
+    // the hit, an error for the miss.
+    let results: Vec<_> = model.seen[1].messages
+        .last()
+        .unwrap()
+        .content
+        .iter()
+        .filter_map(|b| match b {
+            ContentBlock::ToolResult { content, is_error, .. } => Some((content.clone(), *is_error)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(results.len(), 2);
+    assert!(results[0].0.starts_with("# Mapo tofu"), "{}", results[0].0);
+    assert!(results[0].0.contains("1. Cook it."));
+    assert!(!results[0].1);
+    assert!(results[1].0.contains("no route"), "{}", results[1].0);
+    assert!(results[1].1, "a failed fetch is the model's problem, not an abort");
 }

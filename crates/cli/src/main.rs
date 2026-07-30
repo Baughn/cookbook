@@ -521,6 +521,7 @@ fn run_chat(
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(run_exchange(
         &mut client,
+        &mut mise_assistant::fetch::HttpFetch::new(),
         store,
         &thread,
         &message,

@@ -73,6 +73,7 @@ async fn exchange(
         AnthropicClient::new(config.api_key.clone()).with_model(config.model.clone());
     client = client.with_base_url(config.base_url.clone());
     let mut turn = Turn::new(system, history);
+    let mut fetcher = mise_assistant::fetch::HttpFetch::new();
     let mut tools_used: Vec<String> = Vec::new();
     let reply = loop {
         let deltas = tx.clone();
@@ -82,14 +83,19 @@ async fn exchange(
         match turn.absorb(model_turn)? {
             Step::Done(reply) => break reply,
             Step::Execute(calls) => {
-                let mut store = state.store.lock().await;
                 let mut outcomes = Vec::with_capacity(calls.len());
                 for call in &calls {
                     send(tx, "tool", json!({"name": call.name}));
                     tools_used.push(call.name.clone());
-                    outcomes.push(tools::execute(&mut store, &ctx, call)?);
+                    if call.name == mise_assistant::fetch::FETCH_URL {
+                        // The network never holds the store lock.
+                        outcomes
+                            .push(mise_assistant::fetch::execute_fetch(&mut fetcher, call).await);
+                    } else {
+                        let mut store = state.store.lock().await;
+                        outcomes.push(tools::execute(&mut store, &ctx, call)?);
+                    }
                 }
-                drop(store);
                 turn.provide(outcomes)?;
             }
         }

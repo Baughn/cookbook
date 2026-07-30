@@ -282,6 +282,14 @@ pub fn tool_defs() -> Vec<ToolDef> {
             ),
         },
         ToolDef {
+            name: crate::fetch::FETCH_URL,
+            description: "Fetch one web page the user pointed you at and get its readable \
+                          content as markdown — recipe pages come back as clean structured \
+                          data when the site provides it. Only for URLs the user explicitly \
+                          gave you; never go browsing on your own.",
+            input_schema: obj(json!({ "url": s("The URL, as the user gave it.") }), &["url"]),
+        },
+        ToolDef {
             name: "pantry_set",
             description: "Create or update a pantry item. Only the fields you pass change. \
                           Presence is have/low/out — set out rather than removing when \

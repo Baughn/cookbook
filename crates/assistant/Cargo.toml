@@ -16,6 +16,10 @@ serde_json.workspace = true
 thiserror.workspace = true
 reqwest.workspace = true
 futures-util.workspace = true
+dom_smoothie = "0.18"
+htmd = "0.5"
+dom_query = "0.28.0"
+url = "2.5.8"
 
 [dev-dependencies]
 tempfile.workspace = true

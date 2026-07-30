@@ -15,6 +15,8 @@ pub mod client;
 pub mod context;
 pub mod error;
 pub mod exchange;
+pub mod extract;
+pub mod fetch;
 pub mod seam;
 pub mod tools;
 pub mod turn;

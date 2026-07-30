@@ -8,6 +8,7 @@ use mise_store::threads::{Role, ThreadId};
 
 use crate::context;
 use crate::error::Result;
+use crate::fetch::{self, Fetch};
 use crate::seam::Model;
 use crate::tools::{self, ToolCtx};
 use crate::turn::{Step, Turn};
@@ -28,8 +29,9 @@ pub struct Exchange {
 /// the user message's stamp) and once more when the reply persists —
 /// thread order is (created, uid), so the reply must be stamped *after*
 /// the message it answers. Still an input: tests script it.
-pub async fn run_exchange<M: Model>(
+pub async fn run_exchange<M: Model, F: Fetch>(
     model: &mut M,
+    fetcher: &mut F,
     store: &mut Store,
     thread: &ThreadId,
     user_message: &str,
@@ -54,7 +56,11 @@ pub async fn run_exchange<M: Model>(
                 for call in &calls {
                     on_event(ExchangeEvent::ToolCall { name: &call.name });
                     tools_used.push(call.name.clone());
-                    outcomes.push(tools::execute(store, &ctx, call)?);
+                    if call.name == fetch::FETCH_URL {
+                        outcomes.push(fetch::execute_fetch(fetcher, call).await);
+                    } else {
+                        outcomes.push(tools::execute(store, &ctx, call)?);
+                    }
                 }
                 turn.provide(outcomes)?;
             }

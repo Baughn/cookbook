@@ -139,7 +139,8 @@ async fn chat(store: &mut Store, thread: &ThreadId, message: &str) -> Result<Vec
         std::env::var("ANTHROPIC_API_KEY").context("ANTHROPIC_API_KEY not set")?,
     );
     let mut clock = Zoned::now;
-    let exchange = run_exchange(&mut client, store, thread, message, &mut clock, &mut |e| {
+    let mut fetcher = mise_assistant::fetch::HttpFetch::new();
+    let exchange = run_exchange(&mut client, &mut fetcher, store, thread, message, &mut clock, &mut |e| {
         match e {
             ExchangeEvent::TextDelta(d) => print!("{d}"),
             ExchangeEvent::ToolCall { name } => println!("  ⚙ {name}"),
