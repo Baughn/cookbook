@@ -17,6 +17,7 @@ pub mod error;
 pub mod exchange;
 pub mod extract;
 pub mod fetch;
+pub mod recon;
 pub mod seam;
 pub mod tools;
 pub mod turn;

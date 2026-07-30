@@ -7,16 +7,19 @@ use mise_store::Store;
 use mise_store::threads::{Role, ThreadId};
 
 use crate::context;
-use crate::error::Result;
+use crate::error::{AssistantError, Result};
 use crate::fetch::{self, Fetch};
+use crate::recon::{self, Photo};
 use crate::seam::Model;
 use crate::tools::{self, ToolCtx};
 use crate::turn::{Step, Turn};
 
-/// Progress events for display: streamed text and tool activity.
+/// Progress events for display: streamed text, tool activity, and recon
+/// proposals on their way to being shown as tappable lines.
 pub enum ExchangeEvent<'a> {
     TextDelta(&'a str),
     ToolCall { name: &'a str },
+    Proposal(&'a recon::Proposal),
 }
 
 pub struct Exchange {
@@ -29,20 +32,36 @@ pub struct Exchange {
 /// the user message's stamp) and once more when the reply persists —
 /// thread order is (created, uid), so the reply must be stamped *after*
 /// the message it answers. Still an input: tests script it.
+// A driver entry point wears its inputs openly; a params struct here would
+// be ceremony, not clarity.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_exchange<M: Model, F: Fetch>(
     model: &mut M,
     fetcher: &mut F,
     store: &mut Store,
     thread: &ThreadId,
     user_message: &str,
+    photo: Option<&Photo>,
     clock: &mut (dyn FnMut() -> jiff::Zoned + Send),
     on_event: &mut (dyn FnMut(ExchangeEvent<'_>) + Send),
 ) -> Result<Exchange> {
+    if let Some(p) = photo {
+        p.validate().map_err(AssistantError::Protocol)?;
+    }
     let now = clock();
     let ctx = ToolCtx { now: now.clone(), provenance: context::provenance(thread) };
     let now = now.datetime();
-    store.append_thread_message(thread, Role::User, user_message, now)?;
-    let (system, history) = context::assemble(store, thread, now)?;
+    // The photo rides only this exchange: the thread stores a placeholder,
+    // and the image block is attached to the outgoing turn below.
+    let stored = match photo {
+        Some(_) => recon::transcript_text(user_message),
+        None => user_message.to_string(),
+    };
+    store.append_thread_message(thread, Role::User, &stored, now)?;
+    let (system, mut history) = context::assemble(store, thread, now)?;
+    if let (Some(p), Some(last)) = (photo, history.last_mut()) {
+        last.content.insert(0, p.block());
+    }
 
     let mut turn = Turn::new(system, history);
     let mut tools_used = Vec::new();
@@ -58,6 +77,12 @@ pub async fn run_exchange<M: Model, F: Fetch>(
                     tools_used.push(call.name.clone());
                     if call.name == fetch::FETCH_URL {
                         outcomes.push(fetch::execute_fetch(fetcher, call).await);
+                    } else if call.name == recon::PROPOSE_PANTRY_DIFF {
+                        let (outcome, proposal) = recon::execute_propose(call);
+                        if let Some(p) = &proposal {
+                            on_event(ExchangeEvent::Proposal(p));
+                        }
+                        outcomes.push(outcome);
                     } else {
                         outcomes.push(tools::execute(store, &ctx, call)?);
                     }

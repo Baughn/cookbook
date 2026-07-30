@@ -107,6 +107,9 @@ enum Cmd {
         /// Model override; defaults to the client's default.
         #[arg(long)]
         model: Option<String>,
+        /// Attach a photo (jpeg/png/webp/gif) — pantry recon from the CLI.
+        #[arg(long)]
+        photo: Option<std::path::PathBuf>,
     },
     /// Regenerate the markdown export and commit it.
     Export,
@@ -449,7 +452,9 @@ fn run(store: &mut Store, command: Cmd, root: &Path, now: Zoned) -> Result<()> {
             println!("removed {id}");
             Ok(())
         }
-        Cmd::Chat { message, page, model } => run_chat(store, message, page, model, now),
+        Cmd::Chat { message, page, model, photo } => {
+            run_chat(store, message, page, model, photo, now)
+        }
         Cmd::Recipe { cmd } => run_recipe(store, cmd, at),
         Cmd::Equipment { cmd } => run_equipment(store, cmd, at),
         Cmd::Pantry { cmd } => run_pantry(store, cmd, today, at),
@@ -488,16 +493,35 @@ fn run_chat(
     message: String,
     page: Option<String>,
     model: Option<String>,
+    photo: Option<std::path::PathBuf>,
     now: Zoned,
 ) -> Result<()> {
     use std::io::Write as _;
 
+    use base64::Engine as _;
     use mise_assistant::client::AnthropicClient;
     use mise_assistant::context::provenance;
     use mise_assistant::exchange::{ExchangeEvent, run_exchange};
     use mise_store::threads::ThreadId;
 
     let message = must_trim(&message, "message")?;
+    let photo = match &photo {
+        Some(path) => {
+            let media_type = match path.extension().and_then(|e| e.to_str()) {
+                Some("jpg" | "jpeg") => "image/jpeg",
+                Some("png") => "image/png",
+                Some("webp") => "image/webp",
+                Some("gif") => "image/gif",
+                other => bail!("can't tell the image type from extension {other:?}"),
+            };
+            let bytes = std::fs::read(path).with_context(|| format!("reading {path:?}"))?;
+            Some(mise_assistant::recon::Photo {
+                media_type: media_type.to_string(),
+                data: base64::engine::general_purpose::STANDARD.encode(bytes),
+            })
+        }
+        None => None,
+    };
     let thread = match &page {
         Some(p) => ThreadId::parse(p).map_err(|e| anyhow::Error::msg(e.to_string()))?,
         None => ThreadId::Planning,
@@ -525,6 +549,7 @@ fn run_chat(
         store,
         &thread,
         &message,
+        photo.as_ref(),
         &mut clock,
         &mut |event| match event {
             ExchangeEvent::TextDelta(d) => {
@@ -532,6 +557,12 @@ fn run_chat(
                 let _ = std::io::stdout().flush();
             }
             ExchangeEvent::ToolCall { name } => eprintln!("  ⚙ {name}"),
+            ExchangeEvent::Proposal(p) => {
+                for line in &p.lines {
+                    eprintln!("  ⇒ {}: {} ({})", line.item, line.presence, line.reason);
+                }
+                eprintln!("  (proposal only — apply with `mise pantry`, nothing was changed)");
+            }
         },
     ))?;
     println!();

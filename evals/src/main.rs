@@ -145,23 +145,37 @@ async fn chat_with<F: mise_assistant::fetch::Fetch>(
     store: &mut Store,
     thread: &ThreadId,
     message: &str,
-    mut fetcher: F,
+    fetcher: F,
 ) -> Result<(Vec<String>, String)> {
+    let (tools, reply, _) = chat_full(store, thread, message, fetcher, None).await?;
+    Ok((tools, reply))
+}
+
+/// The full-fat variant: photo attached, proposals captured.
+async fn chat_full<F: mise_assistant::fetch::Fetch>(
+    store: &mut Store,
+    thread: &ThreadId,
+    message: &str,
+    mut fetcher: F,
+    photo: Option<&mise_assistant::recon::Photo>,
+) -> Result<(Vec<String>, String, Vec<mise_assistant::recon::Proposal>)> {
     println!("\n>>> {message}\n");
     let mut client = AnthropicClient::new(
         std::env::var("ANTHROPIC_API_KEY").context("ANTHROPIC_API_KEY not set")?,
     );
     let mut clock = Zoned::now;
-    let exchange = run_exchange(&mut client, &mut fetcher, store, thread, message, &mut clock, &mut |e| {
+    let mut proposals = Vec::new();
+    let exchange = run_exchange(&mut client, &mut fetcher, store, thread, message, photo, &mut clock, &mut |e| {
         match e {
             ExchangeEvent::TextDelta(d) => print!("{d}"),
             ExchangeEvent::ToolCall { name } => println!("  ⚙ {name}"),
+            ExchangeEvent::Proposal(p) => proposals.push(p.clone()),
         }
     })
     .await
     .map_err(|e| anyhow::anyhow!("{e}"))?;
     println!("\n");
-    Ok((exchange.tools_used, exchange.reply))
+    Ok((exchange.tools_used, exchange.reply, proposals))
 }
 
 async fn plan_week(report: &mut Report) -> Result<()> {

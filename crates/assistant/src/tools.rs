@@ -292,6 +292,33 @@ pub fn tool_defs() -> Vec<ToolDef> {
             input_schema: obj(json!({ "url": s("The URL, as the user gave it.") }), &["url"]),
         },
         ToolDef {
+            name: crate::recon::PROPOSE_PANTRY_DIFF,
+            description: "Propose pantry updates read off a photo, shown to the user as \
+                          tappable lines — nothing changes until they tap. Use this instead \
+                          of pantry_set whenever a photo is your evidence: photos get \
+                          misread, and the user's corrections are ground truth. One line \
+                          per item, each with the visible evidence as its reason.",
+            input_schema: obj(
+                json!({
+                    "location": location_schema(),
+                    "lines": {
+                        "type": "array",
+                        "description": "One proposed pantry-set per differing item.",
+                        "items": obj(
+                            json!({
+                                "item": s("Pantry item slug."),
+                                "presence": s("have, low, or out."),
+                                "name": s("Display name, for items not yet on the page."),
+                                "reason": s("What in the photo says so: \"open jar, half left\"."),
+                            }),
+                            &["item", "presence", "reason"],
+                        ),
+                    },
+                }),
+                &["lines"],
+            ),
+        },
+        ToolDef {
             name: "pantry_set",
             description: "Create or update a pantry item. Only the fields you pass change. \
                           Presence is have/low/out — set out rather than removing when \
@@ -548,7 +575,7 @@ fn search(store: &Store, input: &Value) -> ToolResult {
 
 // ---------------------------------------------------------------- queue --
 
-fn slugify(s: &str) -> String {
+pub(crate) fn slugify(s: &str) -> String {
     let mut out = String::new();
     for c in s.to_lowercase().chars() {
         if c.is_ascii_lowercase() || c.is_ascii_digit() {
