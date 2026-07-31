@@ -9,11 +9,11 @@ export const TOKEN = 'e2e-token-0123456789abcdef';
 
 export async function enter(page: Page, path: string) {
 	await page.goto(path);
+	// A fresh context always lands on the token gate; fill() auto-waits
+	// for it, where sampling isVisible() mid-load raced and flaked.
 	const gate = page.getByPlaceholder('Bearer token', { exact: false });
-	if (await gate.isVisible()) {
-		await gate.fill(TOKEN);
-		await page.getByRole('button', { name: 'Enter' }).click();
-	}
+	await gate.fill(TOKEN);
+	await page.getByRole('button', { name: 'Enter' }).click();
 }
 
 export async function expectNoSidewaysScroll(page: Page) {

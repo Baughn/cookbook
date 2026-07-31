@@ -17,6 +17,7 @@
 
 	let messages: ThreadMessage[] = $state([]);
 	let draft = $state('');
+	let composer: HTMLTextAreaElement | undefined = $state();
 	let busy = $state(false);
 	let streaming = $state('');
 	let toolNotes: string[] = $state([]);
@@ -90,6 +91,26 @@
 		photoFiles = [...photoFiles, ...Array.from(input.files ?? [])];
 		input.value = '';
 	}
+
+	// Hardware keyboards send on Enter and break lines on Shift+Enter; a
+	// phone keyboard's return key keeps making newlines — the Send button
+	// is right there.
+	const enterSends = !window.matchMedia('(pointer: coarse)').matches;
+
+	function composerKeydown(e: KeyboardEvent) {
+		if (enterSends && e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+			e.preventDefault();
+			(e.currentTarget as HTMLTextAreaElement).form?.requestSubmit();
+		}
+	}
+
+	// The composer grows with its text and shrinks back when sent.
+	$effect(() => {
+		void draft;
+		if (!composer) return;
+		composer.style.height = 'auto';
+		composer.style.height = `${composer.scrollHeight}px`;
+	});
 </script>
 
 <section aria-label="thread">
@@ -137,8 +158,9 @@
 					📷{photoFiles.length > 1 ? photoFiles.length : ''}
 				</button>
 			{/if}
-			<input
-				type="text"
+			<textarea
+				bind:this={composer}
+				rows="1"
 				placeholder={photos
 					? 'Snap the shelf, or ask…'
 					: thread === 'planning'
@@ -146,7 +168,8 @@
 						: 'Ask about this page…'}
 				bind:value={draft}
 				disabled={busy}
-			/>
+				onkeydown={composerKeydown}
+			></textarea>
 			<button type="submit" disabled={busy || (!draft.trim() && photoFiles.length === 0)}>
 				Send
 			</button>
@@ -183,5 +206,10 @@
 	div[role='group'] > button:first-child {
 		width: auto;
 		flex-grow: 0;
+	}
+	div[role='group'] textarea {
+		resize: none;
+		overflow: hidden;
+		margin-bottom: 0;
 	}
 </style>

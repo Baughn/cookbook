@@ -14,9 +14,17 @@ test('planning session: token, queue, chat, edits land', async ({ page }) => {
 	await expect(page.getByText('nothing cooked')).toBeVisible();
 
 	// Ask the planning thread; the scripted model queues dal and replies.
-	await page.getByPlaceholder('Plan the week…').fill('plan something cheap');
-	await page.getByRole('button', { name: 'Send' }).click();
+	// The composer is a real textarea: Shift+Enter breaks the line, Enter
+	// sends (on a keyboard — phones keep Enter as newline).
+	const composer = page.getByPlaceholder('Plan the week…');
+	await composer.fill('plan something');
+	await composer.press('Shift+Enter');
+	await composer.pressSequentially('cheap');
+	await expect(composer).toHaveValue('plan something\ncheap');
+	await composer.press('Enter');
 	await expect(page.getByText('Queued dal.')).toBeVisible();
+	// Both lines landed in the one sent message.
+	await expect(page.getByText('plan something cheap')).toBeVisible();
 
 	// The exchange's edit landed and the queue reloaded.
 	await expect(page.getByText('Dal', { exact: true })).toBeVisible();
