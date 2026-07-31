@@ -326,23 +326,138 @@ pub(crate) async fn thread(
         return unauthorized();
     }
     let store = state.store.lock().await;
-    let result = mise_store::ThreadId::parse(&thread)
-        .and_then(|id| store.thread_messages(&id));
-    match result {
-        Ok(messages) => Json(json!({
-            "thread": thread,
-            "messages": messages
-                .iter()
-                .map(|m| {
-                    json!({
-                        "role": m.role,
-                        "content": m.content,
-                        "created": m.created.to_string(),
-                    })
+    let id = match mise_store::ThreadId::parse(&thread) {
+        Ok(id) => id,
+        Err(e) => return fail(e),
+    };
+    let messages = match store.thread_messages(&id) {
+        Ok(messages) => messages,
+        Err(e) => return fail(e),
+    };
+    // The thread's live recon proposal rides along, each line marked with
+    // the pantry's current presence — applied-ness is derived, never
+    // bookkept, so hand edits count and staleness can't happen. Once
+    // every line already holds, the proposal is done and dropped.
+    let proposal = {
+        let mut proposals = state.proposals.lock().await;
+        let key = id.to_string();
+        match proposals.get(&key) {
+            None => None,
+            Some(p) => {
+                let current = match store.active_view() {
+                    // A proposal for a non-active location can't be
+                    // checked against a pantry yet (M7); leave it
+                    // unannotated rather than guessing.
+                    Ok((slug, view))
+                        if p.location.as_deref().unwrap_or(slug.as_str()) == slug.as_str() =>
+                    {
+                        view.pantry
+                            .iter()
+                            .map(|(slug, item)| {
+                                (slug.as_str().to_string(), item.presence.to_string())
+                            })
+                            .collect()
+                    }
+                    _ => std::collections::BTreeMap::new(),
+                };
+                let (lines, completed) = annotate_proposal(p, &current);
+                if completed {
+                    proposals.remove(&key);
+                    None
+                } else {
+                    Some(json!({ "location": p.location, "lines": lines }))
+                }
+            }
+        }
+    };
+    Json(json!({
+        "thread": thread,
+        "messages": messages
+            .iter()
+            .map(|m| {
+                json!({
+                    "role": m.role,
+                    "content": m.content,
+                    "created": m.created.to_string(),
                 })
-                .collect::<Vec<_>>(),
-        }))
-        .into_response(),
-        Err(e) => fail(e),
+            })
+            .collect::<Vec<_>>(),
+        "proposal": proposal,
+    }))
+    .into_response()
+}
+
+/// Mark each proposal line with the pantry's current presence for its
+/// item; the proposal is complete once every line already holds.
+fn annotate_proposal(
+    proposal: &mise_assistant::recon::Proposal,
+    current: &std::collections::BTreeMap<String, String>,
+) -> (Vec<serde_json::Value>, bool) {
+    let mut completed = true;
+    let lines = proposal
+        .lines
+        .iter()
+        .map(|line| {
+            let now = current.get(&line.item);
+            if now.map(String::as_str) != Some(&line.presence) {
+                completed = false;
+            }
+            json!({
+                "item": line.item,
+                "presence": line.presence,
+                "name": line.name,
+                "reason": line.reason,
+                "current": now,
+            })
+        })
+        .collect();
+    (lines, completed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::annotate_proposal;
+    use mise_assistant::recon::{Proposal, ProposalLine};
+    use std::collections::BTreeMap;
+
+    fn proposal(lines: &[(&str, &str)]) -> Proposal {
+        Proposal {
+            location: None,
+            lines: lines
+                .iter()
+                .map(|(item, presence)| ProposalLine {
+                    item: item.to_string(),
+                    presence: presence.to_string(),
+                    name: None,
+                    reason: "seen".into(),
+                })
+                .collect(),
+        }
+    }
+
+    fn pantry(items: &[(&str, &str)]) -> BTreeMap<String, String> {
+        items.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
+    #[test]
+    fn lines_carry_current_presence_and_complete_when_all_hold() {
+        let p = proposal(&[("miso", "out"), ("rice", "have")]);
+
+        // Nothing applied: absent item has no current, nothing complete.
+        let (lines, completed) = annotate_proposal(&p, &pantry(&[]));
+        assert!(!completed);
+        assert_eq!(lines[0]["current"], serde_json::Value::Null);
+
+        // One line holds, one differs.
+        let (lines, completed) =
+            annotate_proposal(&p, &pantry(&[("miso", "out"), ("rice", "low")]));
+        assert!(!completed);
+        assert_eq!(lines[0]["current"], "out");
+        assert_eq!(lines[1]["current"], "low");
+
+        // Every line already holds — however it got there — is complete.
+        let (_, completed) =
+            annotate_proposal(&p, &pantry(&[("miso", "out"), ("rice", "have")]));
+        assert!(completed);
     }
 }

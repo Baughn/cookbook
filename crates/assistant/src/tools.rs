@@ -297,7 +297,9 @@ pub fn tool_defs() -> Vec<ToolDef> {
                           tappable lines — nothing changes until they tap. Use this instead \
                           of pantry_set whenever a photo is your evidence: photos get \
                           misread, and the user's corrections are ground truth. One line \
-                          per item, each with the visible evidence as its reason.",
+                          per item, each with the visible evidence as its reason. When the \
+                          user corrects a proposal in words, answer with a fresh corrected \
+                          proposal — never point them back at earlier lines.",
             input_schema: obj(
                 json!({
                     "location": location_schema(),

@@ -109,10 +109,13 @@ async fn exchange(
                             .push(mise_assistant::fetch::execute_fetch(&mut fetcher, call).await);
                     } else if call.name == recon::PROPOSE_PANTRY_DIFF {
                         // Validated, forwarded to the UI as tappable
-                        // lines, never applied here.
+                        // lines, never applied here. The latest proposal
+                        // also parks in memory so its taps survive the
+                        // exchange — see AppState::proposals.
                         let (outcome, proposal) = recon::execute_propose(call);
                         if let Some(p) = &proposal {
                             send(tx, "proposal", json!(p));
+                            state.proposals.lock().await.insert(thread.to_string(), p.clone());
                         }
                         outcomes.push(outcome);
                     } else {

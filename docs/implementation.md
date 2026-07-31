@@ -1,6 +1,6 @@
 # Implementation plan
 
-*Last updated: 2026-07-31 (post-M6 mobile polish). Companion to [design.md](design.md); this document
+*Last updated: 2026-07-31 (post-M6 mobile polish, round two: single-representation pages, durable recon proposals, textarea composer). Companion to [design.md](design.md); this document
 covers the technical shape and build order. Decisions here resolve the "Open
 questions" section of the design doc.*
 
@@ -318,6 +318,28 @@ Settled 2026-07-31, after live phone use:
   cell holds prose — stacked wrap-capable flex rows instead (recon
   proposal, pantry editor, history); tables inside rendered markdown
   scroll within their own box.
+- **One representation at a time.** Pantry and equipment pages show
+  either the rendered export (to read) or the editor (to change), behind
+  an Edit/Done toggle — read mode is the default, and the edit
+  affordances stay out of the way until asked for. Both at once was the
+  same data twice on screen.
+- **A proposal lives until completed or superseded.** The latest recon
+  proposal per thread parks in server memory (never the store — it is
+  ephemeral working state like the photos it came from, and the export
+  owes nothing for it) and rides along when the thread loads, so its
+  Apply taps outlast the exchange and a phone tab reload. Applied-ness
+  is derived, not bookkept: the server annotates each line with the
+  pantry's current presence, a line already holding counts as applied
+  (hand edits included), and a proposal whose every line holds is
+  dropped. A newer proposal replaces the old outright, and the tool
+  description tells the model to re-emit a corrected proposal after a
+  words-only correction rather than point at earlier lines. Known
+  compromise: an abandoned half-applied proposal lingers until a future
+  thread-compaction feature; a server restart clears it, honestly — it
+  was a suggestion, not data.
+- **The chat composer is a textarea.** Enter sends and Shift+Enter
+  breaks lines on hardware keyboards; on coarse-pointer devices the
+  return key keeps making newlines and the Send button sends.
 
 ## Architecture
 

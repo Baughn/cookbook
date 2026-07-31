@@ -64,7 +64,9 @@ export const api = {
 	history: (doc: string) =>
 		getJson<{ doc: string; changes: ChangeInfo[] }>(`/api/history/${doc}`),
 	thread: (thread: string) =>
-		getJson<{ thread: string; messages: ThreadMessage[] }>(`/api/thread/${thread}`),
+		getJson<{ thread: string; messages: ThreadMessage[]; proposal: ReconProposal | null }>(
+			`/api/thread/${thread}`
+		),
 	revert: async (doc: string, hash: string) => {
 		await request('/api/revert', {
 			method: 'POST',

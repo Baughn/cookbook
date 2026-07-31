@@ -137,6 +137,140 @@ async fn chat_streams_tools_and_reply_and_persists() {
     assert!(transcript.contains("> Queued dal."), "{transcript}");
 }
 
+/// A fake api.anthropic.com for recon: first call proposes a pantry
+/// diff, second call closes with text.
+async fn spawn_fake_proposer() -> String {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let router = Router::new().route(
+        "/v1/messages",
+        post(move || {
+            let calls = calls.clone();
+            async move {
+                let n = calls.fetch_add(1, Ordering::SeqCst);
+                let body = if n == 0 {
+                    let input = serde_json::json!({
+                        "location": "home",
+                        "lines": [
+                            {"item": "miso", "presence": "out", "reason": "no jar visible"},
+                            {"item": "rice", "presence": "have", "name": "Rice", "reason": "big bag"},
+                        ],
+                    });
+                    let delta = serde_json::json!({
+                        "delta": {"type": "input_json_delta", "partial_json": input.to_string()},
+                    });
+                    sse(&[
+                        ("message_start", "{}"),
+                        (
+                            "content_block_start",
+                            r#"{"content_block":{"type":"tool_use","id":"c1","name":"propose_pantry_diff"}}"#,
+                        ),
+                        ("content_block_delta", &delta.to_string()),
+                        ("content_block_stop", "{}"),
+                        ("message_delta", r#"{"delta":{"stop_reason":"tool_use"}}"#),
+                        ("message_stop", "{}"),
+                    ])
+                } else {
+                    sse(&[
+                        ("message_start", "{}"),
+                        ("content_block_start", r#"{"content_block":{"type":"text","text":""}}"#),
+                        (
+                            "content_block_delta",
+                            r#"{"delta":{"type":"text_delta","text":"Tap what fits."}}"#,
+                        ),
+                        ("content_block_stop", "{}"),
+                        ("message_delta", r#"{"delta":{"stop_reason":"end_turn"}}"#),
+                        ("message_stop", "{}"),
+                    ])
+                };
+                ([("content-type", "text/event-stream")], body).into_response()
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+    format!("http://{addr}")
+}
+
+#[tokio::test]
+async fn recon_proposal_outlives_the_exchange_until_every_line_holds() {
+    let dir = tempfile::tempdir().unwrap();
+    let fake = spawn_fake_proposer().await;
+    let config = ChatConfig {
+        api_key: "test-key".into(),
+        model: "claude-opus-5".into(),
+        base_url: fake,
+    };
+    let (url, _state) = spawn_mise(dir.path(), Some(config)).await;
+    let client = reqwest::Client::new();
+    let thread_url = format!("{url}/api/thread/location/home/pantry");
+    let get_thread = || async {
+        client
+            .get(&thread_url)
+            .bearer_auth(TOKEN)
+            .send()
+            .await
+            .unwrap()
+            .json::<serde_json::Value>()
+            .await
+            .unwrap()
+    };
+
+    // Before any recon, the thread carries no proposal.
+    assert_eq!(get_thread().await["proposal"], serde_json::Value::Null);
+
+    let body = client
+        .post(format!("{url}/chat"))
+        .bearer_auth(TOKEN)
+        .json(&serde_json::json!({"message": "shelf photo", "page": "location/home/pantry"}))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(body.contains("event: proposal"), "proposal streamed: {body}");
+
+    // The exchange is over; the proposal is still live on the thread, its
+    // applied-state read off the pantry itself (nothing applied yet).
+    let proposal = get_thread().await["proposal"].clone();
+    let lines = proposal["lines"].as_array().unwrap();
+    assert_eq!(lines.len(), 2);
+    assert_eq!(lines[0]["item"], "miso");
+    assert_eq!(lines[0]["current"], serde_json::Value::Null);
+
+    // Apply one line as the UI would; the annotation follows the pantry.
+    let apply = |item: &str, presence: &str| {
+        let body =
+            serde_json::json!({"item": item, "presence": presence, "location": "home"});
+        let client = &client;
+        let url = &url;
+        async move {
+            client
+                .post(format!("{url}/api/edit/pantry-set"))
+                .bearer_auth(TOKEN)
+                .json(&body)
+                .send()
+                .await
+                .unwrap()
+                .error_for_status()
+                .unwrap();
+        }
+    };
+    apply("miso", "out").await;
+    let proposal = get_thread().await["proposal"].clone();
+    assert_eq!(proposal["lines"][0]["current"], "out");
+    assert_eq!(proposal["lines"][1]["current"], serde_json::Value::Null);
+
+    // Once every line holds, the proposal is completed and gone.
+    apply("rice", "have").await;
+    assert_eq!(get_thread().await["proposal"], serde_json::Value::Null);
+}
+
 #[tokio::test]
 async fn chat_without_model_is_503_and_bad_token_401() {
     let dir = tempfile::tempdir().unwrap();

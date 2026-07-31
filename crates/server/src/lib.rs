@@ -40,6 +40,11 @@ pub struct AppState {
     pub chat: Option<Arc<ChatConfig>>,
     /// Built web app to serve at `/`; sync/API-only without it.
     pub static_dir: Option<Arc<std::path::PathBuf>>,
+    /// The latest recon proposal per thread — live until completed or
+    /// superseded, so its Apply taps outlast the exchange (and a phone
+    /// tab reload). In memory only: it is ephemeral working state like
+    /// the photos it came from, never store state the export would owe.
+    pub proposals: Arc<Mutex<HashMap<String, mise_assistant::recon::Proposal>>>,
 }
 
 impl AppState {
@@ -49,6 +54,7 @@ impl AppState {
             token: Arc::new(token),
             chat: None,
             static_dir: None,
+            proposals: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 

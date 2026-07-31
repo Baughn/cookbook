@@ -66,11 +66,34 @@ test('photo → proposal → tap → correction → revised proposal', async ({ 
 	await page.getByText('Recent changes', { exact: false }).click();
 	await expect(page.getByText('ui: pantry home: set miso').first()).toBeVisible();
 
-	// A correction is just words on the thread; it draws a fresh proposal.
+	// Mere conversation doesn't take the Apply buttons away: the assistant
+	// replies, the un-applied lines stay tappable, the applied stay ✓.
+	await page.getByPlaceholder('Snap the shelf', { exact: false }).fill('thanks');
+	await page.getByRole('button', { name: 'Send' }).click();
+	await expect(page.getByText('Anytime.')).toBeVisible();
+	await expect(card.getByLabel('apply rice have')).toBeVisible();
+	await expect(card.getByLabel('applied miso')).toBeVisible();
+
+	// Nor does a tab reload (phones discard tabs constantly): the latest
+	// proposal lives on the server until completed or superseded, and
+	// applied-ness is read off the pantry itself.
+	await page.reload();
+	await expect(card.getByLabel('applied miso')).toBeVisible();
+	await expect(card.getByLabel('apply rice have')).toBeVisible();
+
+	// A correction is just words on the thread; it draws a fresh proposal,
+	// which supersedes the old one outright.
 	await page.getByPlaceholder('Snap the shelf', { exact: false }).fill('you missed the dashi');
 	await page.getByRole('button', { name: 'Send' }).click();
 	await expect(card.getByText('taking your word')).toBeVisible();
 	await expect(card.getByText('no jar visible')).toHaveCount(0);
 	await card.getByRole('button', { name: /Apply all/ }).click();
+	await expect(card.getByText('✓ All applied.')).toBeVisible();
+	await page.getByRole('button', { name: 'Edit', exact: true }).click();
 	await expect(page.getByLabel('presence of dashi')).toHaveValue('have');
+
+	// Completed proposals are done for good: a reload shows a clean thread.
+	await page.reload();
+	await expect(page.getByRole('heading', { name: 'Thread' })).toBeVisible();
+	await expect(page.getByLabel('recon proposal')).toHaveCount(0);
 });

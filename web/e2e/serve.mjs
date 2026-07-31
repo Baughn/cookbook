@@ -82,6 +82,9 @@ const fake = createServer((req, res) => {
 					lines: [{ item: 'dashi', presence: 'have', name: 'Dashi', reason: 'taking your word' }]
 				})
 			);
+		} else if (lastText.includes('thanks')) {
+			// Plain conversation — no tools, no proposal.
+			res.end(textTurn('Anytime.'));
 		} else if (afterTools) {
 			res.end(textTurn(drafting ? 'Drafted tonkatsu.' : 'Queued dal.'));
 		} else if (drafting) {

@@ -28,11 +28,18 @@
 	let proposal: Proposal | null = $state(null);
 
 	async function reload() {
-		messages = (await api.thread(thread)).messages;
+		const r = await api.thread(thread);
+		messages = r.messages;
+		// The thread's live proposal (the server keeps the latest until
+		// completed or superseded) — but never downgrade one already
+		// streamed in: the server omits completed proposals, and the ✓s
+		// of one finished this session should stay on screen.
+		proposal = r.proposal ?? proposal;
 	}
 
 	$effect(() => {
 		void thread;
+		proposal = null;
 		reload().catch((e) => (error = String(e)));
 	});
 
@@ -49,7 +56,8 @@
 		error = null;
 		streaming = '';
 		toolNotes = [];
-		proposal = null;
+		// The proposal stays: mere conversation doesn't take the Apply
+		// buttons away. A fresh proposal replaces it via onProposal.
 		try {
 			let images: ChatImage[] = [];
 			if (photoFiles.length > 0) {

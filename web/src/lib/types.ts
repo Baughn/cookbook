@@ -82,12 +82,16 @@ export interface ThreadMessage {
 }
 
 // A recon proposal streamed off the propose_pantry_diff tool: each line is
-// exactly one pantry-set tap, waiting for the user to accept it.
+// exactly one pantry-set tap, waiting for the user to accept it. The
+// latest proposal stays live on its thread until completed or superseded.
 export interface ReconLine {
 	item: string;
 	presence: 'have' | 'low' | 'out';
 	name?: string;
 	reason: string;
+	// The pantry's presence right now, annotated by the server when the
+	// thread loads: a line already holding is a line already applied.
+	current?: string | null;
 }
 
 export interface ReconProposal {
