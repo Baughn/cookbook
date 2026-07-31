@@ -58,13 +58,15 @@ pub fn validate_url(url: &str) -> std::result::Result<(), String> {
             }
             Ok(())
         }
-        Some(url::Host::Ipv4(ip)) => {
-            if ip.is_loopback() || ip.is_private() || ip.is_link_local() || ip.is_unspecified() {
-                return Err(format!("refusing private address {ip}"));
-            }
-            Ok(())
-        }
+        Some(url::Host::Ipv4(ip)) => reject_private_v4(ip),
         Some(url::Host::Ipv6(ip)) => {
+            // An IPv4-mapped or IPv4-compatible literal reaches the v4 stack,
+            // so it has to face the v4 predicate: ::ffff:127.0.0.1 is not
+            // is_loopback() and clears both masks below, which made every
+            // address the v4 arm refuses reachable by respelling it.
+            if let Some(v4) = ip.to_ipv4_mapped().or_else(|| ip.to_ipv4()) {
+                return reject_private_v4(v4);
+            }
             let seg0 = ip.segments()[0];
             let local = ip.is_loopback()
                 || ip.is_unspecified()
@@ -77,6 +79,36 @@ pub fn validate_url(url: &str) -> std::result::Result<(), String> {
         }
     }
 }
+
+fn reject_private_v4(ip: std::net::Ipv4Addr) -> std::result::Result<(), String> {
+    let shared_cgnat = ip.octets()[0] == 100 && (64..128).contains(&ip.octets()[1]);
+    if ip.is_loopback()
+        || ip.is_private()
+        || ip.is_link_local()
+        || ip.is_unspecified()
+        || ip.is_broadcast()
+        || ip.is_documentation()
+        || shared_cgnat
+        || ip.octets()[0] == 0
+    {
+        return Err(format!("refusing private address {ip}"));
+    }
+    Ok(())
+}
+
+/// Whether a redirect hop may be followed. Split out from the client's
+/// closure so the policy is reachable from a test at all: the closure needs
+/// a live `reqwest::redirect::Attempt`, which the suite has no way to build,
+/// so neither the hop cap nor the re-validation had any coverage.
+pub fn redirect_ok(next: &str, hops: usize) -> std::result::Result<(), String> {
+    if hops > MAX_REDIRECTS {
+        return Err("too many redirects".to_string());
+    }
+    validate_url(next)
+}
+
+/// Redirect hops allowed before we stop following.
+pub const MAX_REDIRECTS: usize = 5;
 
 // ------------------------------------------------------------ HTTP impl --
 
@@ -94,10 +126,7 @@ impl HttpFetch {
     #[allow(clippy::new_without_default)]
     pub fn new() -> HttpFetch {
         let redirects = reqwest::redirect::Policy::custom(|attempt| {
-            if attempt.previous().len() > 5 {
-                return attempt.error("too many redirects");
-            }
-            match validate_url(attempt.url().as_str()) {
+            match redirect_ok(attempt.url().as_str(), attempt.previous().len()) {
                 Ok(()) => attempt.follow(),
                 Err(e) => attempt.error(e),
             }
@@ -161,5 +190,53 @@ mod tests {
         for good in ["https://example.com/recipe", "http://93.184.216.34/x"] {
             assert!(validate_url(good).is_ok(), "{good} should pass");
         }
+    }
+
+    /// Every v4 literal the arm above refuses, respelled as IPv6. These all
+    /// passed: `::ffff:127.0.0.1` has segment 0 == 0, so it is not
+    /// `is_loopback()` and clears the unique-local and link-local masks, and
+    /// an IP literal takes no DNS step on the way to the v4 stack.
+    #[test]
+    fn url_policy_rejects_v4_mapped_respellings() {
+        for bad in [
+            "http://[::ffff:127.0.0.1]/x",
+            "http://[::ffff:10.0.0.1]/x",
+            "http://[::ffff:192.168.1.1]/x",
+            "http://[::ffff:169.254.169.254]/x", // cloud metadata
+            "http://[::127.0.0.1]/x",            // deprecated v4-compatible
+            "http://[::ffff:0.0.0.0]/x",
+        ] {
+            assert!(validate_url(bad).is_err(), "{bad} should be refused");
+        }
+    }
+
+    /// Ranges that are not routable public destinations either.
+    #[test]
+    fn url_policy_rejects_the_less_obvious_v4() {
+        for bad in [
+            "http://0.0.0.0/x",
+            "http://0.1.2.3/x",             // 0.0.0.0/8
+            "http://100.64.0.1/x",          // CGNAT
+            "http://255.255.255.255/x",     // broadcast
+            "http://192.0.2.1/x",           // TEST-NET-1
+        ] {
+            assert!(validate_url(bad).is_err(), "{bad} should be refused");
+        }
+        assert!(validate_url("http://100.128.0.1/x").is_ok(), "just past CGNAT is public");
+    }
+
+    /// The hop cap and the per-hop re-validation are the two controls the
+    /// spec names, and neither was reachable from a test before `redirect_ok`
+    /// existed — the closure needs a live `Attempt`.
+    #[test]
+    fn redirects_are_capped_and_revalidated() {
+        assert!(redirect_ok("https://example.com/x", 0).is_ok());
+        assert!(redirect_ok("https://example.com/x", MAX_REDIRECTS).is_ok());
+        assert!(redirect_ok("https://example.com/x", MAX_REDIRECTS + 1).is_err());
+
+        // A public URL redirecting inward is the whole point of re-validating.
+        assert!(redirect_ok("http://127.0.0.1/x", 1).is_err());
+        assert!(redirect_ok("http://[::ffff:169.254.169.254]/x", 1).is_err());
+        assert!(redirect_ok("file:///etc/passwd", 1).is_err());
     }
 }
