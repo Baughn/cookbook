@@ -32,14 +32,29 @@ pub fn load(root: &Path) -> Result<Option<Remote>> {
 pub fn save(root: &Path, remote: &Remote) -> Result<()> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
+
+    // Write a fresh temp file and rename over the target. `mode` on
+    // OpenOptions is the open(2) mode argument, which the kernel applies only
+    // when the call creates the file — rewriting an existing remote.json kept
+    // whatever mode it already had, so a copy restored from a tarball or an
+    // `cp` stayed world-readable with the bearer token in cleartext. Renaming
+    // over the target also makes the write atomic, so an interrupted save
+    // cannot leave a half-written config where a token used to be.
+    let path = root.join("remote.json");
+    let tmp = root.join("remote.json.tmp");
     let mut f = std::fs::OpenOptions::new()
         .write(true)
         .create(true)
         .truncate(true)
         .mode(0o600)
-        .open(root.join("remote.json"))?;
+        .open(&tmp)?;
     f.write_all(serde_json::to_string_pretty(remote)?.as_bytes())?;
     f.write_all(b"\n")?;
+    f.sync_all()?;
+    drop(f);
+    // Belt and braces: if the temp file somehow predates us, its mode is ours.
+    std::fs::set_permissions(&tmp, std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
+    std::fs::rename(&tmp, &path)?;
     Ok(())
 }
 
@@ -127,4 +142,49 @@ pub fn describe(outcome: &SyncOutcome) -> String {
         parts.push("pushed local changes".to_string());
     }
     parts.join("; ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn mode_of(path: &Path) -> u32 {
+        std::fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    fn remote() -> Remote {
+        Remote { url: "wss://cook.example.com/sync".into(), token: "0123456789abcdef".into() }
+    }
+
+    #[test]
+    fn a_fresh_save_is_private() {
+        let dir = tempfile::tempdir().unwrap();
+        save(dir.path(), &remote()).unwrap();
+        assert_eq!(mode_of(&dir.path().join("remote.json")), 0o600);
+    }
+
+    /// The case that was broken: `mode` on OpenOptions is only honoured when
+    /// open(2) creates the file, so rewriting a remote.json restored from a
+    /// tarball (or copied with cp) left the bearer token world-readable.
+    #[test]
+    fn saving_over_a_loose_file_tightens_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("remote.json");
+        std::fs::write(&path, "{}").unwrap();
+        std::fs::set_permissions(&path, PermissionsExt::from_mode(0o644)).unwrap();
+        assert_eq!(mode_of(&path), 0o644, "precondition: the file starts loose");
+
+        save(dir.path(), &remote()).unwrap();
+
+        assert_eq!(mode_of(&path), 0o600);
+        assert_eq!(load(dir.path()).unwrap().unwrap().token, "0123456789abcdef");
+    }
+
+    #[test]
+    fn saving_leaves_no_temp_file_behind() {
+        let dir = tempfile::tempdir().unwrap();
+        save(dir.path(), &remote()).unwrap();
+        assert!(!dir.path().join("remote.json.tmp").exists());
+    }
 }
