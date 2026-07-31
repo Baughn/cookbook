@@ -1,6 +1,6 @@
 # Implementation plan
 
-*Last updated: 2026-07-31 (post-M6 mobile polish, round two: single-representation pages, durable recon proposals, textarea composer). Companion to [design.md](design.md); this document
+*Last updated: 2026-08-01 (schema-change policy, after the first whole-codebase audit). Companion to [design.md](design.md); this document
 covers the technical shape and build order. Decisions here resolve the "Open
 questions" section of the design doc.*
 
@@ -238,10 +238,9 @@ Settled 2026-07-30, at M5 build:
 
 - **No status migration, no compat shim.** The status enum replaced the
   `retired` bool before any corpus existed outside development, so the
-  pre-enum doc shape simply never shipped: no migrator, no tolerant
-  hydrator, nothing to go wrong. (Post-deployment schema changes will
-  need the tolerant-hydrate treatment — revert hydrates *historical*
-  doc states, which a one-shot migration can never fix.)
+  pre-enum doc shape never shipped and needed no migrator. That was the
+  last change for which this reasoning was available — see *Schema
+  changes* below.
 - **First-cook promotion lives in `Store::append_log`.** The signature
   grew provenance + timestamp; no caller can log a cook and forget the
   rule. The sync insert path doesn't promote — the origin device did,
@@ -258,8 +257,15 @@ Settled 2026-07-30, at M5 build:
 - **`Fetch` is a seam like `Model`.** Drivers intercept `fetch_url` and
   run it outside the store lock; tests and evals script the network
   (the eval fixture is a life-story page with no JSON-LD). `HttpFetch`
-  re-validates every redirect hop: http(s) only, private addresses and
-  local hostnames refused, 20 s budget, 2 MB cap.
+  re-validates every redirect hop: http(s) only, 20 s budget, 2 MB cap,
+  and IP literals in loopback or private ranges refused. The host check
+  is **textual, not resolved** — a public hostname whose record points
+  into a private range is fetched, and validation runs before connect, so
+  a rebinding answer wins. Resolve-and-pin (validating every resolved
+  address against the same predicate) is scheduled after M7, as is
+  enforcing in code that a fetched URL came from a user turn rather than
+  from the model. Until then the systemd sandbox is the second line, and
+  the module's hardening is sized for that job.
 - **Drafted-from-somewhere is structural.** `RecipeDoc.source` holds
   the URL a page was drafted from; the export renders it in
   frontmatter, the web app links it. And when a fetch returns a
@@ -341,6 +347,58 @@ Settled 2026-07-31, after live phone use:
   breaks lines on hardware keyboards; on coarse-pointer devices the
   return key keeps making newlines and the Send button sends.
 
+Settled 2026-08-01, after the first whole-codebase audit
+([review](reviews/2026-07-31-codebase-review.md)):
+
+### Schema changes
+
+- **The corpus is never reset.** `mise.db` is the truth, and the part
+  that matters is append-only: Automerge history only grows, and
+  `Store::revert` reads *all* of it. There is no supported path that
+  discards a corpus to change its shape — not on a fresh deploy, not in
+  development once a corpus is real. Wording elsewhere in this document
+  that implied otherwise has been removed.
+- **Every doc-shape change ships a permanent tolerant hydrator.**
+  Hydrate accepts the old shape and the new; reconcile always writes the
+  new. The hydrator is *not* deletable once the corpus has "caught up",
+  because it never does: `revert` hydrates historical doc states, and
+  sync applies changes from peers on older builds. A one-shot converter
+  may rewrite current heads — a legitimate cleanup, so the export and the
+  common path stay tidy — but it is never the mechanism, and being an
+  ordinary forward change, it is itself revertible.
+- **`schema_version` gets a job.** It was write-only: stamped into every
+  doc and rendered into the export, never compared or branched on. It now
+  names the shape a doc was written at, and the hydrator is its reader. A
+  version field nobody reads promises a guarantee the code does not make.
+- **Sync is a shape boundary.** The wire format carries a schema version
+  in the opening round. It need not reject a mismatch — a warning plus a
+  `SyncOutcome` field is enough — but a peer's shape must be legible
+  before its changes are applied.
+- **Enforced at compile time where it can be.** Wherever a doc's fields
+  are enumerated by hand — `Store::revert`'s prose arms — the hydrated
+  value is destructured, so a newly added field is a compile error rather
+  than a silently skipped one. This is what makes the policy enforced
+  rather than merely remembered.
+- **Log and thread row uids become replica-scoped**:
+  `sha256(entry)[..16]-<replica-id>-<n>`, with a per-corpus random
+  replica id. The occurrence index was a purely local `COUNT(*)`, so two
+  partitioned replicas that each logged the same cook twice converged to
+  two rows rather than four. The promise here has always had two halves —
+  the same cook logged on two devices merges to one row, *and* a
+  genuinely repeated identical cook stays distinct — and only the first
+  held. Deferring this was itself a permanent decision, so it is made now
+  while history is shallow.
+
+### Known, scheduled after M7
+
+Recorded in the review, deliberately not fixed in the remediation pass:
+the rotation tool that would make `rotation::recency` reachable from the
+assistant (a feature — new tool, prompt, eval — not a repair); `slugify`
+dropping non-ASCII, so a non-Latin title yields an empty slug; and three
+extraction-quality gaps (ISO-8601 durations losing whole days, an empty
+JSON-LD husk beating Readability, an ignored response charset). None of
+these touches stored data, so none gets more expensive by waiting.
+
 ## Architecture
 
 ```
@@ -386,8 +444,14 @@ testing charter in CLAUDE.md).
 
 **Not CRDTs:** threads and the log are append-only rows in SQLite —
 append-merge on sync is sufficient, and the log's unbounded growth stays out
-of any text CRDT's history. Photos are a content-addressed blob directory on
-disk, referenced by hash from pages and threads.
+of any text CRDT's history.
+
+**Not corpus state at all:** photos. Per the M6 decisions above, a photo is
+conversation input that rides a single exchange — the stored thread turn
+carries a counted placeholder, the applied taps are what endure, and nothing
+binary enters the store, sync, or the export. The `blobs` table and the
+`photos/` directory are reserved and currently unused; no export promise
+covers them. Debrief photos on the log are a separate, unbuilt question.
 
 ### On-disk layout (initial; expect drift)
 
@@ -395,7 +459,7 @@ disk, referenced by hash from pages and threads.
 ~/cookbook/
   mise.db                       # the truth: pages, threads, log, history
   remote.json                   # client devices: saved sync server + token (0600)
-  photos/<hash>.<ext>           # content-addressed blobs
+  photos/<hash>.<ext>           # reserved, unused — see "Not corpus state"
   export/                       # read-only markdown mirror, a git repo
     queue.md                    # global — desires travel with you
     someday.md
@@ -565,9 +629,10 @@ milestone, just a first-run path in the assistant prompt.
   tests for determinism and completeness from day one; BTreeMaps everywhere.
 - **Automerge doc growth.** Fine-grained history grows without bound;
   Automerge compaction exists but interacts with history UI. Revisit when a
-  pantry doc gets slow, not before — and with no on-disk format promised to
-  anyone, swapping the merge machinery later is a data migration, not a
-  breaking change.
+  pantry doc gets slow, not before. Note this is no longer the cheap change
+  it once looked: the corpus is live and its history is immutable and
+  revert-reachable, so swapping the merge machinery is a data migration of
+  the hard kind — see *Schema changes*.
 - **API drift.** The Anthropic client is hand-rolled; pin the API version
   header, keep the surface minimal, and keep evals runnable so drift is
   noticed.

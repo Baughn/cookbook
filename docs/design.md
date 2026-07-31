@@ -1,7 +1,7 @@
 # Design: a living cookbook & meal planner
 
 *Working title: **Mise** (as in mise en place — placeholder, rename freely).*
-*Last updated: 2026-07-30. This document covers UX and features, not implementation.*
+*Last updated: 2026-08-01. This document covers UX and features, not implementation.*
 
 ## Vision
 
@@ -77,9 +77,11 @@ being eaten through ("Sunday's mapo, ~1 serving left"), so coverage gaps are
 visible ("you run out of food Thursday"). The **freezer** — freezers, once
 the chest freezer arrives; a location can have several — is tracked
 separately: frozen portions are long-tail coverage ("you run out Thursday —
-unless you defrost the March bolognese"), and frozen raw proteins add a
-defrost step to readiness. Same presence-and-rough-date model, much slower
-decay. Coverage warnings only speak when the app is open; there is no
+unless you defrost the March bolognese"). A dish built on a frozen raw
+protein carries the defrost as its own lead time — the recipe says so, the
+queue surfaces the act-now step — rather than readiness inferring it from
+what happens to be in the freezer. Same presence-and-rough-date model, much
+slower decay. Coverage warnings only speak when the app is open; there is no
 away-mode to set — not opening it *is* the away mode.
 
 Queue entries are added three ways: you ask for suggestions, the assistant

@@ -1,8 +1,12 @@
 //! The store proper: one SQLite file (`mise.db`) holding Automerge docs as
 //! append-only change rows plus periodic snapshots, the append-only cook log,
-//! conversation threads, and blob metadata. Beside it, `export/` — the
-//! read-only markdown mirror, a git repo the store regenerates and commits
-//! after every change batch.
+//! and conversation threads. Beside it, `export/` — the read-only markdown
+//! mirror, a git repo the store regenerates and commits after every change
+//! batch.
+//!
+//! Nothing binary lives here: recon photos are conversation input that rides
+//! a single exchange, never corpus state (see the M6 decisions in
+//! docs/implementation.md).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -69,6 +73,9 @@ CREATE TABLE thread_messages (
 ) STRICT;
 CREATE UNIQUE INDEX ux_thread_messages_uid ON thread_messages(uid);
 CREATE INDEX ix_thread_messages_thread ON thread_messages(thread, created, uid);
+-- Reserved, unused: photos are conversation input, not corpus state, so
+-- nothing writes here. Kept because dropping it would need a schema bump for
+-- no gain; no export promise covers it.
 CREATE TABLE blobs (
   hash TEXT PRIMARY KEY,
   ext  TEXT NOT NULL
