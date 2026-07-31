@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { marked } from 'marked';
+	import { renderMarkdown } from '$lib/markdown';
 
 	let { content }: { content: string } = $props();
 
@@ -20,7 +20,7 @@
 	}
 
 	let parts = $derived(split(content));
-	let html = $derived(marked.parse(parts.body, { async: false }) as string);
+	let html = $derived(renderMarkdown(parts.body));
 </script>
 
 {#if parts.meta.length > 0}
@@ -37,7 +37,9 @@
 		{/each}
 	</p>
 {/if}
-<!-- The export is our own render output, not third-party input. -->
+<!-- Safe to inject: renderMarkdown escapes raw HTML and refuses executable
+     URL schemes. Page content is transitively third-party — fetch_url drafts
+     recipes from arbitrary sites — so it is never trusted here. -->
 <div class="markdown">{@html html}</div>
 
 <style>
