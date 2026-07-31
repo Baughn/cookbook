@@ -44,8 +44,8 @@ Five findings are deliberately out of scope and scheduled after M7 (recorded in
 - [x] Schema-change policy; honest fetch guarantee; photos drift; uid decision; defrost settled — #92, and the doc halves of #19, #48, #94, #5
 
 ### Phase 2 — Guardrails & hydrate mechanism
-- [ ] Shared server test harness *(enabler — four `spawn_*` copies today)*
-- [ ] Revert destructures its docs — #7, #10 *(must precede H7)*
+- [x] Shared server test harness *(enabler — four `spawn_*` copies today)*
+- [x] Revert destructures its docs — #7, #10 *(must precede H7)*
 - [ ] Tolerant hydrate mechanism + historical doc-byte fixtures *(policy)*
 - [ ] Sync wire carries a schema version — #24
 - [ ] Shutdown drains; the corpus is private — #84, #86, #87

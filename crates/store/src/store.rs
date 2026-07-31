@@ -22,8 +22,8 @@ use rusqlite::{Connection, OptionalExtension, params};
 use crate::docid::DocId;
 use crate::error::{Result, StoreError};
 use crate::pages::{
-    CorpusState, EquipmentDoc, FactsDoc, FridgeDoc, LocationDocs, PantryDoc, QueueDoc,
-    ShoppingDoc, ShopsDoc, StateDoc, SteeringDoc,
+    CorpusState, EquipmentDoc, FactsDoc, FridgeDoc, LocationDocs, PantryDoc, QueueDoc, RecipeDoc,
+    ShoppingDoc, ShopsDoc, StateDoc, SteeringDoc, TechniqueDoc,
 };
 use crate::threads::{Role, ThreadId, ThreadMessage};
 
@@ -607,32 +607,52 @@ impl Store {
             // Prose pages: scalar fields through reconcile, the body through
             // the char-safe splice path (a hydrated Text from the historical
             // fork cannot reconcile onto the current doc).
+            //
+            // Both arms *destructure* the historical value rather than
+            // listing the fields they care about, so a new field on either
+            // doc is a compile error here instead of a field that silently
+            // stops being revertible. `source` was exactly that: absent from
+            // the old hand-written list, so a wrong source URL could not be
+            // undone from the history UI at all.
             DocId::Recipe(_) => {
-                let value: crate::pages::RecipeDoc = hydrate(&old)?;
-                self.modify::<crate::pages::RecipeDoc>(id, provenance, at, |r| {
-                    r.schema_version = value.schema_version;
-                    r.title = value.title;
-                    r.servings = value.servings;
-                    r.effort = value.effort;
-                    r.lead = value.lead;
-                    r.tags = value.tags;
-                    r.equipment = value.equipment;
-                    r.ingredients = value.ingredients;
-                    r.status = value.status;
+                let value: RecipeDoc = hydrate(&old)?;
+                let RecipeDoc {
+                    schema_version,
+                    title,
+                    servings,
+                    effort,
+                    lead,
+                    tags,
+                    equipment,
+                    ingredients,
+                    source,
+                    status,
+                    body,
+                } = value;
+                let old_body = body.as_str().to_string();
+                self.modify::<RecipeDoc>(id, provenance, at, |r| {
+                    r.schema_version = schema_version;
+                    r.title = title;
+                    r.servings = servings;
+                    r.effort = effort;
+                    r.lead = lead;
+                    r.tags = tags;
+                    r.equipment = equipment;
+                    r.ingredients = ingredients;
+                    r.source = source;
+                    r.status = status;
+                    // `body` is spliced below, not reconciled.
                 })?;
-                let old_body = {
-                    let value: crate::pages::RecipeDoc = hydrate(&old)?;
-                    value.body.as_str().to_string()
-                };
                 self.update_body(id, &old_body, provenance, at)
             }
             DocId::Technique(_) => {
-                let value: crate::pages::TechniqueDoc = hydrate(&old)?;
-                let old_body = value.body.as_str().to_string();
-                self.modify::<crate::pages::TechniqueDoc>(id, provenance, at, |t| {
-                    t.schema_version = value.schema_version;
-                    t.title = value.title;
-                    t.tags = value.tags;
+                let value: TechniqueDoc = hydrate(&old)?;
+                let TechniqueDoc { schema_version, title, tags, body } = value;
+                let old_body = body.as_str().to_string();
+                self.modify::<TechniqueDoc>(id, provenance, at, |t| {
+                    t.schema_version = schema_version;
+                    t.title = title;
+                    t.tags = tags;
                 })?;
                 self.update_body(id, &old_body, provenance, at)
             }

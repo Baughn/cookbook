@@ -382,6 +382,120 @@ proptest::proptest! {
         let now: PantryDoc = store.get(&id).unwrap();
         proptest::prop_assert_eq!(&now, &snapshots[k]);
     }
+
+    /// The same property over a *recipe*, which is the path that can drift.
+    /// Structured pages revert by whole-value assign and are correct by
+    /// construction; the prose pages restore field by field, and every
+    /// `RecipeDoc` field has to survive the round trip. `source` did not:
+    /// it was missing from the hand-written list, so a wrong source URL
+    /// could not be undone from the history UI at all.
+    #[test]
+    fn revert_reaches_every_point_in_a_recipes_history(
+        edits in proptest::collection::vec(recipe_edit(), 1..8),
+        pick in proptest::prelude::any::<proptest::sample::Index>(),
+    ) {
+        use mise_store::pages::RecipeDoc;
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = recipe_with_body(&dir.path().join("c"), "Start here.");
+        let id = DocId::Recipe(slug("dish"));
+
+        // An edit that happens to write the value already there produces no
+        // change at all, so snapshots are keyed off the history length
+        // rather than the loop index.
+        let mut snapshots: Vec<RecipeDoc> = vec![store.get(&id).unwrap()];
+        for (i, edit) in edits.iter().enumerate() {
+            apply_recipe_edit(&mut store, &id, edit, ts(i as i64 + 1));
+            let len = store.history(&id).unwrap().len();
+            proptest::prop_assert!(
+                len <= snapshots.len() + 1,
+                "one edit is at most one change: {} -> {len}",
+                snapshots.len(),
+            );
+            snapshots.truncate(len - 1);
+            snapshots.push(store.get(&id).unwrap());
+        }
+
+        let history = store.history(&id).unwrap();
+        proptest::prop_assert_eq!(history.len(), snapshots.len());
+        let k = pick.index(history.len());
+        store.revert(&id, &history[k].hash, "prop: revert", ts(1000)).unwrap();
+        let now: RecipeDoc = store.get(&id).unwrap();
+        proptest::prop_assert_eq!(&now, &snapshots[k]);
+    }
+}
+
+/// One generated edit to a recipe. There is a variant per mutable
+/// `RecipeDoc` field, because "all of them come back" is the property.
+#[derive(Debug, Clone)]
+enum RecipeEdit {
+    Title(String),
+    Servings(u32),
+    Effort(usize),
+    Lead(Option<u32>),
+    Tag(String, String),
+    Equipment(Vec<String>),
+    Ingredient(String, Option<String>),
+    Source(Option<String>),
+    Status(usize),
+    Body(String),
+}
+
+fn recipe_edit() -> impl proptest::prelude::Strategy<Value = RecipeEdit> {
+    use proptest::prelude::*;
+    let word = || proptest::string::string_regex("[a-z]{1,6}").unwrap();
+    prop_oneof![
+        word().prop_map(RecipeEdit::Title),
+        (1u32..12).prop_map(RecipeEdit::Servings),
+        (0usize..2).prop_map(RecipeEdit::Effort),
+        proptest::option::of(1u32..600).prop_map(RecipeEdit::Lead),
+        (word(), word()).prop_map(|(k, v)| RecipeEdit::Tag(k, v)),
+        proptest::collection::vec(word(), 0..3).prop_map(RecipeEdit::Equipment),
+        (word(), proptest::option::of(word()))
+            .prop_map(|(t, p)| RecipeEdit::Ingredient(t, p)),
+        proptest::option::of(word().prop_map(|w| format!("https://example.com/{w}")))
+            .prop_map(RecipeEdit::Source),
+        (0usize..3).prop_map(RecipeEdit::Status),
+        word().prop_map(RecipeEdit::Body),
+    ]
+}
+
+fn apply_recipe_edit(
+    store: &mut Store,
+    id: &DocId,
+    edit: &RecipeEdit,
+    at: jiff::Timestamp,
+) {
+    use mise_store::pages::{IngredientDoc, LeadTimeDoc, RecipeDoc};
+
+    if let RecipeEdit::Body(text) = edit {
+        store.update_body(id, text, "prop: body", at).unwrap();
+        return;
+    }
+    store
+        .modify::<RecipeDoc>(id, "prop: edit", at, |r| match edit {
+            RecipeEdit::Title(t) => r.title = t.clone(),
+            RecipeEdit::Servings(n) => r.servings = *n,
+            RecipeEdit::Effort(i) => r.effort = ["weekday", "project"][*i].into(),
+            RecipeEdit::Lead(m) => {
+                r.lead = m.map(|minutes| LeadTimeDoc {
+                    minutes,
+                    act_now_step: "Take it out.".into(),
+                })
+            }
+            RecipeEdit::Tag(k, v) => {
+                r.tags.insert(k.clone(), v.clone());
+            }
+            RecipeEdit::Equipment(items) => r.equipment = items.clone(),
+            RecipeEdit::Ingredient(text, pantry) => r.ingredients.push(IngredientDoc {
+                text: text.clone(),
+                pantry: pantry.clone(),
+            }),
+            RecipeEdit::Source(s) => r.source = s.clone(),
+            RecipeEdit::Status(i) => r.status = ["draft", "active", "retired"][*i].into(),
+            RecipeEdit::Body(_) => unreachable!("handled above"),
+        })
+        .unwrap();
 }
 
 // ----------------------------------------------------- recipe status --
