@@ -1,37 +1,21 @@
 //! The M2 deliverable, end to end over real WebSockets: two clients
 //! converging through the server, offline edits included — plus auth.
 
+mod support;
+
 use std::collections::BTreeMap;
-use std::path::Path;
 
 use futures_util::{SinkExt, StreamExt};
 use jiff::civil::Date;
-use mise_core::types::{CookKind, LogEntry, Slug};
+use mise_core::types::{CookKind, LogEntry};
 use mise_store::pages::{DishRefDoc, PantryDoc, PantryItemDoc, QueueDoc, QueueEntryDoc};
 use mise_store::render::render;
 use mise_store::sync::{Peer, SyncOutcome, WireMsg};
 use mise_store::{DocId, Store};
-use mise_server::{AppState, app};
+use support::{Server, TOKEN, WRONG_TOKEN, empty, slug};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::protocol::Message;
 use tokio_tungstenite::connect_async;
-
-const TOKEN: &str = "test-token-0123456789abcdef";
-
-fn slug(s: &str) -> Slug {
-    Slug::new(s).unwrap()
-}
-
-async fn spawn_server(dir: &Path) -> String {
-    let mut store = Store::create(&dir.join("server"), &slug("home"), 2, jiff::Timestamp::UNIX_EPOCH).unwrap();
-    store.export("init: empty corpus").unwrap();
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move {
-        axum::serve(listener, app(AppState::new(store, TOKEN.to_string()))).await.unwrap();
-    });
-    format!("ws://{addr}/sync")
-}
 
 /// The client side of a session: initiator Peer over a real socket.
 async fn client_sync(store: &mut Store, url: &str, token: &str) -> SyncOutcome {
@@ -66,7 +50,8 @@ async fn client_sync(store: &mut Store, url: &str, token: &str) -> SyncOutcome {
 #[tokio::test]
 async fn two_clients_converge_through_the_server() {
     let dir = tempfile::tempdir().unwrap();
-    let url = spawn_server(dir.path()).await;
+    let server = Server::spawn(empty(dir.path())).await;
+    let url = server.ws_url("/sync");
 
     // Two fresh devices pull the corpus.
     let mut a = Store::create_bare(&dir.path().join("a")).unwrap();
@@ -143,9 +128,10 @@ async fn two_clients_converge_through_the_server() {
 #[tokio::test]
 async fn bad_token_is_rejected_at_upgrade() {
     let dir = tempfile::tempdir().unwrap();
-    let url = spawn_server(dir.path()).await;
+    let server = Server::spawn(empty(dir.path())).await;
+    let url = server.ws_url("/sync");
 
-    for token in ["wrong-token-0123456789abcdef", ""] {
+    for token in [WRONG_TOKEN, ""] {
         let mut request = url.clone().into_client_request().unwrap();
         if !token.is_empty() {
             request
@@ -161,8 +147,8 @@ async fn bad_token_is_rejected_at_upgrade() {
 #[tokio::test]
 async fn query_token_works_for_browserish_clients() {
     let dir = tempfile::tempdir().unwrap();
-    let url = spawn_server(dir.path()).await;
+    let server = Server::spawn(empty(dir.path())).await;
     let mut a = Store::create_bare(&dir.path().join("a")).unwrap();
-    let out = client_sync(&mut a, &format!("{url}?token={TOKEN}"), "").await;
+    let out = client_sync(&mut a, &server.ws_url(&format!("/sync?token={TOKEN}")), "").await;
     assert!(out.docs_updated.contains("queue"), "{out:?}");
 }
