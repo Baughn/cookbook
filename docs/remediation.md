@@ -68,7 +68,7 @@ Five findings are deliberately out of scope and scheduled after M7 (recorded in
 - [x] v4-mapped literals are refused — #46, #50
 - [ ] A CSP on static responses *(split from #67; needs an e2e run to prove the SPA still boots)*
 - [ ] Auth is a layer, not ten call sites — #56, #57, #77 *(H4; route-table test first)*
-- [ ] The token file's mode is enforced on every write — #61
+- [x] The token file's mode is enforced on every write — #61
 - [ ] Provenance is normalized before it enters history — #41
 
 ### Phase 5 — Store-mode readiness (web + tools)
