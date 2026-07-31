@@ -39,8 +39,25 @@ pub enum WireMsg {
     Error { message: String },
 }
 
+/// A peer that sends no `schema` is running a build from before the field
+/// existed, which is schema version 1 — the only version that ever shipped
+/// without it.
+pub const SCHEMA_ABSENT: u32 = 1;
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Round {
+    /// The doc shape this peer writes ([`crate::pages::SCHEMA_VERSION`]).
+    /// Sent once per side, alongside the uid lists.
+    ///
+    /// Sync is where a shape crosses a build boundary: the CRDT layer merges
+    /// changes without caring what is in them, so an un-upgraded phone can
+    /// reintroduce an old shape at any time — which is why shape changes ship
+    /// a permanent tolerant hydrator and not a converter. This says which
+    /// shape the changes in this session were written at. It is not a gate:
+    /// refusing a newer peer's changes would lose exactly the offline edits
+    /// sync exists to carry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema: Option<u32>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub docs: Vec<DocMsg>,
     /// Sent once per side, in its first round.
@@ -53,6 +70,23 @@ pub struct Round {
     pub thread_uids: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub thread_entries: Vec<ThreadRow>,
+}
+
+impl Round {
+    /// Nothing to say: no docs, no rows, and no first-round announcements.
+    ///
+    /// Destructured rather than field-listed so a new wire field has to
+    /// decide whether it counts as payload. `reply_empty` used to check four
+    /// of the five fields and was correct only by accident.
+    pub fn is_empty(&self) -> bool {
+        let Round { schema, docs, log_uids, log_entries, thread_uids, thread_entries } = self;
+        schema.is_none()
+            && docs.is_empty()
+            && log_uids.is_none()
+            && log_entries.is_empty()
+            && thread_uids.is_none()
+            && thread_entries.is_empty()
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -98,6 +132,41 @@ pub struct SyncOutcome {
     pub threads_added: usize,
     /// Thread messages sent to the peer.
     pub threads_sent: usize,
+    /// The doc shape the other side writes, once it has said. `None` until
+    /// the peer's first round arrives.
+    pub peer_schema: Option<u32>,
+}
+
+impl SyncOutcome {
+    /// Nothing moved in either direction. Not the same as
+    /// `== SyncOutcome::default()`: the peer's schema is something we
+    /// learned, not something we transferred, and an idempotent re-sync
+    /// still learns it.
+    ///
+    /// Destructured so a new field has to say which of the two it is.
+    pub fn is_empty(&self) -> bool {
+        let SyncOutcome {
+            docs_updated,
+            log_added,
+            log_sent,
+            threads_added,
+            threads_sent,
+            peer_schema: _,
+        } = self;
+        docs_updated.is_empty()
+            && *log_added == 0
+            && *log_sent == 0
+            && *threads_added == 0
+            && *threads_sent == 0
+    }
+
+    /// Whether the peer writes a shape this build has never heard of. Its
+    /// changes still apply — refusing them would drop the offline edits sync
+    /// exists to carry — but the export may not show everything in them
+    /// until this side is upgraded.
+    pub fn peer_is_newer(&self) -> bool {
+        self.peer_schema.is_some_and(|v| v > crate::pages::SCHEMA_VERSION)
+    }
 }
 
 struct DocPeer {
@@ -113,10 +182,9 @@ struct DocPeer {
 pub struct Peer {
     initiator: bool,
     docs: BTreeMap<String, DocPeer>,
-    /// Covers both the log and thread uid exchanges — they travel together.
+    /// Covers both the log and thread uid exchanges — they travel together,
+    /// and the schema announcement rides with them.
     sent_uids: bool,
-    pending_entries: Option<Vec<LogRow>>,
-    pending_threads: Option<Vec<ThreadRow>>,
     outcome: SyncOutcome,
 }
 
@@ -128,23 +196,17 @@ impl Peer {
             let baseline = doc.get_heads();
             docs.insert(id, DocPeer { doc, state: SyncState::new(), baseline });
         }
-        Ok(Peer {
-            initiator,
-            docs,
-            sent_uids: false,
-            pending_entries: None,
-            pending_threads: None,
-            outcome: SyncOutcome::default(),
-        })
+        Ok(Peer { initiator, docs, sent_uids: false, outcome: SyncOutcome::default() })
     }
 
-    /// The initiator's opening round: sync messages for every doc it knows,
-    /// plus its log and thread uids.
+    /// The initiator's opening round: the shape it writes, sync messages for
+    /// every doc it knows, plus its log and thread uids.
     pub fn initial_round(&mut self, store: &Store) -> Result<WireMsg> {
         assert!(self.initiator, "only the initiator opens");
         let docs = self.generate_all();
         self.sent_uids = true;
         Ok(WireMsg::Round(Round {
+            schema: Some(crate::pages::SCHEMA_VERSION),
             docs,
             log_uids: Some(store.log_uids()?),
             log_entries: vec![],
@@ -206,6 +268,12 @@ impl Peer {
                     || !round.log_entries.is_empty()
                     || !round.thread_entries.is_empty();
 
+                // Learned once and kept: only the first round announces it,
+                // and a peer from before the field existed is version 1.
+                if self.outcome.peer_schema.is_none() {
+                    self.outcome.peer_schema = Some(round.schema.unwrap_or(SCHEMA_ABSENT));
+                }
+
                 for dm in &round.docs {
                     let id = DocId::parse(&dm.doc)?;
                     let dp = self.docs.entry(id.to_string()).or_insert_with(|| DocPeer {
@@ -231,53 +299,50 @@ impl Peer {
                 }
                 self.commit(store)?;
 
+                // What they are missing, answered in this same round — these
+                // are locals, not protocol state: they are built and shipped
+                // without ever outliving the call.
+                let mut log_entries: Vec<LogRow> = vec![];
                 if let Some(uids) = &round.log_uids {
                     let theirs: BTreeSet<&String> = uids.iter().collect();
-                    let missing: Vec<LogRow> = store
+                    log_entries = store
                         .log_rows()?
                         .into_iter()
                         .filter(|(uid, _)| !theirs.contains(uid))
                         .map(|(uid, entry)| LogRow { uid, entry })
                         .collect();
-                    self.pending_entries = Some(missing);
                 }
+                let mut thread_entries: Vec<ThreadRow> = vec![];
                 if let Some(uids) = &round.thread_uids {
                     let theirs: BTreeSet<&String> = uids.iter().collect();
-                    let missing: Vec<ThreadRow> = store
+                    thread_entries = store
                         .thread_rows()?
                         .into_iter()
                         .filter(|(uid, _)| !theirs.contains(uid))
                         .map(|(uid, message)| ThreadRow { uid, message })
                         .collect();
-                    self.pending_threads = Some(missing);
                 }
-
-                let docs = self.generate_all();
-                let (log_uids, thread_uids) = if self.sent_uids {
-                    (None, None)
-                } else {
-                    self.sent_uids = true;
-                    (Some(store.log_uids()?), Some(store.thread_uids()?))
-                };
-                let log_entries = self.pending_entries.take().unwrap_or_default();
                 self.outcome.log_sent += log_entries.len();
-                let thread_entries = self.pending_threads.take().unwrap_or_default();
                 self.outcome.threads_sent += thread_entries.len();
 
-                let reply_empty = docs.is_empty()
-                    && log_uids.is_none()
-                    && log_entries.is_empty()
-                    && thread_entries.is_empty();
-                if self.initiator && reply_empty && !incoming_payload {
+                let docs = self.generate_all();
+                let (schema, log_uids, thread_uids) = if self.sent_uids {
+                    (None, None, None)
+                } else {
+                    self.sent_uids = true;
+                    (
+                        Some(crate::pages::SCHEMA_VERSION),
+                        Some(store.log_uids()?),
+                        Some(store.thread_uids()?),
+                    )
+                };
+
+                let reply =
+                    Round { schema, docs, log_uids, log_entries, thread_uids, thread_entries };
+                if self.initiator && reply.is_empty() && !incoming_payload {
                     Ok(Some(WireMsg::Done))
                 } else {
-                    Ok(Some(WireMsg::Round(Round {
-                        docs,
-                        log_uids,
-                        log_entries,
-                        thread_uids,
-                        thread_entries,
-                    })))
+                    Ok(Some(WireMsg::Round(reply)))
                 }
             }
         }

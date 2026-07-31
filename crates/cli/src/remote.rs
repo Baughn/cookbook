@@ -116,8 +116,20 @@ async fn sync_async(store: &mut Store, url: &str, token: &str) -> Result<SyncOut
 }
 
 pub fn describe(outcome: &SyncOutcome) -> String {
-    if *outcome == SyncOutcome::default() {
-        return "already in sync".to_string();
+    // The peer's schema is something we learned, not something we moved, so
+    // an idempotent re-sync still reads as "already in sync" — but say so
+    // when the other side writes a shape this build has never heard of.
+    let stale = if outcome.peer_is_newer() {
+        format!(
+            " (the server writes schema {}, this build reads {} — upgrade to see everything)",
+            outcome.peer_schema.unwrap_or_default(),
+            mise_store::pages::SCHEMA_VERSION,
+        )
+    } else {
+        String::new()
+    };
+    if outcome.is_empty() {
+        return format!("already in sync{stale}");
     }
     let mut parts = Vec::new();
     if !outcome.docs_updated.is_empty() {
@@ -141,7 +153,7 @@ pub fn describe(outcome: &SyncOutcome) -> String {
     if parts.is_empty() {
         parts.push("pushed local changes".to_string());
     }
-    parts.join("; ")
+    format!("{}{stale}", parts.join("; "))
 }
 
 #[cfg(test)]

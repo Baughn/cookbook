@@ -156,8 +156,8 @@ fn offline_edits_converge_and_resync_is_idempotent() {
 
     // Nothing left to say: a second session moves no data.
     let (out_a, out_b) = run_sync(&mut a, &mut b);
-    assert_eq!(out_a, SyncOutcome::default(), "{out_a:?}");
-    assert_eq!(out_b, SyncOutcome::default(), "{out_b:?}");
+    assert!(out_a.is_empty(), "{out_a:?}");
+    assert!(out_b.is_empty(), "{out_b:?}");
 }
 
 #[test]
@@ -224,8 +224,8 @@ fn thread_messages_sync_and_dedupe() {
     );
 
     let (out_a, out_b) = run_sync(&mut a, &mut b);
-    assert_eq!(out_a, SyncOutcome::default());
-    assert_eq!(out_b, SyncOutcome::default());
+    assert!(out_a.is_empty(), "{out_a:?}");
+    assert!(out_b.is_empty(), "{out_b:?}");
 }
 
 // ------------------------------------------------------------ properties --
@@ -341,8 +341,8 @@ proptest! {
         prop_assert!(exports_equal(&a, &b));
 
         let (out_a, out_b) = run_sync(&mut a, &mut b);
-        prop_assert_eq!(out_a, SyncOutcome::default());
-        prop_assert_eq!(out_b, SyncOutcome::default());
+        prop_assert!(out_a.is_empty(), "{:?}", out_a);
+        prop_assert!(out_b.is_empty(), "{:?}", out_b);
     }
 }
 
@@ -458,4 +458,104 @@ fn v1_corpus_migrates_on_open() {
         .query_row("SELECT COUNT(*) FROM doc_changes WHERE hash IS NULL", [], |r| r.get(0))
         .unwrap();
     assert_eq!(null_hashes, 0);
+}
+
+// ------------------------------------------------------- schema on the wire --
+
+/// Sync is where a doc shape crosses a build boundary: the CRDT layer merges
+/// changes without inspecting them, so an un-upgraded phone reintroduces an
+/// old shape whenever it syncs. That is why shape changes ship a permanent
+/// tolerant hydrator rather than a converter, and why the wire says which
+/// shape the changes in a session were written at.
+#[test]
+fn both_sides_announce_the_shape_they_write() {
+    use mise_store::sync::{Round, WireMsg};
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut a = create_at(dir.path(), "a");
+    let mut b = Store::create_bare(&dir.path().join("b")).unwrap();
+
+    // The opening round carries it, and so does the responder's first reply.
+    let mut pa = Peer::start(&a, true).unwrap();
+    let mut pb = Peer::start(&b, false).unwrap();
+    let opening = pa.initial_round(&a).unwrap();
+    let WireMsg::Round(round) = &opening else { panic!("opening is a round") };
+    assert_eq!(round.schema, Some(mise_store::pages::SCHEMA_VERSION));
+    assert!(opening.to_json().contains(r#""schema":1"#), "{}", opening.to_json());
+
+    let reply = pb.handle(&mut b, &opening).unwrap().unwrap();
+    let WireMsg::Round(round) = &reply else { panic!("responder replies with a round") };
+    assert_eq!(round.schema, Some(mise_store::pages::SCHEMA_VERSION));
+
+    // Announced once per side, not in every round.
+    let second = pa.handle(&mut a, &reply).unwrap().unwrap();
+    if let WireMsg::Round(round) = &second {
+        assert_eq!(round.schema, None, "the shape is announced once, with the uids");
+    }
+
+    // Both sides learned the other's.
+    assert_eq!(pb.outcome().peer_schema, Some(mise_store::pages::SCHEMA_VERSION));
+    assert!(!pb.outcome().peer_is_newer());
+
+    // A round with no schema field at all is a peer from before it existed,
+    // which is version 1 — not "unknown", and not a reason to refuse it.
+    let mut pc = Peer::start(&b, false).unwrap();
+    let legacy = WireMsg::Round(Round { schema: None, ..Round::default() });
+    pc.handle(&mut b, &legacy).unwrap();
+    assert_eq!(pc.outcome().peer_schema, Some(mise_store::sync::SCHEMA_ABSENT));
+    assert!(!pc.outcome().peer_is_newer());
+}
+
+/// A peer running a build ahead of this one still gets its changes applied —
+/// refusing them would drop exactly the offline edits sync exists to carry.
+/// The outcome says so instead, so the surface can tell the user to upgrade.
+#[test]
+fn a_newer_peer_is_reported_not_refused() {
+    use mise_store::sync::{Round, WireMsg};
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut a = create_at(dir.path(), "a");
+    let mut b = Store::create_bare(&dir.path().join("b")).unwrap();
+    let newer = mise_store::pages::SCHEMA_VERSION + 1;
+
+    // A full session with every announcement from A relabelled as a build
+    // ahead of this one. Automerge's opening message carries heads, not
+    // changes, so the data only moves once the session runs to completion.
+    let relabel = |msg: WireMsg| match msg {
+        WireMsg::Round(round) if round.schema.is_some() => {
+            WireMsg::Round(Round { schema: Some(newer), ..round })
+        }
+        other => other,
+    };
+    let mut pa = Peer::start(&a, true).unwrap();
+    let mut pb = Peer::start(&b, false).unwrap();
+    let mut msg = relabel(pa.initial_round(&a).unwrap());
+    loop {
+        let reply = pb.handle(&mut b, &msg).unwrap().expect("responder still replies");
+        match pa.handle(&mut a, &reply).unwrap() {
+            Some(next) => msg = relabel(next),
+            None => break,
+        }
+    }
+
+    assert_eq!(pb.outcome().peer_schema, Some(newer));
+    assert!(pb.outcome().peer_is_newer());
+    assert!(!pb.outcome().docs_updated.is_empty(), "its changes were applied anyway");
+    assert_eq!(a.corpus().unwrap(), b.corpus().unwrap(), "and they converged");
+}
+
+/// `is_empty` is not `== default()`: learning the peer's shape is not data
+/// moving, so an idempotent re-sync still reads as empty.
+#[test]
+fn an_idempotent_resync_is_empty_even_though_it_learned_the_shape() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut a = create_at(dir.path(), "a");
+    let mut b = Store::create_bare(&dir.path().join("b")).unwrap();
+    run_sync(&mut a, &mut b);
+
+    let (out_a, out_b) = run_sync(&mut a, &mut b);
+    assert!(out_a.is_empty(), "{out_a:?}");
+    assert!(out_b.is_empty(), "{out_b:?}");
+    assert_eq!(out_a.peer_schema, Some(mise_store::pages::SCHEMA_VERSION));
+    assert_ne!(out_a, SyncOutcome::default(), "learning it is still recorded");
 }
