@@ -92,11 +92,27 @@ in
         User = "mise";
         Group = "mise";
         StateDirectory = "mise";
+        # The corpus is the most private data here — pantry and fridge
+        # contents, the cook log, full assistant transcripts, and the shelf
+        # photos deliberately kept out of git. Without these it was 0755/0644
+        # and every other local user could read all of it.
+        StateDirectoryMode = "0700";
+        UMask = "0077";
         LoadCredential =
           [ "token:${cfg.tokenFile}" ]
           ++ lib.optional (cfg.anthropicKeyFile != null) "anthropic:${cfg.anthropicKeyFile}";
+        # UMask only governs files created from here on, so tighten what an
+        # earlier, looser run already wrote. Owner bits are untouched.
+        ExecStartPre = pkgs.writeShellScript "mise-tighten-corpus" ''
+          if [ -e ${lib.escapeShellArg cfg.root} ]; then
+            chmod -R go-rwx ${lib.escapeShellArg cfg.root}
+          fi
+        '';
         Restart = "on-failure";
         RestartSec = 5;
+        # The drain has a bounded budget; the worst case it exists to avoid
+        # is a stop landing inside the export's rewrite-then-commit sequence.
+        TimeoutStopSec = 30;
 
         NoNewPrivileges = true;
         PrivateTmp = true;
@@ -108,6 +124,22 @@ in
         ProtectKernelTunables = true;
         ProtectControlGroups = true;
         LockPersonality = true;
+
+        # This is the second line of defence for `fetch_url`, whose own guard
+        # is documented as not a bulletproof SSRF boundary. All of it is
+        # compatible with a Rust server that execs git.
+        SystemCallFilter = [ "@system-service" ];
+        SystemCallArchitectures = "native";
+        RestrictAddressFamilies = [ "AF_INET" "AF_INET6" "AF_UNIX" ];
+        RestrictNamespaces = true;
+        PrivateDevices = true;
+        ProtectKernelModules = true;
+        ProtectKernelLogs = true;
+        ProtectClock = true;
+        ProtectHostname = true;
+        RestrictRealtime = true;
+        ProtectProc = "invisible";
+        RemoveIPC = true;
       };
     };
   };

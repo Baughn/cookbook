@@ -129,10 +129,48 @@ async fn main() -> Result<()> {
 
     let listener = tokio::net::TcpListener::bind(args.listen).await?;
     info!("serving corpus {} on {}", root.display(), args.listen);
-    axum::serve(listener, app(state))
-        .with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
-        })
-        .await?;
+    axum::serve(listener, app(state)).with_graceful_shutdown(shutdown_signal()).await?;
+    info!("drained; stopping");
     Ok(())
+}
+
+/// Resolves when the supervisor asks us to stop.
+///
+/// SIGTERM matters more than SIGINT here: it is systemd's default
+/// `KillSignal` and the unit sets no override, so handling only SIGINT left
+/// the drain as dead code in the one supported deployment — the kernel
+/// default terminated the process outright, cutting sync sockets and SSE
+/// streams mid-frame. A restart landing inside `Store::export`, which
+/// rewrites and removes files before `git add`/`commit`, is the case that
+/// leaves the readable backup half-written.
+async fn shutdown_signal() {
+    let interrupt = async {
+        let _ = tokio::signal::ctrl_c().await;
+        "interrupt"
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        use tokio::signal::unix::{SignalKind, signal};
+        match signal(SignalKind::terminate()) {
+            Ok(mut sigterm) => {
+                sigterm.recv().await;
+            }
+            // Nothing sane to do but keep serving; never resolve, so the
+            // other arm still works.
+            Err(e) => {
+                tracing::error!("cannot listen for SIGTERM, shutdown will not be graceful: {e}");
+                std::future::pending::<()>().await;
+            }
+        }
+        "terminate"
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<&str>();
+
+    let signal = tokio::select! {
+        s = interrupt => s,
+        s = terminate => s,
+    };
+    info!("{signal}; draining in-flight requests");
 }

@@ -48,7 +48,7 @@ Five findings are deliberately out of scope and scheduled after M7 (recorded in
 - [x] Revert destructures its docs — #7, #10 *(must precede H7)*
 - [x] Tolerant hydrate mechanism + historical doc-byte fixtures *(policy)*
 - [x] Sync wire carries a schema version — #24
-- [ ] Shutdown drains; the corpus is private — #84, #86, #87
+- [x] Shutdown drains; the corpus is private — #84, #86, #87
 
 ### Phase 3 — Data integrity: store & sync
 - [ ] One transaction per doc creation and per sync round — #9, #21 *(H1)*

@@ -101,7 +101,12 @@ Settled 2026-07-29, at M2 build start:
   join flow: `mise init --from <url> --token …` = bare corpus + saved
   remote + first sync. Packaging: `flake.nix` (package + devshell) and
   `nix/module.nix` (`services.mise`, hardened systemd unit, git on the
-  service path, token via LoadCredential).
+  service path, token via LoadCredential). The corpus is private to the
+  service user — `StateDirectoryMode=0700` and `UMask=0077`, with an
+  `ExecStartPre` that tightens what an earlier, looser run wrote, since a
+  umask governs only new files. Stopping is graceful on **SIGTERM**, not
+  just SIGINT: SIGTERM is what systemd sends, and the case worth draining
+  for is a stop landing inside the export's rewrite-then-commit sequence.
 
 Settled 2026-07-29, at M3 build start:
 
