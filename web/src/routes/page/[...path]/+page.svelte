@@ -13,6 +13,10 @@
 	// for a beat and throws the scroll position.
 	let version = $state(0);
 	let error: string | null = $state(null);
+	// Pantry/equipment pages show ONE representation at a time: the
+	// rendered export to read, the editor to change. Both at once was the
+	// same data twice on screen.
+	let editing = $state(false);
 
 	let path = $derived(route.params.path ?? '');
 
@@ -76,6 +80,7 @@
 
 	$effect(() => {
 		void path;
+		editing = false;
 		reload();
 	});
 </script>
@@ -96,13 +101,23 @@
 			{/each}
 		</p>
 	{/if}
-	<Markdown {content} />
+	{#if editorLocation}
+		<p class="mode">
+			<button class="outline" onclick={() => (editing = !editing)}>
+				{editing ? 'Done' : 'Edit'}
+			</button>
+		</p>
+	{/if}
 	<!-- Edits from anywhere (taps, recon, revert) bump version; editors
 	     and history reload in place, so nothing on screen moves. -->
-	{#if editorLocation?.kind === 'pantry'}
-		<PantryEditor location={editorLocation.location} {version} onChanged={reload} />
-	{:else if editorLocation?.kind === 'equipment'}
-		<EquipmentEditor location={editorLocation.location} {version} onChanged={reload} />
+	{#if editorLocation && editing}
+		{#if editorLocation.kind === 'pantry'}
+			<PantryEditor location={editorLocation.location} {version} onChanged={reload} />
+		{:else}
+			<EquipmentEditor location={editorLocation.location} {version} onChanged={reload} />
+		{/if}
+	{:else}
+		<Markdown {content} />
 	{/if}
 	{#if doc}
 		<hr />
@@ -113,3 +128,16 @@
 {:else}
 	<article aria-busy="true">Loading…</article>
 {/if}
+
+<style>
+	.mode {
+		display: flex;
+		justify-content: flex-end;
+		margin-bottom: 0.5rem;
+	}
+	.mode button {
+		width: auto;
+		margin-bottom: 0;
+		padding: 0.15rem 0.8rem;
+	}
+</style>

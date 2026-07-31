@@ -46,6 +46,10 @@ test('pantry and equipment edit in place, with ui provenance', async ({ page }) 
 	await page.getByRole('link', { name: 'Pantry', exact: true }).click();
 	await expect(page).toHaveURL(/\/page\/locations\/home\/pantry/);
 
+	// One representation at a time: the page opens on the rendered export,
+	// and the editor replaces it behind the Edit toggle.
+	await expect(page.getByPlaceholder('New item', { exact: false })).toHaveCount(0);
+	await page.getByRole('button', { name: 'Edit', exact: true }).click();
 	await page.getByPlaceholder('New item', { exact: false }).fill('silken tofu');
 	await page.getByRole('button', { name: 'Add', exact: true }).click();
 	const presence = page.getByLabel('presence of silken tofu');
@@ -57,9 +61,10 @@ test('pantry and equipment edit in place, with ui provenance', async ({ page }) 
 	await page.getByText('Recent changes', { exact: false }).click();
 	await expect(page.getByText('ui: pantry home: set silken-tofu').first()).toBeVisible();
 
-	// Equipment: chips with in-place add.
+	// Equipment: chips with in-place add, behind the same toggle.
 	await page.getByRole('link', { name: 'Equipment', exact: true }).click();
 	await expect(page).toHaveURL(/\/page\/locations\/home\/equipment/);
+	await page.getByRole('button', { name: 'Edit', exact: true }).click();
 	await page.getByPlaceholder('New equipment', { exact: false }).fill('stand mixer');
 	await page.getByRole('button', { name: 'Add', exact: true }).click();
 	await expect(page.getByRole('button', { name: 'stand-mixer ✕' })).toBeVisible();

@@ -55,7 +55,6 @@
 	<p>⚠ {error}</p>
 {/if}
 {#if view && editable}
-	<h3>Edit</h3>
 	<ul class="items">
 		{#each items as item (item.slug)}
 			<li>

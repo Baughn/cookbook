@@ -39,7 +39,12 @@ test('photo → proposal → tap → correction → revised proposal', async ({ 
 	await expect(page.getByText('Proposed pantry updates', { exact: false })).toBeVisible();
 	// The transcript stored a counted placeholder, not pixels.
 	await expect(page.getByText('[2 photos attached]').first()).toBeVisible();
-	// Proposing alone changed nothing: miso is not in the pantry editor.
+	// Proposing alone changed nothing: open the editor — miso isn't there.
+	await page.getByRole('button', { name: 'Edit', exact: true }).click();
+	// Wait for the editor to load before measuring positions below: its
+	// pop-in is the initial render of a view the user just asked for, not
+	// a tap moving things.
+	await expect(page.getByPlaceholder('New item', { exact: false })).toBeVisible();
 	await expect(page.getByLabel('presence of miso')).toHaveCount(0);
 	// The proposal card, Apply buttons and all, fits a phone.
 	await expectNoSidewaysScroll(page);
