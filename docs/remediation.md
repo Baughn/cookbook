@@ -64,8 +64,9 @@ Five findings are deliberately out of scope and scheduled after M7 (recorded in
 - [ ] Recipe status is an enum; equipment and pantry links are slugs — #14, #15 *(first use of the hydrator)*
 
 ### Phase 4 — Trust boundary
-- [ ] Rendered markdown is sanitized — #67 *(no dependencies; can jump the queue)*
-- [ ] v4-mapped literals are refused — #46, #50
+- [x] Rendered markdown is sanitized — #67 *(jumped the queue: no dependencies, highest severity)*
+- [x] v4-mapped literals are refused — #46, #50
+- [ ] A CSP on static responses *(split from #67; needs an e2e run to prove the SPA still boots)*
 - [ ] Auth is a layer, not ten call sites — #56, #57, #77 *(H4; route-table test first)*
 - [ ] The token file's mode is enforced on every write — #61
 - [ ] Provenance is normalized before it enters history — #41
