@@ -2,9 +2,7 @@
 // correct it. The scripted model reads the shelf wrong on purpose; the
 // flow's whole job is making that harmless.
 
-import { expect, test } from '@playwright/test';
-
-const TOKEN = 'e2e-token-0123456789abcdef';
+import { enter, expect, expectNoSidewaysScroll, test } from './helpers';
 
 // A 4×4 grey PNG — the fake model never looks at pixels, the client's
 // downscale pipeline just needs a decodable image.
@@ -12,15 +10,6 @@ const PNG = Buffer.from(
 	'iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAIAAAAmkwkpAAAADklEQVR4nGNoQAIMxHEAcFIYAYPG8BkAAAAASUVORK5CYII=',
 	'base64'
 );
-
-async function enter(page: import('@playwright/test').Page, path: string) {
-	await page.goto(path);
-	const gate = page.getByPlaceholder('Bearer token', { exact: false });
-	if (await gate.isVisible()) {
-		await gate.fill(TOKEN);
-		await page.getByRole('button', { name: 'Enter' }).click();
-	}
-}
 
 test('photo → proposal → tap → correction → revised proposal', async ({ page }) => {
 	await enter(page, '/page/locations/home/pantry');
@@ -52,11 +41,21 @@ test('photo → proposal → tap → correction → revised proposal', async ({ 
 	await expect(page.getByText('[2 photos attached]').first()).toBeVisible();
 	// Proposing alone changed nothing: miso is not in the pantry editor.
 	await expect(page.getByLabel('presence of miso')).toHaveCount(0);
+	// The proposal card, Apply buttons and all, fits a phone.
+	await expectNoSidewaysScroll(page);
 
-	// One tap applies one line, as an ordinary ui: edit.
-	await card.getByLabel('apply miso out').click();
+	// One tap applies one line, as an ordinary ui: edit — and the line the
+	// finger is on stays put: the page refreshes in place, no remount, no
+	// scroll jump. (Tolerance covers the pantry editor above growing by
+	// the applied row.)
+	const applyMiso = card.getByLabel('apply miso out');
+	await applyMiso.scrollIntoViewIfNeeded();
+	const before = (await applyMiso.boundingBox())!;
+	await applyMiso.click();
 	await expect(card.getByLabel('applied miso')).toBeVisible();
 	await expect(page.getByLabel('presence of miso')).toHaveValue('out');
+	const after = (await card.getByLabel('applied miso').boundingBox())!;
+	expect(Math.abs(after.y - before.y)).toBeLessThanOrEqual(50);
 	// The un-tapped line stayed un-applied.
 	await expect(page.getByLabel('presence of rice')).toHaveCount(0);
 	await page.getByText('Recent changes', { exact: false }).click();

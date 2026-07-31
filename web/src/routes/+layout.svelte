@@ -44,3 +44,10 @@
 		</article>
 	{/if}
 </main>
+
+<style>
+	/* Five links fit a phone by wrapping, never by overflowing. */
+	nav ul {
+		flex-wrap: wrap;
+	}
+</style>

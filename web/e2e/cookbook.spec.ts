@@ -1,18 +1,7 @@
 // M5: the cookbook front door, the new-recipe draft flow, and direct
 // item editing — all against the real server and a scripted model.
 
-import { expect, test } from '@playwright/test';
-
-const TOKEN = 'e2e-token-0123456789abcdef';
-
-async function enter(page: import('@playwright/test').Page, path: string) {
-	await page.goto(path);
-	const gate = page.getByPlaceholder('Bearer token', { exact: false });
-	if (await gate.isVisible()) {
-		await gate.fill(TOKEN);
-		await page.getByRole('button', { name: 'Enter' }).click();
-	}
-}
+import { enter, expect, test } from './helpers';
 
 test('cookbook: drafts land on the shelf, first tap promotes', async ({ page }) => {
 	await enter(page, '/cookbook');

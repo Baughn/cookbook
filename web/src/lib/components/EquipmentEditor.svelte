@@ -2,7 +2,11 @@
 	import { api } from '$lib/api';
 	import type { LocationView } from '$lib/types';
 
-	let { location, onChanged }: { location: string; onChanged: () => void } = $props();
+	let {
+		location,
+		version,
+		onChanged
+	}: { location: string; version: number; onChanged: () => void } = $props();
 
 	let view: LocationView | null = $state(null);
 	let error: string | null = $state(null);
@@ -12,11 +16,12 @@
 		view = await api.location();
 	}
 
+	// A tap reports upward; the page bumps `version` and everything
+	// refreshes in place. One path, no remount.
 	async function tap(action: string, item: string) {
 		error = null;
 		try {
 			await api.edit(action, { item, location });
-			await load();
 			onChanged();
 		} catch (e) {
 			error = String(e);
@@ -32,6 +37,7 @@
 	}
 
 	$effect(() => {
+		void version;
 		load().catch((e) => (error = String(e)));
 	});
 

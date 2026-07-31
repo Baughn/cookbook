@@ -1,6 +1,6 @@
 # Implementation plan
 
-*Last updated: 2026-07-31 (M6 build). Companion to [design.md](design.md); this document
+*Last updated: 2026-07-31 (post-M6 mobile polish). Companion to [design.md](design.md); this document
 covers the technical shape and build order. Decisions here resolve the "Open
 questions" section of the design doc.*
 
@@ -299,6 +299,25 @@ Settled 2026-07-30, at M6 build:
   `not-a-shelf-*` robustness case the model must decline) plus anything
   in the gitignored `evals/fixtures/private/`, the default drop zone for
   photos nobody has cleared.
+
+Settled 2026-07-31, after live phone use:
+
+- **Taps change data, never structure.** After first paint, an edit may
+  only flow new values into existing DOM: components take a `version`
+  prop from the page and reload their data in place (`$effect` on the
+  version), and stale content stays visible until the new data lands.
+  Remount (`{#key}`) is banned as a refresh mechanism — it collapses the
+  layout for a beat and throws the scroll position, which reads as a
+  jerk under the finger that just tapped. The recon spec pins this: the
+  tapped line's position is asserted stable across an apply.
+- **The phone is the tested shape.** The primary screen is a phone in a
+  kitchen, so the whole Playwright suite runs at a 375px viewport
+  (desktop only relaxes the layout), and an auto-fixture asserts no
+  horizontal overflow at the end of every spec, naming the offending
+  elements on failure. Consequences for markup: no `<table>` where any
+  cell holds prose — stacked wrap-capable flex rows instead (recon
+  proposal, pantry editor, history); tables inside rendered markdown
+  scroll within their own box.
 
 ## Architecture
 

@@ -8,6 +8,10 @@
 	import Thread from '$lib/components/Thread.svelte';
 
 	let content: string | null = $state(null);
+	// Bumped on every reload; children re-fetch into existing DOM. Remount
+	// ({#key}) is banned as a refresh mechanism — it collapses the layout
+	// for a beat and throws the scroll position.
+	let version = $state(0);
 	let error: string | null = $state(null);
 
 	let path = $derived(route.params.path ?? '');
@@ -58,6 +62,7 @@
 	async function reload() {
 		try {
 			content = (await api.page(path)).content;
+			version += 1;
 			error = null;
 		} catch (e) {
 			if (e instanceof Unauthorized) {
@@ -92,20 +97,16 @@
 		</p>
 	{/if}
 	<Markdown {content} />
-	<!-- Keyed on content: edits from anywhere (taps, recon, revert)
-	     refresh the editors and history alike. -->
-	{#key content}
-		{#if editorLocation?.kind === 'pantry'}
-			<PantryEditor location={editorLocation.location} onChanged={reload} />
-		{:else if editorLocation?.kind === 'equipment'}
-			<EquipmentEditor location={editorLocation.location} onChanged={reload} />
-		{/if}
-	{/key}
+	<!-- Edits from anywhere (taps, recon, revert) bump version; editors
+	     and history reload in place, so nothing on screen moves. -->
+	{#if editorLocation?.kind === 'pantry'}
+		<PantryEditor location={editorLocation.location} {version} onChanged={reload} />
+	{:else if editorLocation?.kind === 'equipment'}
+		<EquipmentEditor location={editorLocation.location} {version} onChanged={reload} />
+	{/if}
 	{#if doc}
 		<hr />
-		{#key content}
-			<History {doc} onReverted={reload} />
-		{/key}
+		<History {doc} {version} onReverted={reload} />
 		<h3>Thread</h3>
 		<Thread thread={doc} onExchangeDone={reload} photos={editorLocation?.kind === 'pantry'} />
 	{/if}

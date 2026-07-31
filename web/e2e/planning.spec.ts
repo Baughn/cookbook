@@ -1,16 +1,11 @@
 // The M4 deliverable: the planning-session flow from the design doc, end
 // to end in a browser — against the real server and a scripted model.
 
-import { expect, test } from '@playwright/test';
-
-const TOKEN = 'e2e-token-0123456789abcdef';
+import { enter, expect, test } from './helpers';
 
 test('planning session: token, queue, chat, edits land', async ({ page }) => {
-	await page.goto('/');
-
 	// One kitchen, one token.
-	await page.getByPlaceholder('Bearer token', { exact: false }).fill(TOKEN);
-	await page.getByRole('button', { name: 'Enter' }).click();
+	await enter(page, '/');
 
 	// The queue home shows readiness against the location.
 	await expect(page.getByRole('heading', { name: 'Queue — home' })).toBeVisible();
@@ -29,13 +24,7 @@ test('planning session: token, queue, chat, edits land', async ({ page }) => {
 });
 
 test('recipe page: rendered markdown, history, thread', async ({ page }) => {
-	await page.goto('/');
-	const gate = page.getByPlaceholder('Bearer token', { exact: false });
-	if (await gate.isVisible()) {
-		await gate.fill(TOKEN);
-		await page.getByRole('button', { name: 'Enter' }).click();
-	}
-
+	await enter(page, '/');
 	await page.goto('/page/recipes/mapo-tofu');
 	await expect(page.getByRole('heading', { name: 'Mapo tofu', exact: true })).toBeVisible();
 	// Frontmatter renders as metadata, not as an accidental heading.

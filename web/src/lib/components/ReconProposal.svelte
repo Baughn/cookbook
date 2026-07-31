@@ -48,31 +48,28 @@
 	{#if error}
 		<p>⚠ {error}</p>
 	{/if}
-	<table>
-		<tbody>
-			{#each proposal.lines as line (line.item)}
-				<tr>
-					<td>{line.name ?? line.item}</td>
-					<td><code>{line.presence}</code></td>
-					<td><small>{line.reason}</small></td>
-					<td>
-						{#if applied[line.item]}
-							<span aria-label={`applied ${line.item}`}>✓</span>
-						{:else}
-							<button
-								class="outline"
-								disabled={busy}
-								onclick={() => apply(line)}
-								aria-label={`apply ${line.item} ${line.presence}`}
-							>
-								Apply
-							</button>
-						{/if}
-					</td>
-				</tr>
-			{/each}
-		</tbody>
-	</table>
+	<ul class="lines">
+		{#each proposal.lines as line (line.item)}
+			<li>
+				<div class="row">
+					<span>{line.name ?? line.item} <code>{line.presence}</code></span>
+					{#if applied[line.item]}
+						<span aria-label={`applied ${line.item}`}>✓</span>
+					{:else}
+						<button
+							class="outline"
+							disabled={busy}
+							onclick={() => apply(line)}
+							aria-label={`apply ${line.item} ${line.presence}`}
+						>
+							Apply
+						</button>
+					{/if}
+				</div>
+				<small>{line.reason}</small>
+			</li>
+		{/each}
+	</ul>
 	<footer>
 		{#if remaining > 0}
 			<button disabled={busy} onclick={applyAll}>Apply all ({remaining})</button>
@@ -84,18 +81,35 @@
 </article>
 
 <style>
-	td {
-		vertical-align: middle;
+	/* Stacked rows, not a table: the prose reason gets its own line, so
+	   nothing has a minimum width wider than a phone. */
+	ul.lines {
+		list-style: none;
+		padding: 0;
+		margin-bottom: 0;
 	}
-	td button {
+	li {
+		padding: 0.3rem 0;
+	}
+	li + li {
+		border-top: 1px solid var(--pico-muted-border-color);
+	}
+	.row {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 0.6rem;
+	}
+	.row button {
 		margin-bottom: 0;
 		padding: 0.1rem 0.6rem;
 		width: auto;
 	}
 	footer {
 		display: flex;
+		flex-wrap: wrap;
 		align-items: center;
-		gap: 1rem;
+		gap: 0.5rem 1rem;
 	}
 	footer button {
 		margin-bottom: 0;
