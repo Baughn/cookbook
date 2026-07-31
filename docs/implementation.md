@@ -1,6 +1,6 @@
 # Implementation plan
 
-*Last updated: 2026-07-30 (M6 build started). Companion to [design.md](design.md); this document
+*Last updated: 2026-07-31 (M6 build). Companion to [design.md](design.md); this document
 covers the technical shape and build order. Decisions here resolve the "Open
 questions" section of the design doc.*
 
@@ -290,11 +290,14 @@ Settled 2026-07-30, at M6 build:
   it proposed, so the transcript stands alone. Nothing binary enters the
   store, sync, or the export — the applied taps are what endure. (Debrief
   photos on the log are a separate, unbuilt question.)
-- **Recon quality is an eval; recon photos are private.** The scripted
-  suite covers everything below the seam (validation, events, taps). The
-  judgment call — what the model sees on a real shelf — runs as an eval
-  against photos in `evals/fixtures/private/`, which is gitignored: shelf
-  photos are corpus-adjacent personal data and never enter the repo.
+- **Recon quality is an eval; recon photos are private by default.** The
+  scripted suite covers everything below the seam (validation, events,
+  taps). The judgment call — what the model sees on a real shelf — runs
+  as an eval over `evals/fixtures/shelves/` (a checked-in set the user
+  explicitly cleared for the repo, EXIF stripped, including a
+  `not-a-shelf-*` robustness case the model must decline) plus anything
+  in the gitignored `evals/fixtures/private/`, the default drop zone for
+  photos nobody has cleared.
 
 ## Architecture
 

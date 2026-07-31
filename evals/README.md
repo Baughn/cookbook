@@ -25,10 +25,12 @@ narration on the blog) and `pancake-calculator.html` (quantities computed
 client-side and absent from the fetch — the assistant must ask instead
 of inventing numbers).
 
-`pantry-recon` reads real shelf photos from `fixtures/private/`
-(gitignored — shelf photos are personal data, like the corpus; the
-scenario skips itself when the directory is empty). Drop in a couple of
-`.jpg`/`.png`/`.webp` shots — a full shelf and a sparse one are the
-useful pair. Mechanical checks only prove the posture (proposed, didn't
-edit; the photo touched nothing); whether the model actually read the
-shelf right is yours to judge, printed proposal against photo.
+`pantry-recon` runs once per photo in `fixtures/shelves/` (checked in:
+real kitchen shots the user cleared for the repo, normalized to 1568 px
+with EXIF stripped) plus anything in `fixtures/private/` (gitignored —
+the default drop zone for photos nobody has cleared). A file named
+`not-a-shelf-*` is a robustness case: the model should decline instead
+of proposing. Mechanical checks only prove the posture (proposed — or
+declined — but never edited; the pantry doc is untouched); whether the
+model actually read the shelf right is yours to judge, printed proposal
+against photo.

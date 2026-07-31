@@ -356,12 +356,14 @@ async fn calculator_page(report: &mut Report) -> Result<()> {
     Ok(())
 }
 
-/// Photo recon against real shelves. Photos live in `fixtures/private/`
-/// (gitignored — shelf photos are personal data, like the corpus); the
-/// scenario runs once per photo and skips politely when there are none.
-/// The seeded pantry deliberately won't match anyone's real shelf: recon's
-/// job is exactly that gap, and what the model saw is human judgment —
-/// read the printed proposals against the photos.
+/// Photo recon against real shelves. The checked-in set lives in
+/// `fixtures/shelves/` (explicitly opted into the repo); anything personal
+/// goes in `fixtures/private/` (gitignored) and is picked up the same way.
+/// A file named `not-a-shelf-*` is a robustness case: the right move is to
+/// decline — no proposal, an honest reply. The seeded pantry deliberately
+/// won't match anyone's real shelf: recon's job is exactly that gap, and
+/// what the model saw is human judgment — read the printed proposals
+/// against the photos.
 async fn pantry_recon(report: &mut Report) -> Result<()> {
     use base64::Engine as _;
 
@@ -372,28 +374,28 @@ async fn pantry_recon(report: &mut Report) -> Result<()> {
         }
     }
 
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/private");
-    let mut photos: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
-        .map(|entries| {
-            entries
-                .filter_map(|e| e.ok().map(|e| e.path()))
-                .filter(|p| {
-                    matches!(
-                        p.extension().and_then(|e| e.to_str()),
-                        Some("jpg" | "jpeg" | "png" | "webp")
-                    )
-                })
-                .collect()
+    let fixtures = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures");
+    let mut photos: Vec<std::path::PathBuf> = ["shelves", "private"]
+        .iter()
+        .flat_map(|d| std::fs::read_dir(fixtures.join(d)).into_iter().flatten())
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| {
+            matches!(p.extension().and_then(|e| e.to_str()), Some("jpg" | "jpeg" | "png" | "webp"))
         })
-        .unwrap_or_default();
+        .collect();
     photos.sort();
     if photos.is_empty() {
-        println!("  (skipped: no photos in {} — drop shelf photos there to run this)", dir.display());
+        println!(
+            "  (skipped: no photos in {} — drop shelf photos in shelves/ or private/ to run this)",
+            fixtures.display()
+        );
         return Ok(());
     }
 
     for path in photos {
-        println!("  --- photo: {} ---", path.file_name().unwrap().to_string_lossy());
+        let file = path.file_name().unwrap().to_string_lossy().to_string();
+        let expect_decline = file.starts_with("not-a-shelf");
+        println!("  --- photo: {file} ---");
         let media_type = match path.extension().and_then(|e| e.to_str()) {
             Some("jpg" | "jpeg") => "image/jpeg",
             Some("png") => "image/png",
@@ -408,25 +410,30 @@ async fn pantry_recon(report: &mut Report) -> Result<()> {
         let mut store = seed(&tmp.path().join("corpus"))?;
         let pantry_id = DocId::Pantry(slug("home"));
         let before: mise_store::pages::PantryDoc = store.get(&pantry_id)?;
+        // Neutral phrasing on purpose: half the set is fridge doors and one
+        // is a battery bank — the model decides what it's looking at.
         let (tools, reply, proposals) = chat_full(
             &mut store,
             &ThreadId::Page(pantry_id.clone()),
-            "Here's the pantry shelf — reconcile it against the page.",
+            "Here's a photo from the kitchen — reconcile what you see against the page.",
             NoFetch,
             Some(&photo),
         )
         .await?;
 
         report.check(
-            "proposed instead of editing (propose_pantry_diff, no pantry_set/remove)",
-            tools.iter().any(|t| t == "propose_pantry_diff")
-                && !tools.iter().any(|t| t == "pantry_set" || t == "pantry_remove"),
+            "never edited from the photo (no pantry_set/remove)",
+            !tools.iter().any(|t| t == "pantry_set" || t == "pantry_remove"),
         );
         let after: mise_store::pages::PantryDoc = store.get(&pantry_id)?;
         report.check("the photo touched nothing", after == before);
         let lines: usize = proposals.iter().map(|p| p.lines.len()).sum();
-        report.check("at least one proposal line", lines > 0);
-        report.check("the reply summarizes the proposal", !reply.trim().is_empty());
+        if expect_decline {
+            report.check("declined to propose from a non-shelf", lines == 0);
+        } else {
+            report.check("proposed at least one line", lines > 0);
+        }
+        report.check("the reply stands alone", !reply.trim().is_empty());
         for p in &proposals {
             for l in &p.lines {
                 println!("    ⇒ {}: {} ({})", l.item, l.presence, l.reason);
