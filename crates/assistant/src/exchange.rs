@@ -41,26 +41,24 @@ pub async fn run_exchange<M: Model, F: Fetch>(
     store: &mut Store,
     thread: &ThreadId,
     user_message: &str,
-    photo: Option<&Photo>,
+    photos: &[Photo],
     clock: &mut (dyn FnMut() -> jiff::Zoned + Send),
     on_event: &mut (dyn FnMut(ExchangeEvent<'_>) + Send),
 ) -> Result<Exchange> {
-    if let Some(p) = photo {
-        p.validate().map_err(AssistantError::Protocol)?;
-    }
+    recon::validate_all(photos).map_err(AssistantError::Protocol)?;
     let now = clock();
     let ctx = ToolCtx { now: now.clone(), provenance: context::provenance(thread) };
     let now = now.datetime();
-    // The photo rides only this exchange: the thread stores a placeholder,
-    // and the image block is attached to the outgoing turn below.
-    let stored = match photo {
-        Some(_) => recon::transcript_text(user_message),
-        None => user_message.to_string(),
-    };
+    // Photos ride only this exchange: the thread stores a counted
+    // placeholder, and the image blocks are attached to the outgoing turn
+    // below.
+    let stored = recon::transcript_text(user_message, photos.len());
     store.append_thread_message(thread, Role::User, &stored, now)?;
     let (system, mut history) = context::assemble(store, thread, now)?;
-    if let (Some(p), Some(last)) = (photo, history.last_mut()) {
-        last.content.insert(0, p.block());
+    if let Some(last) = history.last_mut()
+        && !photos.is_empty()
+    {
+        last.content.splice(0..0, photos.iter().map(Photo::block));
     }
 
     let mut turn = Turn::new(system, history);

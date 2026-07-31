@@ -147,17 +147,17 @@ async fn chat_with<F: mise_assistant::fetch::Fetch>(
     message: &str,
     fetcher: F,
 ) -> Result<(Vec<String>, String)> {
-    let (tools, reply, _) = chat_full(store, thread, message, fetcher, None).await?;
+    let (tools, reply, _) = chat_full(store, thread, message, fetcher, &[]).await?;
     Ok((tools, reply))
 }
 
-/// The full-fat variant: photo attached, proposals captured.
+/// The full-fat variant: photos attached, proposals captured.
 async fn chat_full<F: mise_assistant::fetch::Fetch>(
     store: &mut Store,
     thread: &ThreadId,
     message: &str,
     mut fetcher: F,
-    photo: Option<&mise_assistant::recon::Photo>,
+    photos: &[mise_assistant::recon::Photo],
 ) -> Result<(Vec<String>, String, Vec<mise_assistant::recon::Proposal>)> {
     println!("\n>>> {message}\n");
     let mut client = AnthropicClient::new(
@@ -165,7 +165,7 @@ async fn chat_full<F: mise_assistant::fetch::Fetch>(
     );
     let mut clock = Zoned::now;
     let mut proposals = Vec::new();
-    let exchange = run_exchange(&mut client, &mut fetcher, store, thread, message, photo, &mut clock, &mut |e| {
+    let exchange = run_exchange(&mut client, &mut fetcher, store, thread, message, photos, &mut clock, &mut |e| {
         match e {
             ExchangeEvent::TextDelta(d) => print!("{d}"),
             ExchangeEvent::ToolCall { name } => println!("  ⚙ {name}"),
@@ -392,20 +392,27 @@ async fn pantry_recon(report: &mut Report) -> Result<()> {
         return Ok(());
     }
 
-    for path in photos {
-        let file = path.file_name().unwrap().to_string_lossy().to_string();
+    let loaded: Vec<(String, mise_assistant::recon::Photo)> = photos
+        .iter()
+        .map(|path| {
+            let media_type = match path.extension().and_then(|e| e.to_str()) {
+                Some("jpg" | "jpeg") => "image/jpeg",
+                Some("png") => "image/png",
+                _ => "image/webp",
+            };
+            Ok((
+                path.file_name().unwrap().to_string_lossy().to_string(),
+                mise_assistant::recon::Photo {
+                    media_type: media_type.into(),
+                    data: base64::engine::general_purpose::STANDARD.encode(std::fs::read(path)?),
+                },
+            ))
+        })
+        .collect::<Result<_>>()?;
+
+    for (file, photo) in &loaded {
         let expect_decline = file.starts_with("not-a-shelf");
         println!("  --- photo: {file} ---");
-        let media_type = match path.extension().and_then(|e| e.to_str()) {
-            Some("jpg" | "jpeg") => "image/jpeg",
-            Some("png") => "image/png",
-            _ => "image/webp",
-        };
-        let photo = mise_assistant::recon::Photo {
-            media_type: media_type.into(),
-            data: base64::engine::general_purpose::STANDARD.encode(std::fs::read(&path)?),
-        };
-
         let tmp = tempfile::tempdir()?;
         let mut store = seed(&tmp.path().join("corpus"))?;
         let pantry_id = DocId::Pantry(slug("home"));
@@ -417,7 +424,7 @@ async fn pantry_recon(report: &mut Report) -> Result<()> {
             &ThreadId::Page(pantry_id.clone()),
             "Here's a photo from the kitchen — reconcile what you see against the page.",
             NoFetch,
-            Some(&photo),
+            std::slice::from_ref(photo),
         )
         .await?;
 
@@ -440,6 +447,56 @@ async fn pantry_recon(report: &mut Report) -> Result<()> {
             }
         }
         println!("    ^ judge against the photo: misses, inventions, wrong presences.");
+    }
+
+    // The realistic recon: every real shelf in one exchange — a pantry
+    // never fits one frame. The extra mechanical stake is slug coherence:
+    // parse_proposal dedups within a proposal, so collisions can only
+    // appear across several propose calls in one exchange.
+    let shelves: Vec<mise_assistant::recon::Photo> = loaded
+        .iter()
+        .filter(|(file, _)| !file.starts_with("not-a-shelf"))
+        .map(|(_, p)| p.clone())
+        .collect();
+    if shelves.len() > 1 {
+        println!("  --- all {} shelf photos, one exchange ---", shelves.len());
+        let tmp = tempfile::tempdir()?;
+        let mut store = seed(&tmp.path().join("corpus"))?;
+        let pantry_id = DocId::Pantry(slug("home"));
+        let before: mise_store::pages::PantryDoc = store.get(&pantry_id)?;
+        let (tools, reply, proposals) = chat_full(
+            &mut store,
+            &ThreadId::Page(pantry_id.clone()),
+            "Here's the whole kitchen storage, several photos — reconcile what you \
+             see against the page.",
+            NoFetch,
+            &shelves,
+        )
+        .await?;
+        report.check(
+            "combined: never edited from the photos",
+            !tools.iter().any(|t| t == "pantry_set" || t == "pantry_remove"),
+        );
+        let after: mise_store::pages::PantryDoc = store.get(&pantry_id)?;
+        report.check("combined: the photos touched nothing", after == before);
+        let all: Vec<&mise_assistant::recon::ProposalLine> =
+            proposals.iter().flat_map(|p| &p.lines).collect();
+        report.check("combined: a substantial proposal (10+ lines)", all.len() >= 10);
+        let mut seen = std::collections::BTreeSet::new();
+        let dupes: Vec<&str> = all
+            .iter()
+            .filter(|l| !seen.insert(l.item.as_str()))
+            .map(|l| l.item.as_str())
+            .collect();
+        report.check(
+            &format!("combined: no slug collisions across proposals {dupes:?}"),
+            dupes.is_empty(),
+        );
+        report.check("combined: the reply stands alone", !reply.trim().is_empty());
+        for l in &all {
+            println!("    ⇒ {}: {} ({})", l.item, l.presence, l.reason);
+        }
+        println!("    ^ one corpus, seven frames: judge coverage and coherence.");
     }
     Ok(())
 }

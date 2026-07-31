@@ -26,12 +26,20 @@ test('photo → proposal → tap → correction → revised proposal', async ({ 
 	await enter(page, '/page/locations/home/pantry');
 	await expect(page.getByRole('heading', { name: 'Thread' })).toBeVisible();
 
-	// Attach a photo and send. The camera button only exists on pantry pages.
+	// Attach two photos across two picks — a shelf rarely fits one frame,
+	// so picks accumulate instead of replacing. The camera button only
+	// exists on pantry pages.
 	await page.getByLabel('shelf photo').setInputFiles({
-		name: 'shelf.png',
+		name: 'shelf-left.png',
 		mimeType: 'image/png',
 		buffer: PNG
 	});
+	await page.getByLabel('shelf photo').setInputFiles({
+		name: 'shelf-right.png',
+		mimeType: 'image/png',
+		buffer: PNG
+	});
+	await expect(page.getByRole('button', { name: 'attach photo' })).toHaveText('📷2');
 	await page.getByPlaceholder('Snap the shelf', { exact: false }).fill('here is the shelf');
 	await page.getByRole('button', { name: 'Send' }).click();
 
@@ -40,8 +48,8 @@ test('photo → proposal → tap → correction → revised proposal', async ({ 
 	await expect(card).toBeVisible();
 	await expect(card.getByText('no jar visible')).toBeVisible();
 	await expect(page.getByText('Proposed pantry updates', { exact: false })).toBeVisible();
-	// The transcript stored a placeholder, not pixels.
-	await expect(page.getByText('[photo attached]').first()).toBeVisible();
+	// The transcript stored a counted placeholder, not pixels.
+	await expect(page.getByText('[2 photos attached]').first()).toBeVisible();
 	// Proposing alone changed nothing: miso is not in the pantry editor.
 	await expect(page.getByLabel('presence of miso')).toHaveCount(0);
 

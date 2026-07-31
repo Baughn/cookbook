@@ -89,7 +89,7 @@ async fn exchange_persists_thread_executes_tools_and_streams() {
         &mut store,
         &ThreadId::Planning,
         "plan something cheap",
-        None,
+        &[],
         &mut ticking(),
         &mut |e| match e {
             ExchangeEvent::TextDelta(d) => deltas.push_str(d),
@@ -140,7 +140,7 @@ async fn exchange_persists_thread_executes_tools_and_streams() {
                 .unwrap()
         }
     };
-    run_exchange(&mut model2, &mut no_fetch(), &mut store, &ThreadId::Planning, "queue dal?", None, &mut later, &mut |_| {})
+    run_exchange(&mut model2, &mut no_fetch(), &mut store, &ThreadId::Planning, "queue dal?", &[], &mut later, &mut |_| {})
         .await
         .unwrap();
     assert_eq!(model2.seen[0].messages.len(), 3, "prior turns + new user message");
@@ -163,7 +163,7 @@ async fn stalled_clock_cannot_invert_the_transcript() {
     let mut frozen = || {
         DateTime::constant(2026, 7, 29, 18, 0, 0, 0).to_zoned(jiff::tz::TimeZone::UTC).unwrap()
     };
-    run_exchange(&mut model, &mut no_fetch(), &mut store, &ThreadId::Planning, "hello?", None, &mut frozen, &mut |_| {})
+    run_exchange(&mut model, &mut no_fetch(), &mut store, &ThreadId::Planning, "hello?", &[], &mut frozen, &mut |_| {})
         .await
         .unwrap();
     let msgs = store.thread_messages(&ThreadId::Planning).unwrap();
@@ -222,7 +222,7 @@ async fn fetch_url_flows_through_the_scripted_network() {
         &mut store,
         &ThreadId::Planning,
         "have a look at https://example.com/mapo",
-        None,
+        &[],
         &mut ticking(),
         &mut |_| {},
     )
@@ -249,10 +249,11 @@ async fn fetch_url_flows_through_the_scripted_network() {
     assert!(results[1].1, "a failed fetch is the model's problem, not an abort");
 }
 
-/// The recon flow, end to end below the seam: the photo rides only the
-/// live exchange (placeholder in the thread, image block on the wire, gone
-/// by the follow-up), the proposal is validated and surfaced as an event,
-/// and the store is never touched by it.
+/// The recon flow, end to end below the seam: photos ride only the live
+/// exchange (counted placeholder in the thread, image blocks on the wire,
+/// gone by the follow-up — a shelf rarely fits one frame, so two here),
+/// the proposal is validated and surfaced as an event, and the store is
+/// never touched by it.
 #[tokio::test]
 async fn photo_recon_proposes_without_touching_the_store() {
     use mise_assistant::recon::{Photo, Proposal};
@@ -284,7 +285,10 @@ async fn photo_recon_proposes_without_touching_the_store() {
         seen: vec![],
     };
 
-    let photo = Photo { media_type: "image/jpeg".into(), data: "QUJD".into() };
+    let photos = [
+        Photo { media_type: "image/jpeg".into(), data: "QUJD".into() },
+        Photo { media_type: "image/png".into(), data: "REVG".into() },
+    ];
     let mut proposals: Vec<Proposal> = Vec::new();
     run_exchange(
         &mut model,
@@ -292,7 +296,7 @@ async fn photo_recon_proposes_without_touching_the_store() {
         &mut store,
         &ThreadId::Page(DocId::parse("location/home/pantry").unwrap()),
         "here's the shelf",
-        Some(&photo),
+        &photos,
         &mut ticking(),
         &mut |e| {
             if let ExchangeEvent::Proposal(p) = e {
@@ -311,12 +315,14 @@ async fn photo_recon_proposes_without_touching_the_store() {
     let pantry: PantryDoc = store.get(&DocId::parse("location/home/pantry").unwrap()).unwrap();
     assert!(pantry.items.is_empty(), "a proposal must never touch the store");
 
-    // The wire saw the pixels; the thread did not.
+    // The wire saw all the pixels, in order; the thread saw a count.
     let sent = model.seen[0].messages.last().unwrap();
     assert!(matches!(&sent.content[0], ContentBlock::Image { media_type, .. } if media_type == "image/jpeg"));
+    assert!(matches!(&sent.content[1], ContentBlock::Image { media_type, .. } if media_type == "image/png"));
+    assert!(matches!(&sent.content[2], ContentBlock::Text { .. }));
     let thread = ThreadId::Page(DocId::parse("location/home/pantry").unwrap());
     let msgs = store.thread_messages(&thread).unwrap();
-    assert_eq!(msgs[0].content, "here's the shelf\n\n[photo attached]");
+    assert_eq!(msgs[0].content, "here's the shelf\n\n[2 photos attached]");
 
     // A follow-up (the correction turn) re-reads history without the
     // image: pixels never outlive their exchange.
@@ -336,7 +342,7 @@ async fn photo_recon_proposes_without_touching_the_store() {
                 .unwrap()
         }
     };
-    run_exchange(&mut model2, &mut no_fetch(), &mut store, &thread, "you missed the rice", None, &mut later, &mut |_| {})
+    run_exchange(&mut model2, &mut no_fetch(), &mut store, &thread, "you missed the rice", &[], &mut later, &mut |_| {})
         .await
         .unwrap();
     let images = model2.seen[0]
@@ -378,7 +384,7 @@ async fn malformed_proposals_bounce_back_to_the_model() {
         &mut store,
         &ThreadId::Planning,
         "shelf photo",
-        None,
+        &[],
         &mut ticking(),
         &mut |e| {
             assert!(!matches!(e, ExchangeEvent::Proposal(_)), "bad proposals never surface");

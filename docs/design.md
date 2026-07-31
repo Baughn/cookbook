@@ -171,8 +171,10 @@ conversational ("actually I bought an immersion blender").
    that a tap can't express ("you missed the rice; that's gochujang, not
    miso") are just words on the same thread, and they outrank the photo:
    the human looking at the shelf beats the model looking at a picture of
-   it. The photo itself is transient — the conversation keeps a note that
-   one was taken, the applied changes are what persist.
+   it. A recon takes as many frames as the shelf needs — one exchange,
+   several photos. The photos themselves are transient — the conversation
+   keeps a note that they were taken, the applied changes are what
+   persist.
 3. **Cook-time inference.** Marking a recipe as made prompts a light-touch
    "used up the coconut milk?" as part of the debrief, rather than silent
    auto-deduction.

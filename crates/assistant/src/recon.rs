@@ -29,6 +29,13 @@ const PRESENCES: &[&str] = &["have", "low", "out"];
 /// Proposals larger than this are noise, not recon.
 const MAX_LINES: usize = 80;
 
+/// A recon rarely fits in one frame; it should still fit in one exchange.
+const MAX_PHOTOS: usize = 12;
+
+/// Combined base64 cap across an exchange's photos — the API's request
+/// ceiling is the real limit, this keeps us clear of it.
+const MAX_TOTAL: usize = 20_000_000;
+
 /// A photo attached to one user turn. Lives only in the live exchange:
 /// never stored, never synced, never exported.
 #[derive(Clone, Debug)]
@@ -61,16 +68,30 @@ impl Photo {
     }
 }
 
-/// The transcript text stored for a user turn that carried a photo. The
+/// Validate a whole exchange's photos: each one, plus count and combined
+/// size — one recon, several frames, still one request.
+pub fn validate_all(photos: &[Photo]) -> std::result::Result<(), String> {
+    if photos.len() > MAX_PHOTOS {
+        return Err(format!("too many photos ({}; max {MAX_PHOTOS})", photos.len()));
+    }
+    let total: usize = photos.iter().map(|p| p.data.len()).sum();
+    if total > MAX_TOTAL {
+        return Err(format!("photos too large together ({total} bytes base64)"));
+    }
+    photos.iter().try_for_each(Photo::validate)
+}
+
+/// The transcript text stored for a user turn that carried photos. The
 /// pixels are gone by the next exchange; the placeholder keeps the
 /// transcript honest about what happened.
-pub fn transcript_text(message: &str) -> String {
+pub fn transcript_text(message: &str, photos: usize) -> String {
     let message = message.trim();
-    if message.is_empty() {
-        "[photo attached]".to_string()
-    } else {
-        format!("{message}\n\n[photo attached]")
-    }
+    let note = match photos {
+        0 => return message.to_string(),
+        1 => "[photo attached]".to_string(),
+        n => format!("[{n} photos attached]"),
+    };
+    if message.is_empty() { note } else { format!("{message}\n\n{note}") }
 }
 
 /// A validated recon proposal, on its way to the UI. Serialized as-is into
@@ -258,7 +279,25 @@ mod tests {
 
     #[test]
     fn transcript_placeholder_keeps_the_export_honest() {
-        assert_eq!(transcript_text("  "), "[photo attached]");
-        assert_eq!(transcript_text("pantry shelf, left side"), "pantry shelf, left side\n\n[photo attached]");
+        assert_eq!(transcript_text("hi", 0), "hi");
+        assert_eq!(transcript_text("  ", 1), "[photo attached]");
+        assert_eq!(transcript_text("pantry, left side", 1), "pantry, left side\n\n[photo attached]");
+        assert_eq!(transcript_text("the whole pantry", 3), "the whole pantry\n\n[3 photos attached]");
+    }
+
+    #[test]
+    fn photo_batches_validate_count_and_combined_size() {
+        let small = |n: usize| Photo { media_type: "image/jpeg".into(), data: "A".repeat(n) };
+        assert!(validate_all(&[small(100), small(100)]).is_ok());
+        let crowd: Vec<Photo> = (0..MAX_PHOTOS + 1).map(|_| small(10)).collect();
+        assert!(validate_all(&crowd).unwrap_err().contains("too many photos"));
+        let heavy: Vec<Photo> = (0..4).map(|_| small(6_000_000)).collect();
+        assert!(validate_all(&heavy).unwrap_err().contains("together"));
+        assert!(
+            validate_all(&[Photo { media_type: "image/tiff".into(), data: "QQ==".into() }])
+                .unwrap_err()
+                .contains("unsupported"),
+            "per-photo checks still apply"
+        );
     }
 }

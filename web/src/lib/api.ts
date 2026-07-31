@@ -92,7 +92,8 @@ export interface ChatEvents {
 	onProposal?: (proposal: ReconProposal) => void;
 }
 
-/// A photo riding one exchange (pantry recon); transient, never stored.
+/// Photos riding one exchange (pantry recon — a shelf rarely fits one
+/// frame); transient, never stored.
 export interface ChatImage {
 	media_type: string;
 	data: string;
@@ -103,12 +104,16 @@ export async function chat(
 	message: string,
 	page: string | null,
 	events: ChatEvents,
-	image?: ChatImage
+	images?: ChatImage[]
 ) {
 	const response = await request('/chat', {
 		method: 'POST',
 		headers: { 'content-type': 'application/json' },
-		body: JSON.stringify({ message, ...(page ? { page } : {}), ...(image ? { image } : {}) })
+		body: JSON.stringify({
+			message,
+			...(page ? { page } : {}),
+			...(images?.length ? { images } : {})
+		})
 	});
 	const reader = response.body!.getReader();
 	const decoder = new TextDecoder();

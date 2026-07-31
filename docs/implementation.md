@@ -284,12 +284,13 @@ Settled 2026-07-30, at M6 build:
   endpoints; the whole-proposal correction path ("you missed the rice;
   that's gochujang, not miso") is free text on the same thread, and the
   prompt ranks it above the photo, which ranks above the page.
-- **Photos are conversation input, not corpus state.** The image block
-  rides only the live exchange; the stored thread turn carries a
-  `[photo attached]` placeholder and the assistant's reply summarizes what
-  it proposed, so the transcript stands alone. Nothing binary enters the
-  store, sync, or the export — the applied taps are what endure. (Debrief
-  photos on the log are a separate, unbuilt question.)
+- **Photos are conversation input, not corpus state.** A recon carries as
+  many frames as the shelf needs, all in one exchange; the image blocks
+  ride only that exchange, the stored thread turn carries a counted
+  `[N photos attached]` placeholder, and the assistant's reply summarizes
+  what it proposed, so the transcript stands alone. Nothing binary enters
+  the store, sync, or the export — the applied taps are what endure.
+  (Debrief photos on the log are a separate, unbuilt question.)
 - **Recon quality is an eval; recon photos are private by default.** The
   scripted suite covers everything below the seam (validation, events,
   taps). The judgment call — what the model sees on a real shelf — runs

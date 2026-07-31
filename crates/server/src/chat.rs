@@ -55,13 +55,12 @@ async fn exchange(
         Some(p) => mise_store::ThreadId::parse(p)?,
         None => ThreadId::Planning,
     };
-    let photo = request.image.as_ref().map(|i| recon::Photo {
-        media_type: i.media_type.clone(),
-        data: i.data.clone(),
-    });
-    if let Some(p) = &photo {
-        p.validate().map_err(AssistantError::Protocol)?;
-    }
+    let photos: Vec<recon::Photo> = request
+        .images
+        .iter()
+        .map(|i| recon::Photo { media_type: i.media_type.clone(), data: i.data.clone() })
+        .collect();
+    recon::validate_all(&photos).map_err(AssistantError::Protocol)?;
 
     let started = Zoned::now();
     let ctx = ToolCtx { now: started.clone(), provenance: provenance(&thread) };
@@ -73,16 +72,15 @@ async fn exchange(
         {
             return Err(AssistantError::Protocol(format!("no page {id} to talk about")));
         }
-        // The photo rides only this exchange: the thread stores a
-        // placeholder, the image block goes on the wire below.
-        let stored = match &photo {
-            Some(_) => recon::transcript_text(&message),
-            None => message.clone(),
-        };
+        // Photos ride only this exchange: the thread stores a counted
+        // placeholder, the image blocks go on the wire below.
+        let stored = recon::transcript_text(&message, photos.len());
         store.append_thread_message(&thread, Role::User, &stored, now)?;
         let (system, mut history) = context::assemble(&store, &thread, now)?;
-        if let (Some(p), Some(last)) = (&photo, history.last_mut()) {
-            last.content.insert(0, p.block());
+        if let Some(last) = history.last_mut()
+            && !photos.is_empty()
+        {
+            last.content.splice(0..0, photos.iter().map(recon::Photo::block));
         }
         (system, history)
     };
@@ -138,7 +136,7 @@ async fn exchange(
             }
             store.append_thread_message(&thread, Role::Assistant, &reply, replied)?;
         }
-        let mut summary: String = if message.is_empty() && photo.is_some() {
+        let mut summary: String = if message.is_empty() && !photos.is_empty() {
             "[photo]".to_string()
         } else {
             message.chars().take(60).collect()

@@ -21,7 +21,8 @@
 	let streaming = $state('');
 	let toolNotes: string[] = $state([]);
 	let error: string | null = $state(null);
-	let photoFile: File | null = $state(null);
+	// A recon rarely fits one frame: picks accumulate until send.
+	let photoFiles: File[] = $state([]);
 	let photoInput: HTMLInputElement | undefined = $state();
 	let proposal: Proposal | null = $state(null);
 
@@ -34,24 +35,32 @@
 		reload().catch((e) => (error = String(e)));
 	});
 
+	function photoNote(count: number): string {
+		return count === 1 ? '[photo attached]' : `[${count} photos attached]`;
+	}
+
 	async function send(e: SubmitEvent) {
 		e.preventDefault();
 		const message = draft.trim();
-		if ((!message && !photoFile) || busy) return;
+		if ((!message && photoFiles.length === 0) || busy) return;
 		draft = '';
 		busy = true;
 		error = null;
 		streaming = '';
 		toolNotes = [];
 		proposal = null;
-		let image: ChatImage | undefined;
 		try {
-			if (photoFile) {
-				image = await downscale(photoFile);
-				photoFile = null;
+			let images: ChatImage[] = [];
+			if (photoFiles.length > 0) {
+				images = await Promise.all(photoFiles.map(downscale));
+				photoFiles = [];
 			}
 			// Mirror the server's transcript placeholder until reload.
-			const shown = image ? (message ? `${message}\n\n[photo attached]` : '[photo attached]') : message;
+			const shown = images.length
+				? message
+					? `${message}\n\n${photoNote(images.length)}`
+					: photoNote(images.length)
+				: message;
 			messages = [...messages, { role: 'user', content: shown, created: '' }];
 			await chat(
 				message,
@@ -63,7 +72,7 @@
 					onDone: () => {},
 					onError: (message) => (error = message)
 				},
-				image
+				images
 			);
 			await reload();
 			onExchangeDone?.();
@@ -78,7 +87,7 @@
 
 	function pickPhoto(e: Event) {
 		const input = e.currentTarget as HTMLInputElement;
-		photoFile = input.files?.[0] ?? null;
+		photoFiles = [...photoFiles, ...Array.from(input.files ?? [])];
 		input.value = '';
 	}
 </script>
@@ -112,19 +121,20 @@
 					type="file"
 					accept="image/*"
 					capture="environment"
+					multiple
 					onchange={pickPhoto}
 					aria-label="shelf photo"
 					style="display: none"
 				/>
 				<button
 					type="button"
-					class={photoFile ? '' : 'outline'}
-					title={photoFile ? `attached: ${photoFile.name} (tap to replace)` : 'Snap the shelf'}
+					class={photoFiles.length ? '' : 'outline'}
+					title="Snap the shelf — snap again for another frame"
 					aria-label="attach photo"
 					disabled={busy}
 					onclick={() => photoInput?.click()}
 				>
-					📷
+					📷{photoFiles.length > 1 ? photoFiles.length : ''}
 				</button>
 			{/if}
 			<input
@@ -137,14 +147,27 @@
 				bind:value={draft}
 				disabled={busy}
 			/>
-			<button type="submit" disabled={busy || (!draft.trim() && !photoFile)}>Send</button>
+			<button type="submit" disabled={busy || (!draft.trim() && photoFiles.length === 0)}>
+				Send
+			</button>
 		</div>
-		{#if photoFile}
+		{#if photoFiles.length > 0}
 			<small>
-				📷 {photoFile.name} attached — sent with your next message, kept only for this exchange.
-				<button type="button" class="outline" style="width: auto; padding: 0 0.4rem" onclick={() => (photoFile = null)}>
-					✕
-				</button>
+				Sent with your next message, kept only for this exchange:
+				{#each photoFiles as file, i (i)}
+					<span style="white-space: nowrap">
+						📷 {file.name}
+						<button
+							type="button"
+							class="outline"
+							style="width: auto; padding: 0 0.4rem"
+							aria-label={`remove ${file.name}`}
+							onclick={() => (photoFiles = photoFiles.filter((_, j) => j !== i))}
+						>
+							✕
+						</button>
+					</span>{' '}
+				{/each}
 			</small>
 		{/if}
 	</form>

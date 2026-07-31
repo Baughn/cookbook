@@ -96,9 +96,11 @@ pub struct ChatRequest {
     pub message: String,
     /// Page-thread doc id (`recipe/mapo-tofu`); omitted = planning thread.
     pub page: Option<String>,
-    /// A photo riding this exchange (pantry recon). Transient: attached to
-    /// the outgoing model turn, never stored.
-    pub image: Option<ChatImage>,
+    /// Photos riding this exchange (pantry recon — a shelf rarely fits one
+    /// frame). Transient: attached to the outgoing model turn, never
+    /// stored.
+    #[serde(default)]
+    pub images: Vec<ChatImage>,
 }
 
 #[derive(serde::Deserialize)]
