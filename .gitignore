@@ -2,3 +2,11 @@
 .env
 # Shelf photos for the recon eval: personal data, never in the repo.
 /evals/fixtures/private/
+# Nix build outputs: symlinks into the local store, and `src = self` would
+# otherwise feed them back into the package source.
+/result
+/result-*
+# Playwright run artifacts.
+test-results/
+playwright-report/
+blob-report/
