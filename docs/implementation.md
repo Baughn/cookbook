@@ -367,9 +367,21 @@ Settled 2026-08-01, after the first whole-codebase audit
   common path stay tidy — but it is never the mechanism, and being an
   ordinary forward change, it is itself revertible.
 - **`schema_version` gets a job.** It was write-only: stamped into every
-  doc and rendered into the export, never compared or branched on. It now
-  names the shape a doc was written at, and the hydrator is its reader. A
+  doc and rendered into the export, never compared or branched on. A
   version field nobody reads promises a guarantee the code does not make.
+  `pages::schema_version_at` is its reader, for the cases presence cannot
+  answer — a field whose meaning changed while its name and type did not.
+  Tolerant hydrators prefer presence, because a doc that has merged
+  changes from an old and a new build carries the new field beside an old
+  stamp.
+- **Old shapes are pinned by frozen bytes.** `store/tests/fixtures/`
+  holds a real Automerge change per doc kind per past schema version, and
+  `tests/schema_compat.rs` asserts they still hydrate, still render with
+  their content intact, and that `revert` still reaches them. They are
+  historical artifacts, not fixtures to refresh: re-encoding them against
+  today's structs would turn the test into a tautology, so the writer
+  refuses to overwrite a file that exists. A version's bytes are deleted
+  only when the hydrator that reads them is, which is never.
 - **Sync is a shape boundary.** The wire format carries a schema version
   in the opening round. It need not reject a mismatch — a warning plus a
   `SyncOutcome` field is enough — but a peer's shape must be legible

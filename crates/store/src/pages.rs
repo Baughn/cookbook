@@ -22,7 +22,37 @@ use mise_core::types::{
 use crate::error::{Result, StoreError};
 
 /// Every doc carries this from day one.
+///
+/// Changing a doc's shape does *not* bump this and walk away: the corpus is
+/// never reset, `Store::revert` hydrates historical states, and sync applies
+/// changes from peers still on older builds, so each shape change ships a
+/// permanent tolerant hydrator instead of a converter
+/// (docs/implementation.md → *Schema changes*). `tests/schema_compat.rs`
+/// holds frozen bytes of a doc of every kind at every past version and is
+/// what fails when a hydrator goes missing.
 pub const SCHEMA_VERSION: u32 = 1;
+
+/// The shape version a doc was written at, read off the object a hydrator is
+/// working on — this is `schema_version`'s reader.
+///
+/// Tolerant hydrators decide by *presence* wherever they can: a doc that has
+/// merged changes from both an old and a new build can carry the new field
+/// beside an old version stamp, so "the field is there" is the more robust
+/// question. This is for the cases presence cannot answer — a field whose
+/// meaning changed while its name and type did not.
+///
+/// Missing or unreadable reads as `0`: older than anything that ever stamped
+/// a version, which is the safe end of every comparison.
+pub fn schema_version_at<D: autosurgeon::ReadDoc>(doc: &D, obj: &automerge::ObjId) -> u32 {
+    match doc.get(obj, "schema_version") {
+        Ok(Some((automerge::Value::Scalar(s), _))) => match s.as_ref() {
+            automerge::ScalarValue::Uint(n) => u32::try_from(*n).unwrap_or(u32::MAX),
+            automerge::ScalarValue::Int(n) => u32::try_from(*n).unwrap_or(0),
+            _ => 0,
+        },
+        _ => 0,
+    }
+}
 
 fn parse_date(s: &str, what: &str) -> Result<Date> {
     s.parse()
