@@ -243,7 +243,7 @@ impl Peer {
                 continue;
             }
             tx.ensure_doc_row(&DocId::parse(id)?)?;
-            if tx.append_changes(id, &changes, &mut dp.doc)? > 0 {
+            if tx.append_changes(id, &changes)? > 0 {
                 self.outcome.docs_updated.insert(id.clone());
             }
             dp.baseline = dp.doc.get_heads();

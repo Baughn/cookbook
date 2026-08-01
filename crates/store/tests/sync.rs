@@ -559,3 +559,66 @@ fn an_idempotent_resync_is_empty_even_though_it_learned_the_shape() {
     assert_eq!(out_a.peer_schema, Some(mise_store::pages::SCHEMA_VERSION));
     assert_ne!(out_a, SyncOutcome::default(), "learning it is still recorded");
 }
+
+/// The motivating disaster for stale snapshots: a sync session is open (a
+/// phone in the doorway) while another surface edits the pantry — the
+/// server holds its store lock only around individual calls, so this
+/// interleaving is routine. When the session's incoming changes cross the
+/// snapshot cadence, the snapshot must describe what the rows say, not the
+/// session's stale in-memory doc — or the concurrent edit becomes invisible
+/// to every read AND to every future sync, silently.
+#[test]
+fn a_mid_session_edit_survives_the_snapshot_cadence() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut a = create_at(dir.path(), "a");
+    let mut b = Store::create_bare(&dir.path().join("b")).unwrap();
+    run_sync(&mut a, &mut b);
+
+    let item = |name: &str| PantryItemDoc {
+        name: name.into(),
+        presence: "have".into(),
+        bought: None,
+        tier: None,
+        note: None,
+    };
+
+    // Enough edits on A to push B's pantry history across the 64-change
+    // snapshot cadence when they arrive.
+    for i in 0..70 {
+        a.modify::<PantryDoc>(&DocId::Pantry(slug("home")), "seed", t0(), |p| {
+            p.items.insert(format!("item-{i}"), item(&format!("item-{i}")));
+        })
+        .unwrap();
+    }
+
+    let mut pa = Peer::start(&a, true).unwrap();
+    let mut pb = Peer::start(&b, false).unwrap();
+
+    // The session is open; the desk edits the pantry behind its back.
+    b.modify::<PantryDoc>(&DocId::Pantry(slug("home")), "desk", t0(), |p| {
+        p.items.insert("mid-session".into(), item("mid-session"));
+    })
+    .unwrap();
+
+    let mut msg = pa.initial_round(&a).unwrap();
+    loop {
+        let reply = pb.handle(&mut b, &msg).unwrap().expect("responder replies");
+        match pa.handle(&mut a, &reply).unwrap() {
+            Some(next) => msg = next,
+            None => break,
+        }
+    }
+
+    // The concurrent edit is still readable on B...
+    let pantry: PantryDoc = b.get(&DocId::Pantry(slug("home"))).unwrap();
+    assert!(
+        pantry.items.contains_key("mid-session"),
+        "a snapshot written from the session's stale doc hid the concurrent edit"
+    );
+
+    // ...and still syncable: the next session carries it to A.
+    run_sync(&mut a, &mut b);
+    let pantry_a: PantryDoc = a.get(&DocId::Pantry(slug("home"))).unwrap();
+    assert!(pantry_a.items.contains_key("mid-session"));
+    assert!(exports_equal(&a, &b));
+}

@@ -197,31 +197,7 @@ impl Store {
         if exists.is_none() {
             return Err(StoreError::NotFound(key));
         }
-        let snapshot: Option<(i64, Vec<u8>)> = self
-            .conn
-            .query_row(
-                "SELECT upto_seq, snapshot FROM doc_snapshots
-                 WHERE doc_id = ?1 ORDER BY upto_seq DESC LIMIT 1",
-                [&key],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .optional()?;
-        let (from_seq, mut doc) = match snapshot {
-            Some((upto, bytes)) => (upto, AutoCommit::load(&bytes)?),
-            None => (0, AutoCommit::new()),
-        };
-        let mut stmt = self.conn.prepare(
-            "SELECT change FROM doc_changes WHERE doc_id = ?1 AND seq > ?2 ORDER BY seq",
-        )?;
-        let changes = stmt
-            .query_map(params![&key, from_seq], |r| r.get::<_, Vec<u8>>(0))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        let changes = changes
-            .into_iter()
-            .map(Change::from_bytes)
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        doc.apply_changes(changes)?;
-        Ok(doc)
+        load_doc_rows(&self.conn, &key)
     }
 
     pub fn exists(&self, id: &DocId) -> Result<bool> {
@@ -253,7 +229,7 @@ impl Store {
             .get_last_local_change()
             .expect("commit reported a change")
             .clone();
-        self.transaction(|tx| tx.append_changes(key, &[change], doc))?;
+        self.transaction(|tx| tx.append_changes(key, &[change]))?;
         Ok(())
     }
 
@@ -306,7 +282,7 @@ impl Store {
                     .get_last_local_change()
                     .expect("commit reported a change")
                     .clone();
-                tx.append_changes(&key, &[change], &mut doc)?;
+                tx.append_changes(&key, &[change])?;
             }
             Ok(())
         })
@@ -847,6 +823,36 @@ impl Store {
 
 /// Bring an existing database up to the current schema. Fresh databases are
 /// created at the current version by `SCHEMA` directly.
+/// The doc as its rows say it is: latest snapshot plus replay. Takes the
+/// connection (or a live transaction, which derefs to one) so snapshot
+/// writers inside a transaction rebuild from what they just wrote.
+fn load_doc_rows(conn: &Connection, key: &str) -> Result<AutoCommit> {
+    let snapshot: Option<(i64, Vec<u8>)> = conn
+        .query_row(
+            "SELECT upto_seq, snapshot FROM doc_snapshots
+             WHERE doc_id = ?1 ORDER BY upto_seq DESC LIMIT 1",
+            [key],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    let (from_seq, mut doc) = match snapshot {
+        Some((upto, bytes)) => (upto, AutoCommit::load(&bytes)?),
+        None => (0, AutoCommit::new()),
+    };
+    let mut stmt = conn.prepare(
+        "SELECT change FROM doc_changes WHERE doc_id = ?1 AND seq > ?2 ORDER BY seq",
+    )?;
+    let changes = stmt
+        .query_map(params![key, from_seq], |r| r.get::<_, Vec<u8>>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let changes = changes
+        .into_iter()
+        .map(Change::from_bytes)
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    doc.apply_changes(changes)?;
+    Ok(doc)
+}
+
 /// One atomic write unit: a doc creation, or everything a sync round
 /// persists. Constructed only by [`Store::transaction`]; nothing inside is
 /// visible to readers — or survives a failure — until it commits whole.
@@ -874,15 +880,9 @@ impl StoreTx<'_> {
     }
 
     /// Append changes to a doc's history, deduplicating by change hash —
-    /// sync can deliver a change along more than one path. `doc` must
-    /// already contain the changes (it supplies snapshot bytes on cadence).
-    /// Returns how many rows were actually new.
-    pub(crate) fn append_changes(
-        &self,
-        key: &str,
-        changes: &[Change],
-        doc: &mut AutoCommit,
-    ) -> Result<usize> {
+    /// sync can deliver a change along more than one path. Returns how many
+    /// rows were actually new.
+    pub(crate) fn append_changes(&self, key: &str, changes: &[Change]) -> Result<usize> {
         let mut seq: i64 = self.tx.query_row(
             "SELECT COALESCE(MAX(seq), 0) FROM doc_changes WHERE doc_id = ?1",
             [key],
@@ -909,6 +909,11 @@ impl StoreTx<'_> {
             )?;
             inserted += 1;
             if seq % SNAPSHOT_EVERY == 0 {
+                // Rebuilt from the rows, never saved from a caller's doc: a
+                // sync session's in-memory doc predates concurrent writers
+                // whose rows are already below this boundary, and a snapshot
+                // missing them hides their changes from every later load.
+                let mut doc = load_doc_rows(&self.tx, key)?;
                 self.tx.execute(
                     "INSERT INTO doc_snapshots (doc_id, upto_seq, snapshot) VALUES (?1, ?2, ?3)",
                     params![key, seq, doc.save()],
