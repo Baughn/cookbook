@@ -372,3 +372,46 @@ fn change_messages_are_one_bounded_line() {
     assert!(message.chars().count() <= 200, "unbounded history line: {}", message.len());
     assert!(message.starts_with("planning thread: "), "provenance survives: {message:?}");
 }
+
+/// A model typo is a correction opportunity, not a silent default:
+/// pantry_set with a misspelled field used to *create* the item as
+/// "have" — the opposite of what the user said — and answer "updated".
+#[test]
+fn a_typoed_field_is_an_error_not_a_silent_default() {
+    let (_dir, mut store) = fresh();
+    let e = err(&mut store, "pantry_set", json!({"item": "eggs", "presense": "out"}));
+    assert!(e.contains("presense"), "the typo is named so the model can fix it: {e}");
+    let pantry: mise_store::pages::PantryDoc =
+        store.get(&DocId::Pantry(Slug::new("home").unwrap())).unwrap();
+    assert!(!pantry.items.contains_key("eggs"), "nothing was created");
+}
+
+/// An update that names no change used to answer "updated" having done
+/// nothing.
+#[test]
+fn shopping_update_must_say_what_changes() {
+    let (_dir, mut store) = fresh();
+    let reply = ok(&mut store, "shopping_add", json!({"text": "lamb"}));
+    let id = id_from(&reply);
+    let e = err(&mut store, "shopping_update", json!({"id": id}));
+    assert!(e.contains("done") && e.contains("remove"), "{e}");
+}
+
+/// An unknown tier is an unknown slug, and the error policy says
+/// is_error — not a "source unknown" verdict that silently erases the
+/// tier for every dish needing that item.
+#[test]
+fn an_unknown_tier_is_rejected_with_the_real_ones_named() {
+    let (_dir, mut store) = fresh();
+    let e = err(
+        &mut store,
+        "pantry_set",
+        json!({"item": "miso", "presence": "low", "tier": "warehouse"}),
+    );
+    assert!(e.contains("no tier") && e.contains("staples"), "{e}");
+    let e = err(&mut store, "shopping_add", json!({"text": "lamb shoulder", "tier": "warehouse"}));
+    assert!(e.contains("no tier"), "{e}");
+    // The location's real tiers still pass.
+    ok(&mut store, "pantry_set", json!({"item": "miso", "presence": "low", "tier": "shop"}));
+    ok(&mut store, "shopping_add", json!({"text": "lamb shoulder", "tier": "butcher"}));
+}

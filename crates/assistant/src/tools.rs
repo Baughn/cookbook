@@ -174,6 +174,25 @@ fn resolve_location(
     }
 }
 
+/// A tier must exist on the location's shops page. Readiness treats an
+/// unknown tier exactly like a missing one, so a typo here would silently
+/// erase the tier for every dish that needs the item — the error policy
+/// says unknown slugs are the model's problem, loudly.
+fn resolve_tier(
+    store: &Store,
+    loc: &Slug,
+    requested: Option<&str>,
+) -> std::result::Result<Option<Slug>, Fail> {
+    let Some(t) = requested else { return Ok(None) };
+    let tier = slug(t)?;
+    let shops: mise_store::pages::ShopsDoc = store.get(&DocId::Shops(loc.clone()))?;
+    if shops.tiers.iter().any(|t| t.id == tier.as_str()) {
+        return Ok(Some(tier));
+    }
+    let known: Vec<&str> = shops.tiers.iter().map(|t| t.id.as_str()).collect();
+    Err(user(format!("no tier {tier} at {loc}; tiers are: {}", known.join(", "))))
+}
+
 // -------------------------------------------------------------- schemas --
 
 fn obj(properties: Value, required: &[&str]) -> Value {
@@ -558,6 +577,7 @@ fn list_pages(store: &Store) -> ToolResult {
 
 fn read_page(store: &Store, input: &Value) -> ToolResult {
     #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
     struct In {
         path: String,
     }
@@ -574,6 +594,7 @@ fn read_page(store: &Store, input: &Value) -> ToolResult {
 
 fn search(store: &Store, input: &Value) -> ToolResult {
     #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
     struct In {
         query: String,
     }
@@ -618,6 +639,7 @@ pub(crate) fn slugify(s: &str) -> String {
 
 fn queue_add(store: &mut Store, ctx: &ToolCtx, input: &Value) -> ToolResult {
     #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
     struct In {
         title: String,
         recipe: Option<String>,
@@ -660,6 +682,7 @@ fn queue_add(store: &mut Store, ctx: &ToolCtx, input: &Value) -> ToolResult {
 
 fn queue_remove(store: &mut Store, ctx: &ToolCtx, input: &Value) -> ToolResult {
     #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
     struct In {
         id: String,
         #[serde(default)]
@@ -682,6 +705,8 @@ fn queue_remove(store: &mut Store, ctx: &ToolCtx, input: &Value) -> ToolResult {
 // -------------------------------------------------------------- recipes --
 
 #[derive(Deserialize)]
+
+#[serde(deny_unknown_fields)]
 struct IngredientIn {
     text: String,
     pantry: Option<String>,
@@ -714,6 +739,7 @@ fn parse_status(s: &str) -> std::result::Result<mise_core::types::RecipeStatus, 
 
 fn recipe_add(store: &mut Store, ctx: &ToolCtx, input: &Value) -> ToolResult {
     #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
     struct In {
         slug: String,
         title: String,
@@ -777,6 +803,7 @@ fn build_lead(
 
 fn recipe_edit(store: &mut Store, ctx: &ToolCtx, input: &Value) -> ToolResult {
     #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
     struct In {
         slug: String,
         title: Option<String>,
@@ -858,6 +885,7 @@ fn recipe_edit(store: &mut Store, ctx: &ToolCtx, input: &Value) -> ToolResult {
 
 fn pantry_set(store: &mut Store, ctx: &ToolCtx, input: &Value) -> ToolResult {
     #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
     struct In {
         item: String,
         name: Option<String>,
@@ -873,7 +901,7 @@ fn pantry_set(store: &mut Store, ctx: &ToolCtx, input: &Value) -> ToolResult {
     if let Some(p) = &a.presence {
         p.parse::<Presence>().map_err(user)?;
     }
-    let tier = a.tier.as_deref().map(slug).transpose()?;
+    let tier = resolve_tier(store, &loc, a.tier.as_deref())?;
     let bought = a.bought.as_deref().map(|b| parse_date(b, ctx.today())).transpose()?;
     store
         .modify::<PantryDoc>(
@@ -911,6 +939,7 @@ fn pantry_set(store: &mut Store, ctx: &ToolCtx, input: &Value) -> ToolResult {
 
 fn pantry_remove(store: &mut Store, ctx: &ToolCtx, input: &Value) -> ToolResult {
     #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
     struct In {
         item: String,
         location: Option<String>,
@@ -938,6 +967,7 @@ fn pantry_remove(store: &mut Store, ctx: &ToolCtx, input: &Value) -> ToolResult 
 
 fn equipment_set(store: &mut Store, ctx: &ToolCtx, input: &Value) -> ToolResult {
     #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
     struct In {
         item: String,
         note: Option<String>,
@@ -964,6 +994,7 @@ fn equipment_set(store: &mut Store, ctx: &ToolCtx, input: &Value) -> ToolResult 
 
 fn equipment_remove(store: &mut Store, ctx: &ToolCtx, input: &Value) -> ToolResult {
     #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
     struct In {
         item: String,
         location: Option<String>,
@@ -991,6 +1022,7 @@ fn equipment_remove(store: &mut Store, ctx: &ToolCtx, input: &Value) -> ToolResu
 
 fn fridge_add(store: &mut Store, ctx: &ToolCtx, input: &Value) -> ToolResult {
     #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
     struct In {
         dish: String,
         servings: u32,
@@ -1034,6 +1066,7 @@ fn fridge_add(store: &mut Store, ctx: &ToolCtx, input: &Value) -> ToolResult {
 
 fn fridge_remove(store: &mut Store, ctx: &ToolCtx, input: &Value) -> ToolResult {
     #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
     struct In {
         id: String,
         freezer: Option<String>,
@@ -1079,6 +1112,7 @@ fn fridge_remove(store: &mut Store, ctx: &ToolCtx, input: &Value) -> ToolResult 
 
 fn log_append(store: &mut Store, ctx: &ToolCtx, input: &Value) -> ToolResult {
     #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
     struct In {
         title: String,
         recipe: Option<String>,
@@ -1133,6 +1167,7 @@ fn log_append(store: &mut Store, ctx: &ToolCtx, input: &Value) -> ToolResult {
 
 fn shopping_add(store: &mut Store, ctx: &ToolCtx, input: &Value) -> ToolResult {
     #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
     struct In {
         text: String,
         tier: Option<String>,
@@ -1140,7 +1175,10 @@ fn shopping_add(store: &mut Store, ctx: &ToolCtx, input: &Value) -> ToolResult {
     }
     let a: In = parse(input)?;
     let text = must_trim(&a.text, "text")?;
-    let tier = a.tier.as_deref().map(slug).transpose()?;
+    // The shopping list is corpus-global; tiers come from the active
+    // location's shops page.
+    let loc = resolve_location(store, &None)?;
+    let tier = resolve_tier(store, &loc, a.tier.as_deref())?;
     let requested = a.id.as_deref().map(slug).transpose()?;
     // Minted, never positional — see fridge_add.
     let assigned = match &requested {
@@ -1164,6 +1202,7 @@ fn shopping_add(store: &mut Store, ctx: &ToolCtx, input: &Value) -> ToolResult {
 
 fn shopping_update(store: &mut Store, ctx: &ToolCtx, input: &Value) -> ToolResult {
     #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
     struct In {
         id: String,
         done: Option<bool>,
@@ -1171,6 +1210,9 @@ fn shopping_update(store: &mut Store, ctx: &ToolCtx, input: &Value) -> ToolResul
         remove: bool,
     }
     let a: In = parse(input)?;
+    if !a.remove && a.done.is_none() {
+        return Err(user("say what changes: done: true/false, or remove: true"));
+    }
     let existing: ShoppingDoc = store.get(&DocId::Shopping).map_err(Fail::from)?;
     if !existing.items.contains_key(a.id.trim()) {
         return Err(user(format!("no shopping item {:?}", a.id)));
@@ -1193,6 +1235,8 @@ fn shopping_update(store: &mut Store, ctx: &ToolCtx, input: &Value) -> ToolResul
 // -------------------------------------------------------- steering/facts --
 
 #[derive(Deserialize)]
+
+#[serde(deny_unknown_fields)]
 struct KvIn {
     key: String,
     #[serde(alias = "fact")]
