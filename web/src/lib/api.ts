@@ -109,15 +109,20 @@ export interface ChatImage {
 }
 
 /// One chat exchange, streamed. `page` omitted = the planning thread.
+/// Aborting the signal abandons the exchange; whatever ends the loop —
+/// completion, abort, or a malformed frame — the reader is cancelled, so
+/// an abandoned stream cannot keep writing into a thread the user left.
 export async function chat(
 	message: string,
 	page: string | null,
 	events: ChatEvents,
-	images?: ChatImage[]
+	images?: ChatImage[],
+	signal?: AbortSignal
 ) {
 	const response = await request('/chat', {
 		method: 'POST',
 		headers: { 'content-type': 'application/json' },
+		signal,
 		body: JSON.stringify({
 			message,
 			...(page ? { page } : {}),
@@ -127,16 +132,22 @@ export async function chat(
 	const reader = response.body!.getReader();
 	const decoder = new TextDecoder();
 	const frames = new SseFrames();
-	for (;;) {
-		const { done, value } = await reader.read();
-		if (done) break;
-		for (const frame of frames.push(decoder.decode(value, { stream: true }))) {
-			const data = frame.data ? JSON.parse(frame.data) : {};
-			if (frame.event === 'delta') events.onDelta(data.text ?? '');
-			else if (frame.event === 'tool') events.onTool(data.name ?? '?');
-			else if (frame.event === 'proposal') events.onProposal?.(data as ReconProposal);
-			else if (frame.event === 'done') events.onDone(data.reply ?? '');
-			else if (frame.event === 'error') events.onError(data.message ?? 'unknown error');
+	try {
+		for (;;) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			for (const frame of frames.push(decoder.decode(value, { stream: true }))) {
+				const data = frame.data ? JSON.parse(frame.data) : {};
+				if (frame.event === 'delta') events.onDelta(data.text ?? '');
+				else if (frame.event === 'tool') events.onTool(data.name ?? '?');
+				else if (frame.event === 'proposal') events.onProposal?.(data as ReconProposal);
+				else if (frame.event === 'done') events.onDone(data.reply ?? '');
+				else if (frame.event === 'error') events.onError(data.message ?? 'unknown error');
+			}
 		}
+	} finally {
+		await reader.cancel().catch(() => {
+			// cancelling an errored stream is best-effort
+		});
 	}
 }

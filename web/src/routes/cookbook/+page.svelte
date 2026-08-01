@@ -20,14 +20,20 @@
 		pages = (await api.pages()).pages;
 	}
 
+	// Leaving the page abandons any in-flight drafting exchange.
+	let controller: AbortController | null = null;
+
 	$effect(() => {
 		reload().catch((e) => {
 			error = String(e);
 		});
+		return () => controller?.abort();
 	});
 
 	async function draftRecipe(what: string) {
 		if (busy) return;
+		const ctl = new AbortController();
+		controller = ctl;
 		busy = true;
 		error = null;
 		streaming = '';
@@ -35,17 +41,27 @@
 		session = [...session, { role: 'user', content: what }];
 		const before = new Set(pages.map((p) => p.path));
 		try {
-			await chat(what, 'drafting', {
-				onDelta: (text) => (streaming += text),
-				onTool: (name) => (toolNotes = [...toolNotes, name]),
-				onDone: (reply) => {
-					if (reply) session = [...session, { role: 'assistant', content: reply }];
+			await chat(
+				what,
+				'drafting',
+				{
+					onDelta: (text) => (streaming += text),
+					onTool: (name) => (toolNotes = [...toolNotes, name]),
+					onDone: (reply) => {
+						if (reply) session = [...session, { role: 'assistant', content: reply }];
+					},
+					onError: (message) => (error = message)
 				},
-				onError: (message) => (error = message)
-			});
+				[],
+				ctl.signal
+			);
 			await reload();
 			newDrafts = pages.filter((p) => p.path.startsWith('recipes/') && !before.has(p.path));
 		} catch (e) {
+			if (ctl.signal.aborted) return;
+			// The failed turn comes out of the session — the message goes
+			// back to the box instead of showing twice.
+			session = session.filter((t) => !(t.role === 'user' && t.content === what));
 			error = String(e);
 			throw e;
 		} finally {

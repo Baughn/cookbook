@@ -14,6 +14,7 @@
 
 	async function reload() {
 		changes = (await api.history(doc)).changes;
+		error = null;
 	}
 
 	// Reloads in place on every version bump; the <details> open state and

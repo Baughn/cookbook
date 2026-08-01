@@ -23,6 +23,12 @@
 	let error: string | null = $state(null);
 	let proposal: Proposal | null = $state(null);
 
+	// One in-flight exchange at most. The generation counter makes stale
+	// closures inert: a thread change bumps it, so callbacks from an
+	// abandoned exchange stop touching this component's state.
+	let exchange = 0;
+	let controller: AbortController | null = null;
+
 	async function reload() {
 		const r = await api.thread(thread);
 		messages = r.messages;
@@ -31,12 +37,23 @@
 		// streamed in: the server omits completed proposals, and the ✓s
 		// of one finished this session should stay on screen.
 		proposal = r.proposal ?? proposal;
+		error = null;
 	}
 
 	$effect(() => {
 		void thread;
+		// A thread change abandons any in-flight exchange and its
+		// on-screen leftovers — streaming text, tool notes, errors all
+		// belonged to the previous thread.
+		controller?.abort();
+		exchange++;
+		busy = false;
+		streaming = '';
+		toolNotes = [];
+		error = null;
 		proposal = null;
 		reload().catch((e) => (error = String(e)));
+		return () => controller?.abort();
 	});
 
 	function photoNote(count: number): string {
@@ -45,15 +62,21 @@
 
 	// One exchange, driven from the composer. A throw anywhere before the
 	// exchange lands rejects back into the composer, which restores the
-	// message and the photos.
+	// message and the photos. An abandoned exchange (thread change,
+	// unmount) resolves quietly — its thread keeps the message server-side
+	// if it arrived, and the new thread owes it nothing.
 	async function send(message: string, files: File[]) {
 		if (busy) return;
+		const gen = ++exchange;
+		const ctl = new AbortController();
+		controller = ctl;
 		busy = true;
 		error = null;
 		streaming = '';
 		toolNotes = [];
 		// The proposal stays: mere conversation doesn't take the Apply
 		// buttons away. A fresh proposal replaces it via onProposal.
+		const live = () => gen === exchange;
 		try {
 			let images: ChatImage[] = [];
 			if (files.length > 0) {
@@ -65,28 +88,39 @@
 					? `${message}\n\n${photoNote(images.length)}`
 					: photoNote(images.length)
 				: message;
+			// The empty `created` marks it as unconfirmed until reload.
 			messages = [...messages, { role: 'user', content: shown, created: '' }];
 			await chat(
 				message,
 				thread === 'planning' ? null : thread,
 				{
-					onDelta: (text) => (streaming += text),
-					onTool: (name) => (toolNotes = [...toolNotes, name]),
-					onProposal: (p) => (proposal = p),
+					onDelta: (text) => live() && (streaming += text),
+					onTool: (name) => live() && (toolNotes = [...toolNotes, name]),
+					onProposal: (p) => live() && (proposal = p),
 					onDone: () => {},
-					onError: (message) => (error = message)
+					onError: (message) => live() && (error = message)
 				},
-				images
+				images,
+				ctl.signal
 			);
+			if (!live()) return;
 			await reload();
 			onExchangeDone?.();
 		} catch (e) {
+			if (!live() || ctl.signal.aborted) return;
+			// The failed optimistic bubble comes off the transcript — the
+			// message goes back to the composer instead of showing twice.
+			// (Unconfirmed bubbles are the ones without a server stamp;
+			// $state proxies rule out removal by object identity.)
+			messages = messages.filter((m) => m.created !== '');
 			error = String(e);
 			throw e;
 		} finally {
-			busy = false;
-			streaming = '';
-			toolNotes = [];
+			if (live()) {
+				busy = false;
+				streaming = '';
+				toolNotes = [];
+			}
 		}
 	}
 </script>

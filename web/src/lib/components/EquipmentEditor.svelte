@@ -14,6 +14,7 @@
 
 	async function load() {
 		view = await api.location();
+		error = null;
 	}
 
 	// A tap reports upward; the page bumps `version` and everything

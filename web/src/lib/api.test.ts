@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { api, Unauthorized } from './api';
+import { api, chat, Unauthorized } from './api';
 
 // The spec is one sentence: "One token prompt, localStorage, 401 loops back
 // to it." The loop-back lives in request() — the one path every API call
@@ -66,5 +66,88 @@ describe('the 401 loop-back', () => {
 		await expect(api.queue()).rejects.toThrow();
 		expect(storage.has('mise-token'), 'a server error is not a bad token').toBe(true);
 		expect(reload).not.toHaveBeenCalled();
+	});
+});
+
+// chat() is the one streaming path. Its cleanup contract: the reader is
+// always cancelled — on abort, and on a malformed frame that throws out
+// of the loop — so an abandoned exchange cannot keep streaming into a
+// thread the user has left.
+
+function streamingFetch(chunks: string[], opts: { hold?: boolean } = {}) {
+	const encoder = new TextEncoder();
+	const pending = [...chunks];
+	let signal: AbortSignal | undefined;
+	let stallReject: ((e: unknown) => void) | null = null;
+	const aborted = () => new DOMException('aborted', 'AbortError');
+	const reader = {
+		// Mirrors a real fetch reader: an aborted signal rejects the
+		// current and every subsequent read.
+		read: vi.fn(
+			() =>
+				new Promise<{ done: boolean; value?: Uint8Array }>((resolve, reject) => {
+					if (signal?.aborted) reject(aborted());
+					else if (pending.length)
+						resolve({ done: false, value: encoder.encode(pending.shift()!) });
+					else if (opts.hold) stallReject = reject;
+					else resolve({ done: true });
+				})
+		),
+		cancel: vi.fn(async () => {})
+	};
+	vi.stubGlobal(
+		'fetch',
+		vi.fn(async (_path: string, init?: RequestInit) => {
+			signal = init?.signal ?? undefined;
+			signal?.addEventListener('abort', () => stallReject?.(aborted()));
+			return {
+				status: 200,
+				ok: true,
+				statusText: 'OK',
+				json: async () => ({}),
+				body: { getReader: () => reader }
+			};
+		})
+	);
+	return reader;
+}
+
+describe('chat stream cleanup', () => {
+	it('an aborted exchange cancels the reader', async () => {
+		const reader = streamingFetch(['event: delta\ndata: {"text":"thinking…"}\n\n'], {
+			hold: true
+		});
+		const controller = new AbortController();
+		const deltas: string[] = [];
+		const exchange = chat(
+			'hello',
+			null,
+			{
+				onDelta: (t) => {
+					deltas.push(t);
+					controller.abort();
+				},
+				onTool: () => {},
+				onDone: () => {},
+				onError: () => {}
+			},
+			[],
+			controller.signal
+		);
+		await expect(exchange).rejects.toMatchObject({ name: 'AbortError' });
+		expect(deltas).toEqual(['thinking…']);
+		expect(reader.cancel).toHaveBeenCalled();
+	});
+
+	it('a malformed frame still cancels the reader on the way out', async () => {
+		const reader = streamingFetch(['event: delta\ndata: not json\n\n']);
+		const exchange = chat('hello', null, {
+			onDelta: () => {},
+			onTool: () => {},
+			onDone: () => {},
+			onError: () => {}
+		});
+		await expect(exchange).rejects.toThrow();
+		expect(reader.cancel).toHaveBeenCalled();
 	});
 });

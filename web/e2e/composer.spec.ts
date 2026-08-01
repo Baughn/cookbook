@@ -13,14 +13,18 @@ test('a failed send puts the message back in the composer', async ({ page }) => 
 	await composer.fill('plan something nice');
 	await composer.press('Enter');
 
-	// The failure is reported, and the work is still there.
+	// The failure is reported, and the work is still there — in the
+	// composer, not as a ghost bubble in the transcript.
 	await expect(page.getByText('⚠', { exact: false })).toBeVisible();
 	await expect(composer).toHaveValue('plan something nice');
+	await expect(page.locator('article.user', { hasText: 'plan something nice' })).toHaveCount(0);
 
-	// The connection comes back; the same send now lands.
+	// The connection comes back; the same send lands and the error clears.
 	await page.unroute('**/chat');
 	await composer.press('Enter');
 	await expect(page.getByText('Queued dal.')).toBeVisible();
+	await expect(page.locator('article.user', { hasText: 'plan something nice' })).toHaveCount(1);
+	await expect(page.getByText('⚠', { exact: false })).not.toBeVisible();
 });
 
 test('the drafting box keeps its message on failure too', async ({ page }) => {
@@ -34,4 +38,5 @@ test('the drafting box keeps its message on failure too', async ({ page }) => {
 
 	await expect(page.getByText('⚠', { exact: false })).toBeVisible();
 	await expect(box).toHaveValue('tonkatsu, from that video');
+	await expect(page.locator('section[aria-label="drafting"] article.user')).toHaveCount(0);
 });
