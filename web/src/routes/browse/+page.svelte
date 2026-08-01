@@ -1,7 +1,7 @@
 <script lang="ts">
 	// The raw corpus, every exported path — the debug corner. The curated
 	// front door is /cookbook.
-	import { api, clearToken, Unauthorized } from '$lib/api';
+	import { api } from '$lib/api';
 	import type { PageInfo } from '$lib/types';
 
 	let pages: PageInfo[] = $state([]);
@@ -12,11 +12,6 @@
 			.pages()
 			.then((r) => (pages = r.pages))
 			.catch((e) => {
-				if (e instanceof Unauthorized) {
-					clearToken();
-					location.reload();
-					return;
-				}
 				error = String(e);
 			});
 	});

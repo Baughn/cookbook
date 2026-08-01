@@ -72,7 +72,7 @@ Five findings are deliberately out of scope and scheduled after M7 (recorded in
 - [x] Provenance is normalized before it enters history — #41
 
 ### Phase 5 — Store-mode readiness (web + tools)
-- [ ] 401 loops back to the gate from every call site — #73 *(five lines, closes ~13 sites)*
+- [x] 401 loops back to the gate from every call site — #73 *(five lines, closes ~13 sites)*
 - [ ] A shared composer, used by the thread and the drafting box — #72
 - [ ] An exchange can be cancelled, and a failed send keeps your work — #68, #69, #78
 - [ ] Photos are downscaled one at a time and capped before upload — #74, #75

@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { api, chat, clearToken, Unauthorized } from '$lib/api';
+	import { api, chat } from '$lib/api';
 	import type { PageInfo } from '$lib/types';
 
 	let pages: PageInfo[] = $state([]);
@@ -22,11 +22,6 @@
 
 	$effect(() => {
 		reload().catch((e) => {
-			if (e instanceof Unauthorized) {
-				clearToken();
-				location.reload();
-				return;
-			}
 			error = String(e);
 		});
 	});

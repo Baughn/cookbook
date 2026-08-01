@@ -40,7 +40,14 @@ async function request(path: string, init?: RequestInit): Promise<Response> {
 			authorization: `Bearer ${getToken() ?? ''}`
 		}
 	});
-	if (response.status === 401) throw new Unauthorized();
+	if (response.status === 401) {
+		// One token prompt; 401 anywhere loops back to it. Clearing the
+		// token flips the layout gate on reload, so no call site needs its
+		// own copy of this — the throw just stops the caller's own work.
+		clearToken();
+		location.reload();
+		throw new Unauthorized();
+	}
 	if (!response.ok) {
 		let detail = '';
 		try {

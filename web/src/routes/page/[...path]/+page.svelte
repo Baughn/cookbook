@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { page as route } from '$app/state';
-	import { api, clearToken, Unauthorized } from '$lib/api';
+	import { api } from '$lib/api';
 	import EquipmentEditor from '$lib/components/EquipmentEditor.svelte';
 	import History from '$lib/components/History.svelte';
 	import Markdown from '$lib/components/Markdown.svelte';
@@ -69,11 +69,6 @@
 			version += 1;
 			error = null;
 		} catch (e) {
-			if (e instanceof Unauthorized) {
-				clearToken();
-				location.reload();
-				return;
-			}
 			error = String(e);
 		}
 	}

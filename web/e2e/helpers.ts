@@ -14,6 +14,9 @@ export async function enter(page: Page, path: string) {
 	const gate = page.getByPlaceholder('Bearer token', { exact: false });
 	await gate.fill(TOKEN);
 	await page.getByRole('button', { name: 'Enter' }).click();
+	// The gate validates the token against the server before it opens;
+	// returning before it closes would race any navigation that follows.
+	await expect(gate).toBeHidden();
 }
 
 export async function expectNoSidewaysScroll(page: Page) {

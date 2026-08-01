@@ -200,8 +200,11 @@ Settled 2026-07-30, at M4 build start:
   --static-dir` with index.html fallback. Queue home + planning thread;
   generic page view (frontmatter as metadata chips, markdown via marked)
   with recent-changes/revert and the page's thread; browse by tag chips.
-  One token prompt, localStorage, 401 loops back to it. Chat streams over
-  fetch with a TS SSE framer mirroring the Rust one, vitest-covered.
+  One token prompt, localStorage, 401 loops back to it — the loop-back
+  lives in the shared `request()` path, so no call site can forget it,
+  and the gate verifies a candidate token against the server before
+  storing it. Chat streams over fetch with a TS SSE framer mirroring the
+  Rust one, vitest-covered.
   CSP: the build carries its own policy as a meta tag (SvelteKit hashes
   the inline bootstrap; `script-src 'self'` otherwise), and the server
   adds the header-only parts on static responses — `frame-ancestors

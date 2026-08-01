@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { api, clearToken, Unauthorized } from '$lib/api';
+	import { api } from '$lib/api';
 	import type { DishView, QueueView } from '$lib/types';
 	import Thread from '$lib/components/Thread.svelte';
 
@@ -11,11 +11,6 @@
 			queue = await api.queue();
 			error = null;
 		} catch (e) {
-			if (e instanceof Unauthorized) {
-				clearToken();
-				location.reload();
-				return;
-			}
 			error = String(e);
 		}
 	}

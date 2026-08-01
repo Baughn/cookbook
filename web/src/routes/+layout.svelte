@@ -5,12 +5,34 @@
 	let { children } = $props();
 	let token = $state(getToken());
 	let draft = $state('');
+	let checking = $state(false);
+	let gateError = $state('');
 
-	function save(e: SubmitEvent) {
+	// The gate stores nothing unverified: one fat-fingered character must
+	// not dismiss the prompt permanently. A raw fetch, not api.request —
+	// the candidate token isn't stored yet, and a 401 here is the gate's
+	// own answer, not a loop back to itself.
+	async function save(e: SubmitEvent) {
 		e.preventDefault();
-		if (draft.trim().length < 16) return;
-		setToken(draft);
-		token = draft.trim();
+		const candidate = draft.trim();
+		if (candidate.length < 16) return;
+		checking = true;
+		gateError = '';
+		try {
+			const r = await fetch('/api/location', {
+				headers: { authorization: `Bearer ${candidate}` }
+			});
+			if (r.status === 401) {
+				gateError = 'The server refused that token.';
+				return;
+			}
+			setToken(candidate);
+			token = candidate;
+		} catch {
+			gateError = 'Could not reach the server to check the token.';
+		} finally {
+			checking = false;
+		}
 	}
 </script>
 
@@ -39,8 +61,13 @@
 					placeholder="Bearer token (at least 16 characters)"
 					bind:value={draft}
 				/>
-				<button type="submit" disabled={draft.trim().length < 16}>Enter</button>
+				<button type="submit" disabled={checking || draft.trim().length < 16}>
+					{checking ? 'Checking…' : 'Enter'}
+				</button>
 			</form>
+			{#if gateError}
+				<p>{gateError}</p>
+			{/if}
 		</article>
 	{/if}
 </main>
