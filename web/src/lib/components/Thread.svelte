@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { api, chat, type ChatImage } from '$lib/api';
-	import { downscale } from '$lib/photo';
+	import { downscaleAll } from '$lib/photo';
 	import Composer from '$lib/components/Composer.svelte';
 	import ReconProposal from '$lib/components/ReconProposal.svelte';
 	import type { ReconProposal as Proposal, ThreadMessage } from '$lib/types';
@@ -80,7 +80,7 @@
 		try {
 			let images: ChatImage[] = [];
 			if (files.length > 0) {
-				images = await Promise.all(files.map(downscale));
+				images = await downscaleAll(files);
 			}
 			// Mirror the server's transcript placeholder until reload.
 			const shown = images.length

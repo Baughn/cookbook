@@ -23,6 +23,8 @@
 		onSend: (message: string, files: File[]) => Promise<void>;
 	} = $props();
 
+	import { MAX_PHOTOS } from '$lib/photo';
+
 	let draft = $state('');
 	let files: File[] = $state([]);
 	let area: HTMLTextAreaElement | undefined = $state();
@@ -49,7 +51,9 @@
 
 	function pickPhoto(e: Event) {
 		const input = e.currentTarget as HTMLInputElement;
-		files = [...files, ...Array.from(input.files ?? [])];
+		// Cap at what the server admits per exchange — nothing gets
+		// downscaled, uploaded and then refused.
+		files = [...files, ...Array.from(input.files ?? [])].slice(0, MAX_PHOTOS);
 		input.value = '';
 	}
 
