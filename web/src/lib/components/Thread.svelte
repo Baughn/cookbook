@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { api, chat, type ChatImage } from '$lib/api';
 	import { downscale } from '$lib/photo';
+	import Composer from '$lib/components/Composer.svelte';
 	import ReconProposal from '$lib/components/ReconProposal.svelte';
 	import type { ReconProposal as Proposal, ThreadMessage } from '$lib/types';
 
@@ -16,15 +17,10 @@
 	} = $props();
 
 	let messages: ThreadMessage[] = $state([]);
-	let draft = $state('');
-	let composer: HTMLTextAreaElement | undefined = $state();
 	let busy = $state(false);
 	let streaming = $state('');
 	let toolNotes: string[] = $state([]);
 	let error: string | null = $state(null);
-	// A recon rarely fits one frame: picks accumulate until send.
-	let photoFiles: File[] = $state([]);
-	let photoInput: HTMLInputElement | undefined = $state();
 	let proposal: Proposal | null = $state(null);
 
 	async function reload() {
@@ -47,11 +43,11 @@
 		return count === 1 ? '[photo attached]' : `[${count} photos attached]`;
 	}
 
-	async function send(e: SubmitEvent) {
-		e.preventDefault();
-		const message = draft.trim();
-		if ((!message && photoFiles.length === 0) || busy) return;
-		draft = '';
+	// One exchange, driven from the composer. A throw anywhere before the
+	// exchange lands rejects back into the composer, which restores the
+	// message and the photos.
+	async function send(message: string, files: File[]) {
+		if (busy) return;
 		busy = true;
 		error = null;
 		streaming = '';
@@ -60,9 +56,8 @@
 		// buttons away. A fresh proposal replaces it via onProposal.
 		try {
 			let images: ChatImage[] = [];
-			if (photoFiles.length > 0) {
-				images = await Promise.all(photoFiles.map(downscale));
-				photoFiles = [];
+			if (files.length > 0) {
+				images = await Promise.all(files.map(downscale));
 			}
 			// Mirror the server's transcript placeholder until reload.
 			const shown = images.length
@@ -87,38 +82,13 @@
 			onExchangeDone?.();
 		} catch (e) {
 			error = String(e);
+			throw e;
 		} finally {
 			busy = false;
 			streaming = '';
 			toolNotes = [];
 		}
 	}
-
-	function pickPhoto(e: Event) {
-		const input = e.currentTarget as HTMLInputElement;
-		photoFiles = [...photoFiles, ...Array.from(input.files ?? [])];
-		input.value = '';
-	}
-
-	// Hardware keyboards send on Enter and break lines on Shift+Enter; a
-	// phone keyboard's return key keeps making newlines — the Send button
-	// is right there.
-	const enterSends = !window.matchMedia('(pointer: coarse)').matches;
-
-	function composerKeydown(e: KeyboardEvent) {
-		if (enterSends && e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
-			e.preventDefault();
-			(e.currentTarget as HTMLTextAreaElement).form?.requestSubmit();
-		}
-	}
-
-	// The composer grows with its text and shrinks back when sent.
-	$effect(() => {
-		void draft;
-		if (!composer) return;
-		composer.style.height = 'auto';
-		composer.style.height = `${composer.scrollHeight}px`;
-	});
 </script>
 
 <section aria-label="thread">
@@ -142,66 +112,16 @@
 	{#if error}
 		<article class="error"><p>⚠ {error}</p></article>
 	{/if}
-	<form onsubmit={send}>
-		<div role="group">
-			{#if photos}
-				<input
-					bind:this={photoInput}
-					type="file"
-					accept="image/*"
-					capture="environment"
-					multiple
-					onchange={pickPhoto}
-					aria-label="shelf photo"
-					style="display: none"
-				/>
-				<button
-					type="button"
-					class={photoFiles.length ? '' : 'outline'}
-					title="Snap the shelf — snap again for another frame"
-					aria-label="attach photo"
-					disabled={busy}
-					onclick={() => photoInput?.click()}
-				>
-					📷{photoFiles.length > 1 ? photoFiles.length : ''}
-				</button>
-			{/if}
-			<textarea
-				bind:this={composer}
-				rows="1"
-				placeholder={photos
-					? 'Snap the shelf, or ask…'
-					: thread === 'planning'
-						? 'Plan the week…'
-						: 'Ask about this page…'}
-				bind:value={draft}
-				disabled={busy}
-				onkeydown={composerKeydown}
-			></textarea>
-			<button type="submit" disabled={busy || (!draft.trim() && photoFiles.length === 0)}>
-				Send
-			</button>
-		</div>
-		{#if photoFiles.length > 0}
-			<small>
-				Sent with your next message, kept only for this exchange:
-				{#each photoFiles as file, i (i)}
-					<span style="white-space: nowrap">
-						📷 {file.name}
-						<button
-							type="button"
-							class="outline"
-							style="width: auto; padding: 0 0.4rem"
-							aria-label={`remove ${file.name}`}
-							onclick={() => (photoFiles = photoFiles.filter((_, j) => j !== i))}
-						>
-							✕
-						</button>
-					</span>{' '}
-				{/each}
-			</small>
-		{/if}
-	</form>
+	<Composer
+		placeholder={photos
+			? 'Snap the shelf, or ask…'
+			: thread === 'planning'
+				? 'Plan the week…'
+				: 'Ask about this page…'}
+		{busy}
+		{photos}
+		onSend={send}
+	/>
 </section>
 
 <style>
@@ -210,14 +130,5 @@
 	}
 	article.error {
 		border-color: var(--pico-del-color, #b71c1c);
-	}
-	div[role='group'] > button:first-child {
-		width: auto;
-		flex-grow: 0;
-	}
-	div[role='group'] textarea {
-		resize: none;
-		overflow: hidden;
-		margin-bottom: 0;
 	}
 </style>

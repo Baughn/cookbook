@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { api, chat } from '$lib/api';
+	import Composer from '$lib/components/Composer.svelte';
 	import type { PageInfo } from '$lib/types';
 
 	let pages: PageInfo[] = $state([]);
@@ -9,7 +10,6 @@
 	// The new-recipe box speaks to the drafting thread — planning stays
 	// planning. This shows only the current session; the full transcript
 	// lives at threads/drafting like any other thread.
-	let draft = $state('');
 	let busy = $state(false);
 	let streaming = $state('');
 	let toolNotes: string[] = $state([]);
@@ -26,10 +26,8 @@
 		});
 	});
 
-	async function draftRecipe(e: SubmitEvent) {
-		e.preventDefault();
-		const what = draft.trim();
-		if (!what || busy) return;
+	async function draftRecipe(what: string) {
+		if (busy) return;
 		busy = true;
 		error = null;
 		streaming = '';
@@ -45,11 +43,11 @@
 				},
 				onError: (message) => (error = message)
 			});
-			draft = '';
 			await reload();
 			newDrafts = pages.filter((p) => p.path.startsWith('recipes/') && !before.has(p.path));
 		} catch (e) {
 			error = String(e);
+			throw e;
 		} finally {
 			busy = false;
 			streaming = '';
@@ -153,17 +151,12 @@
 			{/each}
 		</p>
 	{/if}
-	<form onsubmit={draftRecipe}>
-		<div role="group">
-			<input
-				type="text"
-				placeholder={session.length === 0 ? 'Describe a dish, or paste a URL…' : 'Answer, or refine…'}
-				bind:value={draft}
-				disabled={busy}
-			/>
-			<button type="submit" disabled={busy}>Draft</button>
-		</div>
-	</form>
+	<Composer
+		placeholder={session.length === 0 ? 'Describe a dish, or paste a URL…' : 'Answer, or refine…'}
+		{busy}
+		sendLabel="Draft"
+		onSend={(message) => draftRecipe(message)}
+	/>
 	<p><small><a href="/page/threads/drafting">Past drafting conversations</a></small></p>
 </section>
 

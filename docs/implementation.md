@@ -370,7 +370,10 @@ Settled 2026-07-31, after live phone use:
   was a suggestion, not data.
 - **The chat composer is a textarea.** Enter sends and Shift+Enter
   breaks lines on hardware keyboards; on coarse-pointer devices the
-  return key keeps making newlines and the Send button sends.
+  return key keeps making newlines and the Send button sends. There is
+  one composer (`Composer.svelte`), shared by the thread view and the
+  cookbook's drafting box, and its contract includes failure: a send
+  that rejects puts the message and any attached photos back in the box.
 
 Settled 2026-08-01, after the first whole-codebase audit
 ([review](reviews/2026-07-31-codebase-review.md)):

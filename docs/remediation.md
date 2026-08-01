@@ -73,7 +73,7 @@ Five findings are deliberately out of scope and scheduled after M7 (recorded in
 
 ### Phase 5 — Store-mode readiness (web + tools)
 - [x] 401 loops back to the gate from every call site — #73 *(five lines, closes ~13 sites)*
-- [ ] A shared composer, used by the thread and the drafting box — #72
+- [x] A shared composer, used by the thread and the drafting box — #72 *(carries the draft-restoration half of #68 — one composer had to pick one failure behavior, and it picked the right one)*
 - [ ] An exchange can be cancelled, and a failed send keeps your work — #68, #69, #78
 - [ ] Photos are downscaled one at a time and capped before upload — #74, #75
 - [ ] One frame budget, honestly enforced — #53, #54, #55
