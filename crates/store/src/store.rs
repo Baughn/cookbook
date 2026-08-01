@@ -802,6 +802,16 @@ impl Store {
         let files = crate::render::render(&self.corpus()?);
         let dir = self.export_dir();
 
+        // The export is derived state, promised deletable and regenerable at
+        // any time — so heal the directory and its repo before writing.
+        // Without this, the first export after a deletion fails *after* the
+        // SQLite mutation committed, permanently, and the natural retry
+        // duplicates log rows.
+        std::fs::create_dir_all(&dir)?;
+        if !dir.join(".git").exists() {
+            self.git(&["init", "-q"])?;
+        }
+
         // Write the rendered tree, then remove any stale files.
         for (rel, content) in &files {
             let path = dir.join(rel);

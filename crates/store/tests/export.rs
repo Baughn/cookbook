@@ -80,3 +80,38 @@ proptest! {
         prop_assert_eq!(render(&c2), files1);
     }
 }
+
+/// "The export is derived — deletable and regenerable at any time." Deleting
+/// it must therefore be recoverable by the next export, not a permanent
+/// failure: every mutation ends in export(), the failure lands *after* the
+/// SQLite write committed, and the natural retry then duplicates log rows.
+#[test]
+fn the_export_regenerates_itself_after_deletion() {
+    use std::process::Command;
+    let git_commits = |dir: &Path| -> usize {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["rev-list", "--count", "HEAD"])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).trim().parse().unwrap_or(0)
+    };
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut store =
+        Store::create(dir.path(), &Slug::new("home").unwrap(), 2, t0()).unwrap();
+    store.export("first").unwrap();
+
+    // The whole directory goes away — a cloud-sync mishap, a curious rm.
+    std::fs::remove_dir_all(store.export_dir()).unwrap();
+    let mut store = Store::open(dir.path()).unwrap();
+    store.export("after deletion").unwrap();
+    assert!(store.export_dir().join("state.md").exists(), "the export came back");
+    assert_eq!(git_commits(&store.export_dir()), 1, "a fresh repo with the regenerated tree");
+
+    // Only .git goes away — the tree survives but the repo is gone.
+    std::fs::remove_dir_all(store.export_dir().join(".git")).unwrap();
+    store.export("after .git deletion").unwrap();
+    assert_eq!(git_commits(&store.export_dir()), 1, "re-initialized and committed");
+}
