@@ -100,8 +100,32 @@ pub fn app(state: AppState) -> Router {
         // index.html and the app routes client-side. The fallback hangs on
         // the outer router — the SPA must render its token prompt before it
         // has a token to send.
-        let serve = tower_http::services::ServeDir::new(dir.as_ref())
+        //
+        // The full CSP travels inside the built page as a meta tag, where
+        // SvelteKit hashes its own inline bootstrap (svelte.config.js).
+        // Here ride only the parts a meta tag cannot carry: frame-ancestors
+        // (ignored in meta form), a Referer that must never leak the app's
+        // URLs to pages it links out to, and nosniff.
+        use axum::http::HeaderValue;
+        use axum::http::header::{
+            CONTENT_SECURITY_POLICY, REFERRER_POLICY, X_CONTENT_TYPE_OPTIONS,
+        };
+        use tower_http::set_header::SetResponseHeader;
+        let files = tower_http::services::ServeDir::new(dir.as_ref())
             .fallback(tower_http::services::ServeFile::new(dir.join("index.html")));
+        let serve = SetResponseHeader::if_not_present(
+            SetResponseHeader::if_not_present(
+                SetResponseHeader::if_not_present(
+                    files,
+                    CONTENT_SECURITY_POLICY,
+                    HeaderValue::from_static("frame-ancestors 'none'"),
+                ),
+                REFERRER_POLICY,
+                HeaderValue::from_static("no-referrer"),
+            ),
+            X_CONTENT_TYPE_OPTIONS,
+            HeaderValue::from_static("nosniff"),
+        );
         router = router.fallback_service(serve);
     }
     router.with_state(state)

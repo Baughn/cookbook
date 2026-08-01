@@ -202,6 +202,10 @@ Settled 2026-07-30, at M4 build start:
   with recent-changes/revert and the page's thread; browse by tag chips.
   One token prompt, localStorage, 401 loops back to it. Chat streams over
   fetch with a TS SSE framer mirroring the Rust one, vitest-covered.
+  CSP: the build carries its own policy as a meta tag (SvelteKit hashes
+  the inline bootstrap; `script-src 'self'` otherwise), and the server
+  adds the header-only parts on static responses — `frame-ancestors
+  'none'`, `Referrer-Policy: no-referrer`, nosniff.
 - **E2E.** Playwright (`npm run e2e` in `web/`) drives the planning-
   session flow against the real server binary and a scripted fake
   Anthropic endpoint (`mise-server --anthropic-base-url`); deterministic,

@@ -128,3 +128,27 @@ async fn health_and_the_static_app_need_no_token() {
     assert_eq!(spa_route.status().as_u16(), 200);
     assert!(spa_route.text().await.unwrap().contains("token prompt"));
 }
+
+/// Static responses carry the security headers only a header can carry:
+/// the full CSP rides inside the built page as a meta tag (SvelteKit hashes
+/// its own inline bootstrap there), but `frame-ancestors` is ignored in
+/// meta form, and the token must never leak through a Referer.
+#[tokio::test]
+async fn static_responses_carry_security_headers() {
+    let dir = tempfile::tempdir().unwrap();
+    let static_dir = dir.path().join("web");
+    std::fs::create_dir_all(&static_dir).unwrap();
+    std::fs::write(static_dir.join("index.html"), "<html>token prompt</html>").unwrap();
+    let server = Server::spawn_with_static(seeded(dir.path()), static_dir).await;
+
+    // Both a real file and the SPA fallback get the same headers.
+    for path in ["/", "/recipes/mapo-tofu"] {
+        let resp = server.get_anonymous(path).await;
+        let header = |name: &str| {
+            resp.headers().get(name).and_then(|v| v.to_str().ok()).unwrap_or("").to_string()
+        };
+        assert_eq!(header("content-security-policy"), "frame-ancestors 'none'", "{path}");
+        assert_eq!(header("referrer-policy"), "no-referrer", "{path}");
+        assert_eq!(header("x-content-type-options"), "nosniff", "{path}");
+    }
+}

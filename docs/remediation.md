@@ -66,7 +66,7 @@ Five findings are deliberately out of scope and scheduled after M7 (recorded in
 ### Phase 4 — Trust boundary
 - [x] Rendered markdown is sanitized — #67 *(jumped the queue: no dependencies, highest severity)*
 - [x] v4-mapped literals are refused — #46, #50
-- [ ] A CSP on static responses *(split from #67; needs an e2e run to prove the SPA still boots)*
+- [x] A CSP on static responses *(split from #67; needs an e2e run to prove the SPA still boots)*
 - [x] Auth is a layer, not ten call sites — #56, #57, #77 *(H4; route-table test first)*
 - [x] The token file's mode is enforced on every write — #61
 - [ ] Provenance is normalized before it enters history — #41
