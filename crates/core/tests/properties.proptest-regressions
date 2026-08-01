@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 940c3a32e451716d3f4117d973ae0ef581068660c6deb2a28ff0156ca9ba5007 # shrinks to fridge = [], freezer = [Portion { dish: "leftovers", servings: 7304476, date: 2000-01-01 }], headcount = 1, today = 2000-01-01, extra = Portion { dish: "leftovers", servings: 9, date: 2000-01-01 }

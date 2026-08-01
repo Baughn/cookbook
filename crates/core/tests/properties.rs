@@ -6,7 +6,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroU32;
 
-use jiff::ToSpan;
 use jiff::civil::{Date, DateTime};
 use mise_core::coverage::coverage;
 use mise_core::readiness::{self};
@@ -135,7 +134,12 @@ fn arb_improvement() -> impl Strategy<Value = Improvement> {
 }
 
 fn arb_portion() -> impl Strategy<Value = Portion> {
-    (0u32..=12, arb_date()).prop_map(|(servings, date)| Portion {
+    // Mostly household-sized, sometimes anything a u32 can say: the write
+    // path accepts any number, so the property must cross the horizon where
+    // date arithmetic saturates — a generator that refuses states the store
+    // accepts proves nothing about them.
+    let servings = prop_oneof![3 => 0u32..=12, 1 => any::<u32>()];
+    (servings, arb_date()).prop_map(|(servings, date)| Portion {
         dish: "leftovers".into(),
         servings,
         date,
@@ -246,8 +250,17 @@ proptest! {
         let c = coverage(&fridge, &freezer, h, today);
 
         let servings: u64 = fridge.iter().map(|p| u64::from(p.servings)).sum();
-        prop_assert_eq!(u64::from(c.dinners), servings / u64::from(headcount));
-        prop_assert_eq!(c.runs_out, today.checked_add(i64::from(c.dinners).days()).unwrap());
+        let expect_dinners = (servings / u64::from(headcount)).min(u64::from(u32::MAX));
+        prop_assert_eq!(u64::from(c.dinners), expect_dinners);
+        // The exact date where dates can say it; pinned to Date::MAX where
+        // they cannot. jiff refuses both spans past ~20k years and dates
+        // past 9999, so the oracle goes through the same fallible steps.
+        let expect_runs_out = jiff::Span::new()
+            .try_days(i64::from(c.dinners))
+            .ok()
+            .and_then(|span| today.checked_add(span).ok())
+            .unwrap_or(jiff::civil::Date::MAX);
+        prop_assert_eq!(c.runs_out, expect_runs_out);
         prop_assert!(c.runs_out_with_freezer >= c.runs_out);
 
         // Monotone: another portion never brings the runs-out date closer.

@@ -58,7 +58,7 @@ Five findings are deliberately out of scope and scheduled after M7 (recorded in
 - [x] The export regenerates itself — #13 *(H5)*
 - [x] An incomplete location degrades instead of erasing the export — #22 *(H6)*
 - [x] WAL and a busy timeout — #12
-- [ ] Shopping items and fridge portions get replica-safe ids — #36, #93 *(legacy `s1` keys go inert, never reused)*
+- [x] Shopping items and fridge portions get replica-safe ids — #36, #93 *(legacy `s1` keys go inert, never reused)*
 - [ ] Coverage saturates; servings are bounded at ingress — #0, #1
 - [ ] Interrupted sessions and hostile peers are tested — #23
 - [ ] Recipe status is an enum; equipment and pantry links are slugs — #14, #15 *(first use of the hydrator)*

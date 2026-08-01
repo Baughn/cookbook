@@ -5,7 +5,6 @@
 
 use std::num::NonZeroU32;
 
-use jiff::ToSpan;
 use jiff::civil::Date;
 
 use crate::types::Portion;
@@ -30,6 +29,18 @@ fn total(portions: &[Portion]) -> u64 {
     portions.iter().map(|p| u64::from(p.servings)).sum()
 }
 
+/// `today + dinners` days, saturating at the end of the calendar. Absurd
+/// serving counts are representable (a u32 straight off the wire), and the
+/// panic in a naive `i64.days()` fires at span construction — before
+/// `saturating_add` ever gets a chance. Graceful decay, not a broken
+/// database: a fridge stocked past the year 9999 runs out "never".
+fn horizon(today: Date, dinners: u32) -> Date {
+    match jiff::Span::new().try_days(i64::from(dinners)) {
+        Ok(span) => today.saturating_add(span),
+        Err(_) => Date::MAX,
+    }
+}
+
 pub fn coverage(
     fridge: &[Portion],
     freezer: &[Portion],
@@ -40,9 +51,9 @@ pub fn coverage(
     let all_dinners = dinners(total(fridge) + total(freezer), headcount);
     Coverage {
         dinners: fridge_dinners,
-        runs_out: today.saturating_add((i64::from(fridge_dinners)).days()),
+        runs_out: horizon(today, fridge_dinners),
         freezer_dinners: all_dinners - fridge_dinners,
-        runs_out_with_freezer: today.saturating_add((i64::from(all_dinners)).days()),
+        runs_out_with_freezer: horizon(today, all_dinners),
     }
 }
 

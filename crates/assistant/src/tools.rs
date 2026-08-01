@@ -92,6 +92,17 @@ fn user(msg: impl Into<String>) -> Fail {
     Fail::User(msg.into())
 }
 
+/// Every servings count crosses this on its way in. The bound is hygiene,
+/// not arithmetic safety — coverage saturates on its own — but an absurd
+/// number persisted once syncs to every replica forever.
+fn bounded_servings(n: u32) -> std::result::Result<u32, Fail> {
+    match n {
+        0 => Err(user("servings must be at least 1")),
+        1..=999 => Ok(n),
+        _ => Err(user("servings above 999 is a typo, not a batch")),
+    }
+}
+
 fn parse<T: serde::de::DeserializeOwned>(input: &Value) -> std::result::Result<T, Fail> {
     serde_json::from_value(input.clone()).map_err(|e| user(format!("bad tool input: {e}")))
 }
@@ -715,10 +726,7 @@ fn recipe_add(store: &mut Store, ctx: &ToolCtx, input: &Value) -> ToolResult {
     if status == "retired" {
         return Err(user("a new recipe can be draft or active, not retired"));
     }
-    let servings = a.servings.unwrap_or(2);
-    if servings == 0 {
-        return Err(user("servings must be at least 1"));
-    }
+    let servings = bounded_servings(a.servings.unwrap_or(2))?;
     let lead = build_lead(a.lead_minutes, a.lead_step.as_deref())?;
     let doc = RecipeDoc {
         schema_version: mise_store::pages::SCHEMA_VERSION,
@@ -778,8 +786,8 @@ fn recipe_edit(store: &mut Store, ctx: &ToolCtx, input: &Value) -> ToolResult {
     let s = slug(&a.slug)?;
     // Validate everything before touching the doc.
     let title = a.title.as_deref().map(|t| must_trim(t, "title")).transpose()?;
-    if a.servings == Some(0) {
-        return Err(user("servings must be at least 1"));
+    if let Some(v) = a.servings {
+        bounded_servings(v)?;
     }
     let effort = a.effort.as_deref().map(parse_effort).transpose()?;
     let tags = a.tags.map(clean_tags).transpose()?;
@@ -982,6 +990,7 @@ fn fridge_add(store: &mut Store, ctx: &ToolCtx, input: &Value) -> ToolResult {
     let a: In = parse(input)?;
     let loc = resolve_location(store, &a.location)?;
     let dish = must_trim(&a.dish, "dish")?;
+    let servings = bounded_servings(a.servings)?;
     let date = a
         .date
         .as_deref()
@@ -1004,12 +1013,12 @@ fn fridge_add(store: &mut Store, ctx: &ToolCtx, input: &Value) -> ToolResult {
                 };
                 portions.insert(
                     assigned.clone(),
-                    PortionDoc { dish: dish.clone(), servings: a.servings, date: date.to_string() },
+                    PortionDoc { dish: dish.clone(), servings, date: date.to_string() },
                 );
             },
         )
         .map_err(Fail::from)?;
-    Ok(format!("fridge {loc}: added {dish} as {assigned} ({} servings)", a.servings))
+    Ok(format!("fridge {loc}: added {dish} as {assigned} ({servings} servings)"))
 }
 
 fn fridge_remove(store: &mut Store, ctx: &ToolCtx, input: &Value) -> ToolResult {
@@ -1088,10 +1097,11 @@ fn log_append(store: &mut Store, ctx: &ToolCtx, input: &Value) -> ToolResult {
         servings_default = Some(doc.servings);
     }
     entry_tags.extend(clean_tags(a.tags)?);
-    let servings = a
-        .servings
-        .or(servings_default)
-        .ok_or_else(|| user("no servings given and no recipe to take a default from"))?;
+    let servings = bounded_servings(
+        a.servings
+            .or(servings_default)
+            .ok_or_else(|| user("no servings given and no recipe to take a default from"))?,
+    )?;
     let entry = LogEntry {
         date,
         kind,

@@ -193,6 +193,11 @@ fn fridge_flow() {
     assert_eq!(doc.fridge[&p_dal].dish, "Dal");
     assert_eq!(doc.freezers["basement"][&p_stock].dish, "Stock");
 
+    // Absurd counts stop at the tool boundary: one persisted 100M-serving
+    // portion syncs everywhere and used to panic every queue read.
+    err(&mut store, "fridge_add", json!({"dish": "Gruel", "servings": 100_000_000}));
+    err(&mut store, "fridge_add", json!({"dish": "Air", "servings": 0}));
+
     err(&mut store, "fridge_remove", json!({"id": p_stock, "freezer": "attic"}));
     err(&mut store, "fridge_remove", json!({"id": "p9"}));
     ok(&mut store, "fridge_remove", json!({"id": p_stock, "freezer": "basement"}));
