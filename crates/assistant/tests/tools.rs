@@ -69,7 +69,7 @@ fn recipe_add_edit_and_errors() {
     let doc: RecipeDoc = store.get(&DocId::Recipe(Slug::new("mapo-tofu").unwrap())).unwrap();
     assert_eq!(doc.title, "Mapo tofu");
     assert_eq!(doc.ingredients.len(), 2);
-    assert_eq!(doc.ingredients[1].pantry.as_deref(), Some("doubanjiang"));
+    assert_eq!(doc.ingredients[1].pantry.as_ref().map(|s| s.as_str()), Some("doubanjiang"));
 
     // Duplicate slug is the model's problem, not a crash.
     assert!(err(&mut store, "recipe_add", json!({"slug": "mapo-tofu", "title": "Again"}))

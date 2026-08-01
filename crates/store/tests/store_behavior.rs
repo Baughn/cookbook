@@ -1,7 +1,7 @@
 //! Store behavior: persistence across reopen, snapshot cadence, and the
 //! git-committed export directory.
 
-use mise_core::types::Slug;
+use mise_core::types::{RecipeStatus, Slug};
 use mise_store::pages::{PantryDoc, PantryItemDoc, StateDoc};
 use mise_store::{DocId, Store, StoreError};
 
@@ -137,7 +137,7 @@ fn every_doc_id_export_path_exists_in_the_render() {
                 equipment: vec![],
                 ingredients: vec![],
                 source: None,
-                status: "active".into(),
+                status: RecipeStatus::Active,
                 body: "".into(),
             },
             "test",
@@ -199,7 +199,7 @@ fn recipe_with_body(root: &std::path::Path, body: &str) -> Store {
                 equipment: vec![],
                 ingredients: vec![],
                 source: None,
-                status: "active".into(),
+                status: RecipeStatus::Active,
                 body: body.into(),
             },
             "test",
@@ -434,8 +434,8 @@ enum RecipeEdit {
     Effort(usize),
     Lead(Option<u32>),
     Tag(String, String),
-    Equipment(Vec<String>),
-    Ingredient(String, Option<String>),
+    Equipment(Vec<Slug>),
+    Ingredient(String, Option<Slug>),
     Source(Option<String>),
     Status(usize),
     Body(String),
@@ -450,8 +450,9 @@ fn recipe_edit() -> impl proptest::prelude::Strategy<Value = RecipeEdit> {
         (0usize..2).prop_map(RecipeEdit::Effort),
         proptest::option::of(1u32..600).prop_map(RecipeEdit::Lead),
         (word(), word()).prop_map(|(k, v)| RecipeEdit::Tag(k, v)),
-        proptest::collection::vec(word(), 0..3).prop_map(RecipeEdit::Equipment),
-        (word(), proptest::option::of(word()))
+        proptest::collection::vec(word().prop_map(|w| Slug::new(w).unwrap()), 0..3)
+            .prop_map(RecipeEdit::Equipment),
+        (word(), proptest::option::of(word().prop_map(|w| Slug::new(w).unwrap())))
             .prop_map(|(t, p)| RecipeEdit::Ingredient(t, p)),
         proptest::option::of(word().prop_map(|w| format!("https://example.com/{w}")))
             .prop_map(RecipeEdit::Source),
@@ -492,7 +493,10 @@ fn apply_recipe_edit(
                 pantry: pantry.clone(),
             }),
             RecipeEdit::Source(s) => r.source = s.clone(),
-            RecipeEdit::Status(i) => r.status = ["draft", "active", "retired"][*i].into(),
+            RecipeEdit::Status(i) => {
+                r.status =
+                    [RecipeStatus::Draft, RecipeStatus::Active, RecipeStatus::Retired][*i];
+            }
             RecipeEdit::Body(_) => unreachable!("handled above"),
         })
         .unwrap();
@@ -512,7 +516,7 @@ fn first_cook_promotes_a_draft_and_only_a_draft() {
 
     let dir = tempfile::tempdir().unwrap();
     let mut store = Store::create(&dir.path().join("c"), &slug("home"), 2, ts(0)).unwrap();
-    let recipe = |status: &str| RecipeDoc {
+    let recipe = |status: RecipeStatus| RecipeDoc {
         schema_version: 1,
         title: "Dish".into(),
         servings: 2,
@@ -522,14 +526,14 @@ fn first_cook_promotes_a_draft_and_only_a_draft() {
         equipment: vec![],
         ingredients: vec![],
         source: None,
-        status: status.into(),
+        status,
         body: "Cook.".into(),
     };
     store
-        .create_doc(&DocId::Recipe(slug("fresh-idea")), &recipe("draft"), "test: add", ts(1))
+        .create_doc(&DocId::Recipe(slug("fresh-idea")), &recipe(RecipeStatus::Draft), "test: add", ts(1))
         .unwrap();
     store
-        .create_doc(&DocId::Recipe(slug("old-flame")), &recipe("retired"), "test: add", ts(1))
+        .create_doc(&DocId::Recipe(slug("old-flame")), &recipe(RecipeStatus::Retired), "test: add", ts(1))
         .unwrap();
     let cook = |s: &str| LogEntry {
         date: jiff::civil::Date::constant(2026, 7, 30),
@@ -544,7 +548,7 @@ fn first_cook_promotes_a_draft_and_only_a_draft() {
 
     store.append_log(&cook("fresh-idea"), "test: first cook", ts(2)).unwrap();
     let promoted: RecipeDoc = store.get(&DocId::Recipe(slug("fresh-idea"))).unwrap();
-    assert_eq!(promoted.status, "active");
+    assert_eq!(promoted.status, RecipeStatus::Active);
     let history = store.history(&DocId::Recipe(slug("fresh-idea"))).unwrap();
     assert_eq!(history.len(), 2);
     assert_eq!(history[1].message, "test: first cook");
@@ -554,6 +558,6 @@ fn first_cook_promotes_a_draft_and_only_a_draft() {
     store.append_log(&cook("old-flame"), "test: cook retired", ts(3)).unwrap();
     assert_eq!(store.history(&DocId::Recipe(slug("fresh-idea"))).unwrap().len(), 2);
     let retired: RecipeDoc = store.get(&DocId::Recipe(slug("old-flame"))).unwrap();
-    assert_eq!(retired.status, "retired");
+    assert_eq!(retired.status, RecipeStatus::Retired);
     assert_eq!(store.history(&DocId::Recipe(slug("old-flame"))).unwrap().len(), 1);
 }

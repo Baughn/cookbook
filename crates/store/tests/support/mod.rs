@@ -9,7 +9,7 @@
 
 use std::collections::BTreeMap;
 
-use mise_core::types::{CookKind, LogEntry, Slug};
+use mise_core::types::{CookKind, LogEntry, RecipeStatus, Slug};
 use mise_store::pages::{
     CorpusState, DishRefDoc, EquipmentDoc, FactsDoc, FridgeDoc, IngredientDoc, LeadTimeDoc,
     LocationDocs, LocationMeta, PantryDoc, PantryItemDoc, PortionDoc, QueueDoc, QueueEntryDoc,
@@ -276,7 +276,7 @@ fn parse_ingredient(line: &str) -> IngredientDoc {
     if rest.starts_with('[') && !rest.starts_with("\\[") {
         let end = rest.find("] ").expect("ingredient link close");
         IngredientDoc {
-            pantry: Some(unesc(&rest[1..end])),
+            pantry: Some(Slug::new(unesc(&rest[1..end])).expect("pantry link is a slug")),
             text: unesc(&rest[end + 2..]),
         }
     } else {
@@ -293,7 +293,11 @@ fn parse_recipe(content: &str) -> RecipeDoc {
     let tags = fm.get("tags").map(|t| parse_tags(t)).unwrap_or_default();
     let equipment = fm
         .get("equipment")
-        .map(|e| e.split(',').map(unesc).collect())
+        .map(|e| {
+            e.split(',')
+                .map(|s| Slug::new(unesc(s)).expect("equipment link is a slug"))
+                .collect()
+        })
         .unwrap_or_default();
 
     let marker = "\n## Method\n";
@@ -318,7 +322,7 @@ fn parse_recipe(content: &str) -> RecipeDoc {
         equipment,
         ingredients,
         source: fm.get("source").map(|s| unesc(s)),
-        status: fm["status"].clone(),
+        status: fm["status"].parse().expect("status is in vocabulary"),
         body: body.into(),
     }
 }
@@ -617,10 +621,17 @@ fn arb_recipe_doc() -> impl Strategy<Value = RecipeDoc> {
             proptest::option::of((1u32..20_000, text1())),
         ),
         arb_kv("axis"),
-        vec(slug_str("tool", 6), 0..3),
-        vec((text1(), proptest::option::of(slug_str("item", 8))), 0..5),
+        vec(slug_str("tool", 6).prop_map(|s| Slug::new(s).unwrap()), 0..3),
+        vec(
+            (text1(), proptest::option::of(slug_str("item", 8).prop_map(|s| Slug::new(s).unwrap()))),
+            0..5,
+        ),
         proptest::option::of(text1()),
-        prop_oneof![Just("draft"), Just("active"), Just("retired")].prop_map(str::to_string),
+        prop_oneof![
+            Just(RecipeStatus::Draft),
+            Just(RecipeStatus::Active),
+            Just(RecipeStatus::Retired)
+        ],
         body(),
     )
         .prop_map(

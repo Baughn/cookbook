@@ -61,7 +61,7 @@ fn page_threads_carry_their_page() {
                 equipment: vec![],
                 ingredients: vec![],
                 source: None,
-                status: "active".into(),
+                status: mise_core::types::RecipeStatus::Active,
                 body: "Fry the paste.".into(),
             },
             "test",

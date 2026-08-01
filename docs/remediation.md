@@ -60,8 +60,8 @@ Five findings are deliberately out of scope and scheduled after M7 (recorded in
 - [x] WAL and a busy timeout — #12
 - [x] Shopping items and fridge portions get replica-safe ids — #36, #93 *(legacy `s1` keys go inert, never reused)*
 - [x] Coverage saturates; servings are bounded at ingress — #0, #1
-- [ ] Interrupted sessions and hostile peers are tested — #23
-- [ ] Recipe status is an enum; equipment and pantry links are slugs — #14, #15 *(first use of the hydrator)*
+- [x] Interrupted sessions and hostile peers are tested — #23
+- [x] Recipe status is an enum; equipment and pantry links are slugs — #14, #15 *(first use of the hydrator)*
 
 ### Phase 4 — Trust boundary
 - [x] Rendered markdown is sanitized — #67 *(jumped the queue: no dependencies, highest severity)*

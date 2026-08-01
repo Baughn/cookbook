@@ -70,13 +70,13 @@ fn base_replica() -> Replica {
         effort: "weekday".to_string(),
         lead: None,
         tags: BTreeMap::from([("format".to_string(), "stir-fry".to_string())]),
-        equipment: vec!["wok".to_string()],
+        equipment: vec![mise_core::types::Slug::new("wok").unwrap()],
         ingredients: vec![IngredientDoc {
             text: "400 g something".to_string(),
-            pantry: Some("rice".to_string()),
+            pantry: Some(mise_core::types::Slug::new("rice").unwrap()),
         }],
         source: None,
-        status: "active".into(),
+        status: mise_core::types::RecipeStatus::Active,
         body: "Heat the wok. Add oil. Fry the aromatics. Serve.".into(),
     };
     Replica {

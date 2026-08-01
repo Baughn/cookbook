@@ -678,27 +678,22 @@ fn clean_ingredients(
         .map(|i| {
             Ok(IngredientDoc {
                 text: must_trim(&i.text, "ingredient text")?,
-                pantry: i
-                    .pantry
-                    .as_deref()
-                    .map(slug)
-                    .transpose()?
-                    .map(|s| s.to_string()),
+                pantry: i.pantry.as_deref().map(slug).transpose()?,
             })
         })
         .collect()
 }
 
-fn clean_equipment(raw: Vec<String>) -> std::result::Result<Vec<String>, Fail> {
-    raw.iter().map(|e| slug(e).map(|s| s.to_string())).collect()
+fn clean_equipment(raw: Vec<String>) -> std::result::Result<Vec<Slug>, Fail> {
+    raw.iter().map(|e| slug(e)).collect()
 }
 
 fn parse_effort(s: &str) -> std::result::Result<String, Fail> {
     s.parse::<EffortClass>().map(|e| e.to_string()).map_err(user)
 }
 
-fn parse_status(s: &str) -> std::result::Result<String, Fail> {
-    s.parse::<mise_core::types::RecipeStatus>().map(|e| e.to_string()).map_err(user)
+fn parse_status(s: &str) -> std::result::Result<mise_core::types::RecipeStatus, Fail> {
+    s.parse().map_err(user)
 }
 
 fn recipe_add(store: &mut Store, ctx: &ToolCtx, input: &Value) -> ToolResult {
@@ -723,7 +718,7 @@ fn recipe_add(store: &mut Store, ctx: &ToolCtx, input: &Value) -> ToolResult {
     let a: In = parse(input)?;
     let s = slug(&a.slug)?;
     let status = parse_status(a.status.as_deref().unwrap_or("active"))?;
-    if status == "retired" {
+    if status == mise_core::types::RecipeStatus::Retired {
         return Err(user("a new recipe can be draft or active, not retired"));
     }
     let servings = bounded_servings(a.servings.unwrap_or(2))?;

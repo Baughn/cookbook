@@ -296,7 +296,7 @@ fn ingredient_line(i: &crate::pages::IngredientDoc) -> String {
         text.insert(0, '\\');
     }
     match &i.pantry {
-        Some(link) => format!("- [{}] {}", esc(link), text),
+        Some(link) => format!("- [{}] {}", esc(link.as_str()), text),
         None => format!("- {text}"),
     }
 }
@@ -316,7 +316,7 @@ fn recipe_page(r: &RecipeDoc) -> String {
         pairs.push(("tags", tags_cell(&r.tags)));
     }
     if !r.equipment.is_empty() {
-        pairs.push(("equipment", r.equipment.iter().map(|e| esc(e)).collect::<Vec<_>>().join(",")));
+        pairs.push(("equipment", r.equipment.iter().map(|e| esc(e.as_str())).collect::<Vec<_>>().join(",")));
     }
     if let Some(source) = &r.source {
         pairs.push(("source", esc(source)));

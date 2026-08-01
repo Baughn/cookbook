@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use jiff::civil::{Date, DateTime};
-use mise_core::types::{CookKind, LogEntry, Slug};
+use mise_core::types::{CookKind, LogEntry, RecipeStatus, Slug};
 use mise_store::pages::{
     DishRefDoc, PantryDoc, PantryItemDoc, QueueDoc, QueueEntryDoc, RecipeDoc, ShoppingDoc,
     ShoppingItemDoc, StateDoc,
@@ -128,7 +128,7 @@ fn offline_edits_converge_and_resync_is_idempotent() {
             equipment: vec![],
             ingredients: vec![],
             source: None,
-            status: "active".into(),
+            status: RecipeStatus::Active,
             body: "Brown the legs.".into(),
         },
         "offline on a",

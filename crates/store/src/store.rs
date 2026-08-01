@@ -467,8 +467,8 @@ impl Store {
             let id = DocId::Recipe(slug.clone());
             if self.exists(&id)? {
                 self.modify::<crate::pages::RecipeDoc>(&id, provenance, at, |r| {
-                    if r.status == "draft" {
-                        r.status = "active".to_string();
+                    if r.status == mise_core::types::RecipeStatus::Draft {
+                        r.status = mise_core::types::RecipeStatus::Active;
                     }
                 })?;
             }
@@ -1355,7 +1355,7 @@ mod tests {
             equipment: vec![],
             ingredients: vec![],
             source: None,
-            status: "active".into(),
+            status: mise_core::types::RecipeStatus::Active,
             body: "".into(),
         }
     }

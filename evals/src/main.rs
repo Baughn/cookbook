@@ -90,7 +90,7 @@ fn seed(root: &std::path::Path) -> Result<Store> {
                 equipment: vec![],
                 ingredients: vec![],
                 source: None,
-                status: "active".into(),
+                status: mise_core::types::RecipeStatus::Active,
                 body: "Cook it well.".into(),
             },
             p,
@@ -299,7 +299,7 @@ async fn draft_from_url(report: &mut Report) -> Result<()> {
     report.check("exactly one new recipe page", new_ids.len() == 1);
     if let Some(id) = new_ids.first() {
         let recipe: RecipeDoc = store.get(id)?;
-        report.check("nobody asked to cook it: status draft", recipe.status == "draft");
+        report.check("nobody asked to cook it: status draft", recipe.status == mise_core::types::RecipeStatus::Draft);
         report.check("the source URL is on the page", recipe.source.as_deref() == Some(url));
         report.check("ingredients made it over", recipe.ingredients.len() >= 4);
         report.check("a real method body", recipe.body.as_str().len() > 100);

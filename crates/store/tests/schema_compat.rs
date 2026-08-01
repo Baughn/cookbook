@@ -29,7 +29,7 @@ use std::path::{Path, PathBuf};
 use automerge::transaction::CommitOptions;
 use automerge::{ActorId, AutoCommit, Change};
 use autosurgeon::{Reconcile, reconcile};
-use mise_core::types::Slug;
+use mise_core::types::{RecipeStatus, Slug};
 use mise_store::pages::{
     DishRefDoc, EquipmentDoc, FactsDoc, FridgeDoc, IngredientDoc, LocationMeta, PantryDoc,
     PantryItemDoc, PortionDoc, QueueDoc, QueueEntryDoc, RecipeDoc, ShoppingDoc, ShoppingItemDoc,
@@ -429,13 +429,13 @@ fn v1_values() -> Vec<(DocId, Vec<u8>)> {
                     effort: "weekday".into(),
                     lead: None,
                     tags: kv("cuisine", "fixture"),
-                    equipment: vec!["wok".into()],
+                    equipment: vec![slug("wok")],
                     ingredients: vec![IngredientDoc {
                         text: "200 g fixture miso".into(),
-                        pantry: Some("miso".into()),
+                        pantry: Some(slug("miso")),
                     }],
                     source: Some("https://example.com/fixture".into()),
-                    status: "active".into(),
+                    status: RecipeStatus::Active,
                     body: "Cook it the fixture way.".into(),
                 },
             ),
@@ -453,4 +453,72 @@ fn v1_values() -> Vec<(DocId, Vec<u8>)> {
             ),
         ),
     ]
+}
+
+/// The hydrators are tolerant the way the schema policy demands: values
+/// this build cannot interpret — a newer build's status vocabulary, a
+/// peer's garbage links — degrade on hydration instead of taking down every
+/// read, and nothing out-of-vocabulary can reach the render layer, which is
+/// what killed the frontmatter-injection class (a status of
+/// "x\n---\ntitle: forged" used to render as forged frontmatter).
+#[test]
+fn out_of_vocabulary_recipe_values_degrade_instead_of_poisoning_reads() {
+    use autosurgeon::Text;
+
+    // The loose v1-era shape: everything stringly, as an old build (or a
+    // hand-rolled peer) could write it.
+    #[derive(Reconcile)]
+    struct LooseIngredient {
+        text: String,
+        pantry: Option<String>,
+    }
+    #[derive(Reconcile)]
+    struct LooseRecipe {
+        schema_version: u32,
+        title: String,
+        servings: u32,
+        effort: String,
+        lead: Option<u32>,
+        tags: std::collections::BTreeMap<String, String>,
+        equipment: Vec<String>,
+        ingredients: Vec<LooseIngredient>,
+        source: Option<String>,
+        status: String,
+        body: Text,
+    }
+
+    let loose = LooseRecipe {
+        schema_version: 1,
+        title: "Loose ends".into(),
+        servings: 4,
+        effort: "weekday".into(),
+        lead: None,
+        tags: Default::default(),
+        equipment: vec!["wok".into(), "not a slug!".into()],
+        ingredients: vec![LooseIngredient {
+            text: "200 g miso".into(),
+            pantry: Some("a] b".into()),
+        }],
+        source: None,
+        status: "x\n---\ntitle: forged".into(),
+        body: Text::with_value("Cook loosely."),
+    };
+    let bytes = encode(99, &loose);
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("corpus");
+    drop(Store::create(&root, &slug("home"), 2, jiff::Timestamp::UNIX_EPOCH).unwrap());
+    inject(&root, &DocId::Recipe(slug("loose-ends")), &bytes);
+    let mut store = Store::open(&root).unwrap();
+
+    let doc: RecipeDoc = store.get(&DocId::Recipe(slug("loose-ends"))).unwrap();
+    assert_eq!(doc.status, RecipeStatus::Draft, "an unknown status reads as draft");
+    assert_eq!(doc.equipment, vec![slug("wok")], "a non-slug equipment entry is dropped");
+    assert_eq!(doc.ingredients[0].pantry, None, "a non-slug pantry link is dropped");
+
+    store.export("test: hostile recipe").unwrap();
+    let page =
+        std::fs::read_to_string(store.export_dir().join("recipes/loose-ends.md")).unwrap();
+    assert!(!page.contains("forged"), "injected frontmatter reached the export:\n{page}");
+    assert!(page.contains("status: draft"), "{page}");
 }

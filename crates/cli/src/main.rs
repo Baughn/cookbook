@@ -593,10 +593,7 @@ fn run_recipe(store: &mut Store, cmd: RecipeCmd, at: jiff::Timestamp) -> Result<
             if servings == 0 {
                 bail!("servings must be at least 1");
             }
-            let equipment = equipment
-                .iter()
-                .map(|e| slug(e).map(|s| s.to_string()))
-                .collect::<Result<Vec<_>>>()?;
+            let equipment = equipment.iter().map(|e| slug(e)).collect::<Result<Vec<_>>>()?;
             let body_text = body.map(|p| read_body(&p)).transpose()?.unwrap_or_default();
             let doc = RecipeDoc {
                 schema_version: mise_store::pages::SCHEMA_VERSION,
@@ -611,7 +608,7 @@ fn run_recipe(store: &mut Store, cmd: RecipeCmd, at: jiff::Timestamp) -> Result<
                 equipment,
                 ingredients: vec![],
                 source: None,
-                status: "active".into(),
+                status: mise_core::types::RecipeStatus::Active,
                 body: body_text.as_str().into(),
             };
             let msg = format!("cli: recipe add {s}");
@@ -628,7 +625,7 @@ fn run_recipe(store: &mut Store, cmd: RecipeCmd, at: jiff::Timestamp) -> Result<
             store.modify::<RecipeDoc>(&DocId::Recipe(s.clone()), &msg, at, |r| {
                 r.ingredients.push(IngredientDoc {
                     text,
-                    pantry: link.as_ref().map(|l| l.to_string()),
+                    pantry: link.clone(),
                 });
             })?;
             store.export(&msg)?;

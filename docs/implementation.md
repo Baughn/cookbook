@@ -399,6 +399,16 @@ Settled 2026-08-01, after the first whole-codebase audit
   in the opening round. It need not reject a mismatch — a warning plus a
   `SyncOutcome` field is enough — but a peer's shape must be legible
   before its changes are applied.
+- **Typed doc fields, same bytes.** `RecipeDoc.status` is
+  `RecipeStatus`; equipment entries and pantry links are `Slug`s. The
+  Automerge representation is the plain strings v1 wrote — regenerating
+  the v1 fixtures under the typed fields was verified byte-identical, so
+  this is a compile-time narrowing, not a wire change, and
+  `SCHEMA_VERSION` did not move. The `with`-adaptors in `pages.rs::repr`
+  hydrate tolerantly: an out-of-vocabulary status reads as draft, a
+  non-slug link is dropped — degraded, never a dead read — and the
+  frontmatter-injection render bugs are gone because the bad values are
+  unrepresentable, not because more things are escaped.
 - **Enforced at compile time where it can be.** Wherever a doc's fields
   are enumerated by hand — `Store::revert`'s prose arms — the hydrated
   value is destructured, so a newly added field is a compile error rather
