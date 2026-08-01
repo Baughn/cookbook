@@ -732,18 +732,46 @@ impl Store {
 
     // ---------------------------------------------------------- corpus --
 
+    /// `get`, with an absent doc supplied by `empty` — for location
+    /// siblings, where a gap degrades instead of erasing the location.
+    /// Only `NotFound` degrades; a doc that exists but will not hydrate is
+    /// still a loud error.
+    fn get_or<T: Hydrate>(&self, id: &DocId, empty: impl FnOnce() -> T) -> Result<T> {
+        match self.get(id) {
+            Err(StoreError::NotFound(_)) => Ok(empty()),
+            other => other,
+        }
+    }
+
     /// Hydrate everything: the render layer's input.
     pub fn corpus(&self) -> Result<CorpusState> {
+        // Locations are the union of all four kinds, and a missing sibling
+        // hydrates as empty. Partial sets are reachable — a kill between
+        // the four per-doc creates, an interrupted first sync — and one gap
+        // must not erase the other three docs from every read and from the
+        // export, whose stale-file pass would delete them as orphans.
+        let mut slugs: BTreeMap<String, Slug> = BTreeMap::new();
+        for kind in ["pantry", "equipment", "shops", "fridge"] {
+            for id in self.list(kind)? {
+                let (DocId::Pantry(l)
+                | DocId::Equipment(l)
+                | DocId::Shops(l)
+                | DocId::Fridge(l)) = id
+                else {
+                    unreachable!()
+                };
+                slugs.insert(l.as_str().to_string(), l);
+            }
+        }
         let mut locations = BTreeMap::new();
-        for id in self.list("pantry")? {
-            let DocId::Pantry(loc) = id else { unreachable!() };
+        for (name, loc) in slugs {
             let docs = LocationDocs {
-                pantry: self.get::<PantryDoc>(&DocId::Pantry(loc.clone()))?,
-                equipment: self.get::<EquipmentDoc>(&DocId::Equipment(loc.clone()))?,
-                shops: self.get::<ShopsDoc>(&DocId::Shops(loc.clone()))?,
-                fridge: self.get::<FridgeDoc>(&DocId::Fridge(loc.clone()))?,
+                pantry: self.get_or(&DocId::Pantry(loc.clone()), PantryDoc::empty)?,
+                equipment: self.get_or(&DocId::Equipment(loc.clone()), EquipmentDoc::empty)?,
+                shops: self.get_or(&DocId::Shops(loc.clone()), || ShopsDoc::new(&[]))?,
+                fridge: self.get_or(&DocId::Fridge(loc.clone()), FridgeDoc::empty)?,
             };
-            locations.insert(loc.as_str().to_string(), docs);
+            locations.insert(name, docs);
         }
         let mut recipes = BTreeMap::new();
         for id in self.list("recipe")? {
@@ -1357,6 +1385,60 @@ mod tests {
         let store = Store::open(dir.path()).unwrap();
         let pantry: PantryDoc = store.get(&id).unwrap();
         assert_eq!(pantry.items.len(), 70, "the repair rebuilt the snapshot from the intact rows");
+    }
+
+    #[test]
+    fn corpus_tolerates_a_location_missing_a_sibling_doc() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::create(dir.path(), &slug("home"), 2, t0()).unwrap();
+        store.add_location(&slug("cabin"), 2, "test", t0()).unwrap();
+        store
+            .modify::<PantryDoc>(&DocId::Pantry(slug("cabin")), "test", t0(), |p| {
+                p.items.insert(
+                    "miso".into(),
+                    crate::pages::PantryItemDoc {
+                        name: "miso".into(),
+                        presence: "have".into(),
+                        bought: None,
+                        tier: None,
+                        note: None,
+                    },
+                );
+            })
+            .unwrap();
+        store
+            .modify::<EquipmentDoc>(&DocId::Equipment(slug("cabin")), "test", t0(), |e| {
+                e.items.insert("wok".into(), "carbon steel".into());
+            })
+            .unwrap();
+
+        // A partial sibling set — reachable from a kill between the four
+        // per-doc creates, or a legacy torn state. Fabricated directly:
+        // the state is defined at the row level.
+        let drop_doc = |store: &Store, key: &str| {
+            store.conn.execute("DELETE FROM doc_changes WHERE doc_id = ?1", [key]).unwrap();
+            store.conn.execute("DELETE FROM doc_snapshots WHERE doc_id = ?1", [key]).unwrap();
+            store.conn.execute("DELETE FROM docs WHERE id = ?1", [key]).unwrap();
+        };
+
+        // Missing shops: the location still reads, its pantry legible.
+        drop_doc(&store, "location/cabin/shops");
+        let corpus = store.corpus().expect("a missing sibling degrades, not erases");
+        assert!(corpus.locations["cabin"].pantry.items.contains_key("miso"));
+        assert!(corpus.locations["cabin"].shops.tiers.is_empty());
+
+        // Missing pantry: the location is still enumerated (union of the
+        // four kinds), so its equipment stays legible in the export instead
+        // of being deleted as a stale file.
+        drop_doc(&store, "location/cabin/pantry");
+        let corpus = store.corpus().unwrap();
+        assert!(corpus.locations.contains_key("cabin"), "location gone from the corpus");
+        let files = crate::render::render(&corpus);
+        assert!(
+            files.keys().any(|k| k.starts_with("locations/cabin/")),
+            "cabin no longer legible anywhere in the export: {:?}",
+            files.keys()
+        );
     }
 
     #[test]
