@@ -214,11 +214,13 @@ fn dish_line(d: &DishView) -> String {
     )
 }
 
-/// The tool-output rendering of [`queue_view`].
-pub fn render_queue_status(v: &QueueView) -> String {
+/// The tool-output rendering of [`queue_view`]. `empty_hint` is the one
+/// place the renderings may differ: the CLI names the command that fills
+/// an empty queue, the tool output has no command to name.
+pub fn render_queue_status(v: &QueueView, empty_hint: Option<&str>) -> String {
     let mut out = format!("Queue — {} (cooking for {})\n", v.location, v.headcount);
     if v.entries.is_empty() {
-        out.push_str("  (empty)\n");
+        out.push_str(&format!("  {}\n", empty_hint.unwrap_or("(empty)")));
     }
     for entry in &v.entries {
         let age = entry
@@ -275,5 +277,5 @@ pub fn render_queue_status(v: &QueueView) -> String {
 
 /// The queue picture as tool output — [`queue_view`] rendered.
 pub fn queue_status(store: &Store, now: DateTime) -> Result<String> {
-    Ok(render_queue_status(&queue_view(store, now)?))
+    Ok(render_queue_status(&queue_view(store, now)?, None))
 }

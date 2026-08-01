@@ -90,7 +90,7 @@ Five findings are deliberately out of scope and scheduled after M7 (recorded in
 - [ ] Extraction runs under a deadline, off the runtime — #47
 
 ### Phase 7 — Edges & operations
-- [ ] The CLI renders the queue from `views`, not a copy — #4
+- [x] The CLI renders the queue from `views`, not a copy — #4 *(pulled forward from Phase 7: #40 wanted it first)*
 - [ ] Sync always exports what it persisted — #58, #59
 - [ ] Remote URLs and join failures are recoverable — #60, #63
 - [ ] Remove reports what actually happened — #64

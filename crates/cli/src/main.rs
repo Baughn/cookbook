@@ -9,10 +9,9 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use jiff::Zoned;
 use jiff::civil::{Date, DateTime};
-use mise_core::coverage::coverage;
-use mise_core::readiness::{self, Verdict};
+use mise_assistant::views;
 use mise_core::rotation::recency;
-use mise_core::types::{CookKind, EffortClass, LocationView, LogEntry, Slug};
+use mise_core::types::{CookKind, EffortClass, LogEntry, Slug};
 use mise_store::pages::{
     DishRefDoc, FridgeDoc, IngredientDoc, LeadTimeDoc, PantryItemDoc, PortionDoc, QueueDoc,
     QueueEntryDoc, RecipeDoc, StateDoc,
@@ -852,118 +851,16 @@ fn run_log(store: &mut Store, cmd: LogCmd, today: Date, at: jiff::Timestamp) -> 
 
 // ------------------------------------------------------------ queue view --
 
+/// One structured view, rendered by `mise-assistant::views` — the same
+/// rendering the assistant tool and the JSON API use. The CLI's only
+/// divergence is the empty-queue hint, which can name a command.
 fn show_queue(store: &mut Store, now: DateTime) -> Result<()> {
-    let today = now.date();
-    let (loc, view) = store.active_view()?;
-    let queue: QueueDoc = store.get(&DocId::Queue)?;
-    let someday: QueueDoc = store.get(&DocId::Someday)?;
-
-    println!("Queue — {loc} (cooking for {})", view.headcount);
-    if queue.entries.is_empty() {
-        println!("  (empty — `mise queue add <title>`)");
-    }
-    let mut entries: Vec<_> = queue.entries.iter().collect();
-    entries.sort_by_key(|(id, e)| (e.added.clone(), (*id).clone()));
-    for (id, entry) in entries {
-        let age = entry
-            .added
-            .parse::<Date>()
-            .ok()
-            .map(|d| (today - d).get_days())
-            .filter(|days| *days > 0)
-            .map(|days| format!(", {days}d on the queue"))
-            .unwrap_or_default();
-        if let [dish] = entry.dishes.as_slice() {
-            println!("  • {id}: {}", dish_line(store, &view, dish, now)?);
-        } else {
-            println!("  • {id} (menu):");
-            for dish in &entry.dishes {
-                println!("      - {}", dish_line(store, &view, dish, now)?);
-            }
-        }
-        if let Some(reason) = &entry.reason {
-            println!("      why: {reason} (added {}{age})", entry.added);
-        } else {
-            println!("      added {}{age}", entry.added);
-        }
-    }
-
-    let cov = coverage(&view.fridge, &view.freezer, view.headcount, today);
-    let freezer_note = if cov.freezer_dinners > 0 {
-        format!(
-            " — unless you defrost: +{} dinner{} to {}",
-            cov.freezer_dinners,
-            if cov.freezer_dinners == 1 { "" } else { "s" },
-            cov.runs_out_with_freezer,
-        )
-    } else {
-        String::new()
-    };
-    println!();
-    match cov.dinners {
-        0 => println!("Fridge: nothing cooked — you run out of food today{freezer_note}"),
-        n => println!(
-            "Fridge: {n} dinner{} covered — you run out {}{freezer_note}",
-            if n == 1 { "" } else { "s" },
-            cov.runs_out,
-        ),
-    }
-
-    if !someday.entries.is_empty() {
-        println!();
-        println!("Someday shelf:");
-        for (id, entry) in &someday.entries {
-            let titles: Vec<&str> = entry.dishes.iter().map(|d| d.title.as_str()).collect();
-            println!("  · {id}: {}", titles.join(" + "));
-        }
-    }
+    let view = views::queue_view(store, now)?;
+    print!(
+        "{}",
+        views::render_queue_status(&view, Some("(empty — `mise queue add <title>`)"))
+    );
     Ok(())
-}
-
-fn dish_line(
-    store: &Store,
-    view: &LocationView,
-    dish: &DishRefDoc,
-    now: DateTime,
-) -> Result<String> {
-    let Some(recipe_slug) = &dish.recipe else {
-        return Ok(format!("{} (idea — no recipe yet)", dish.title));
-    };
-    let s = slug(recipe_slug)?;
-    let doc: RecipeDoc = store.get(&DocId::Recipe(s.clone()))?;
-    let meta = doc.to_core(&s)?;
-    let assessment = readiness::assess(&meta, view);
-    let verdict = match assessment.verdict(&view.tiers) {
-        Verdict::Ready => "ready now".to_string(),
-        Verdict::AfterLead(lead) => {
-            let ready = readiness::ready_at(now, &lead);
-            format!(
-                "start now: {} → ready {} {:02}:{:02}",
-                lead.act_now_step,
-                ready.date(),
-                ready.hour(),
-                ready.minute(),
-            )
-        }
-        Verdict::NeedsShopping { tier } => {
-            let items: Vec<&str> = assessment.shop.iter().map(|n| n.item.as_str()).collect();
-            let tier_name = tier
-                .and_then(|t| view.tiers.iter().find(|x| x.id == t).map(|x| x.name.clone()))
-                .unwrap_or_else(|| "source unknown".to_string());
-            format!("shop — {tier_name}: {}", items.join(", "))
-        }
-        Verdict::MissingEquipment => {
-            let items: Vec<&str> =
-                assessment.missing_equipment.iter().map(|e| e.as_str()).collect();
-            format!("missing equipment here: {}", items.join(", "))
-        }
-    };
-    let unlinked = match assessment.unlinked.len() {
-        0 => String::new(),
-        1 => " · 1 unlinked ingredient".to_string(),
-        n => format!(" · {n} unlinked ingredients"),
-    };
-    Ok(format!("{} [{}] — {verdict}{unlinked}", dish.title, meta.effort))
 }
 
 // --------------------------------------------------------------- helpers --
