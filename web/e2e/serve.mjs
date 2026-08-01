@@ -120,6 +120,8 @@ mise([
 	'--equipment', 'wok'
 ]);
 mise(['queue', 'add', 'Mapo tofu', '--recipe', 'mapo-tofu', '--reason', 'craving']);
+// A second, non-active location: its pages render read-only.
+mise(['location', 'add', 'cabin']);
 
 // --- the real server, serving the built app ---
 const server = spawn(

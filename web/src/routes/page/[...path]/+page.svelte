@@ -46,12 +46,30 @@
 	let recipeSlug = $derived(doc?.startsWith('recipe/') ? doc.slice('recipe/'.length) : null);
 	let status: string | null = $state(null);
 
+	// The status row drives recipe-status POSTs for the *current* slug, so
+	// a slow response for a page we've left must never paint it: capture
+	// the slug at effect entry and discard mismatched answers.
 	$effect(() => {
 		status = null;
-		if (!recipeSlug) return;
-		const path = `recipes/${recipeSlug}.md`;
-		api.pages().then((r) => (status = r.pages.find((p) => p.path === path)?.status ?? null));
+		const slug = recipeSlug;
+		if (!slug) return;
+		const wanted = `recipes/${slug}.md`;
+		api
+			.pages()
+			.then((r) => {
+				if (recipeSlug !== slug) return;
+				status = r.pages.find((p) => p.path === wanted)?.status ?? null;
+			})
+			.catch((e) => (error = String(e)));
 	});
+
+	// The Edit toggle only appears where editing works: the editors
+	// refuse non-active locations, so offering the toggle there blanked
+	// the page.
+	let activeLocation: string | null = $state(null);
+	let editable = $derived(
+		editorLocation !== null && editorLocation.location === activeLocation
+	);
 
 	async function setStatus(next: string) {
 		try {
@@ -77,6 +95,10 @@
 		void path;
 		editing = false;
 		reload();
+		api
+			.location()
+			.then((l) => (activeLocation = l.location))
+			.catch(() => (activeLocation = null));
 	});
 </script>
 
@@ -96,7 +118,7 @@
 			{/each}
 		</p>
 	{/if}
-	{#if editorLocation}
+	{#if editorLocation && editable}
 		<p class="mode">
 			<button class="outline" onclick={() => (editing = !editing)}>
 				{editing ? 'Done' : 'Edit'}
@@ -105,7 +127,7 @@
 	{/if}
 	<!-- Edits from anywhere (taps, recon, revert) bump version; editors
 	     and history reload in place, so nothing on screen moves. -->
-	{#if editorLocation && editing}
+	{#if editorLocation && editable && editing}
 		{#if editorLocation.kind === 'pantry'}
 			<PantryEditor location={editorLocation.location} {version} onChanged={reload} />
 		{:else}

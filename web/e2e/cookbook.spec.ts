@@ -69,3 +69,15 @@ test('pantry and equipment edit in place, with ui provenance', async ({ page }) 
 	await page.getByRole('button', { name: 'Add', exact: true }).click();
 	await expect(page.getByRole('button', { name: 'stand-mixer ✕' })).toBeVisible();
 });
+
+test('edit only appears where editing works', async ({ page }) => {
+	// The active location's pantry page offers the toggle.
+	await enter(page, '/page/locations/home/pantry');
+	await expect(page.getByRole('button', { name: 'Edit' })).toBeVisible();
+
+	// The cabin is not active: same page shape, no toggle — the editors
+	// refuse non-active locations, so a toggle here blanks the page.
+	await page.goto('/page/locations/cabin/pantry');
+	await expect(page.getByRole('heading', { name: /Pantry/ })).toBeVisible();
+	await expect(page.getByRole('button', { name: 'Edit' })).not.toBeVisible();
+});
