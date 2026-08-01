@@ -295,12 +295,12 @@ impl Peer {
                 // so a partial round would take down every read.
                 store.transaction(|tx| {
                     for row in &round.log_entries {
-                        if tx.insert_log_row(&row.uid, &row.entry)? {
+                        if tx.ingest_log_row(&row.uid, &row.entry)? {
                             self.outcome.log_added += 1;
                         }
                     }
                     for row in &round.thread_entries {
-                        if tx.insert_thread_row(&row.uid, &row.message)? {
+                        if tx.ingest_thread_row(&row.uid, &row.message)? {
                             self.outcome.threads_added += 1;
                         }
                     }

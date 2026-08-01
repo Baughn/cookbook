@@ -54,7 +54,7 @@ Five findings are deliberately out of scope and scheduled after M7 (recorded in
 - [x] One transaction per doc creation and per sync round — #9, #21 *(H1)*
 - [x] Snapshots are rebuilt, not copied from a stale session doc — #20
 - [x] A one-time snapshot repair on open *(recovers what #20 hid — the changes are still in `doc_changes`)*
-- [ ] Sync verifies uids and normalizes on ingest; uids go replica-scoped — #17, #18, #19, #16 *(H2)*
+- [x] Sync verifies uids and normalizes on ingest; uids go replica-scoped — #17, #18, #19, #16 *(H2)*
 - [ ] The export regenerates itself — #13 *(H5)*
 - [ ] An incomplete location degrades instead of erasing the export — #22 *(H6)*
 - [ ] WAL and a busy timeout — #12

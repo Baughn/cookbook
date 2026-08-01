@@ -99,3 +99,19 @@ pub struct ThreadMessage {
     pub content: String,
     pub created: DateTime,
 }
+
+impl ThreadMessage {
+    /// The stored form: LF line endings, stray CRs dropped, trimmed. `None`
+    /// if nothing is left. Every path that stores a message goes through
+    /// this — locally on append and on sync ingress — because the renderer
+    /// and the uid content hash both assume it.
+    pub fn normalized(mut self) -> Option<ThreadMessage> {
+        let content = self.content.replace("\r\n", "\n").replace('\r', "");
+        let content = content.trim();
+        if content.is_empty() {
+            return None;
+        }
+        self.content = content.to_string();
+        Some(self)
+    }
+}

@@ -28,6 +28,18 @@ fn slug(s: &str) -> Slug {
     Slug::new(s).unwrap()
 }
 
+/// The documented uid prefix: `sha256(serialized content)[..16]` — computed
+/// from scratch here so these tests pin the wire contract, not the
+/// implementation's helper.
+fn content_hash<T: serde::Serialize>(value: &T) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(serde_json::to_string(value).unwrap().as_bytes())
+        .iter()
+        .take(8)
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
 /// Drive a full sync session between two stores, no transport.
 fn run_sync(a: &mut Store, b: &mut Store) -> (SyncOutcome, SyncOutcome) {
     let mut pa = Peer::start(a, true).unwrap();
@@ -160,8 +172,14 @@ fn offline_edits_converge_and_resync_is_idempotent() {
     assert!(out_b.is_empty(), "{out_b:?}");
 }
 
+/// Log-row identity is (content, minting replica, occurrence): a row
+/// reaches every device exactly once, and genuinely repeated identical
+/// cooks stay distinct even when the repeats straddle a partition. The
+/// occurrence index counts only the minting replica's own repeats, so two
+/// devices that each log the same dish twice while apart converge to four
+/// cooks — the old replica-blind count collapsed them to two.
 #[test]
-fn same_cook_logged_on_both_devices_dedupes() {
+fn partitioned_repeat_cooks_all_survive_the_merge() {
     let dir = tempfile::tempdir().unwrap();
     let mut a = create_at(dir.path(), "a");
     let mut b = Store::create_bare(&dir.path().join("b")).unwrap();
@@ -177,19 +195,115 @@ fn same_cook_logged_on_both_devices_dedupes() {
         verdict: "fine".into(),
         tags: BTreeMap::new(),
     };
-    // The same cook, logged independently on both devices…
-    a.append_log(&entry, "test: log", t0()).unwrap();
-    b.append_log(&entry, "test: log", t0()).unwrap();
-    // …plus a genuine second identical cook on A only.
-    a.append_log(&entry, "test: log", t0()).unwrap();
+    // Partitioned: each device logs the same dish twice before they meet.
+    let a0 = a.append_log(&entry, "test: log", t0()).unwrap();
+    let a1 = a.append_log(&entry, "test: log", t0()).unwrap();
+    let b0 = b.append_log(&entry, "test: log", t0()).unwrap();
+
+    // Same content, same device → the occurrence index disambiguates.
+    assert!(a0.ends_with("-0"), "{a0}");
+    assert!(a1.ends_with("-1"), "{a1}");
+    assert_eq!(a0.rsplit_once('-').unwrap().0, a1.rsplit_once('-').unwrap().0);
+    // Same content, different device → different replica component, shared
+    // content-hash prefix.
+    assert_ne!(a0, b0);
+    assert_eq!(a0.split('-').next(), b0.split('-').next(), "same content hash");
 
     run_sync(&mut a, &mut b);
-    assert_eq!(a.log_entries().unwrap().len(), 2, "dedupe kept the repeat");
+    assert_eq!(a.log_entries().unwrap().len(), 3, "every distinct cook survives");
     assert_eq!(a.corpus().unwrap(), b.corpus().unwrap());
+    assert!(exports_equal(&a, &b));
+
+    // Idempotent: meeting again moves nothing.
+    let (out_a, out_b) = run_sync(&mut a, &mut b);
+    assert!(out_a.is_empty(), "{out_a:?}");
+    assert!(out_b.is_empty(), "{out_b:?}");
+}
+
+/// The uid is the entire cross-replica identity of a log row, so sync must
+/// not take a peer's word for it: a forged uid could shadow the genuine row
+/// forever (`INSERT OR IGNORE` on the real uid would swallow the real
+/// entry). The round is rejected whole — nothing in it persists.
+#[test]
+fn a_log_row_whose_uid_does_not_match_its_content_poisons_the_round() {
+    use mise_store::sync::{LogRow, Round, WireMsg};
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut a = create_at(dir.path(), "a");
+    let mut b = Store::create_bare(&dir.path().join("b")).unwrap();
+    run_sync(&mut a, &mut b);
+
+    let entry = LogEntry {
+        date: Date::constant(2026, 7, 29),
+        kind: CookKind::Meal,
+        recipe: None,
+        title: "Mapo tofu".into(),
+        location: "home".into(),
+        servings: 4,
+        verdict: "fine".into(),
+        tags: BTreeMap::new(),
+    };
+    let round = Round {
+        log_entries: vec![
+            // A well-formed row under an honest uid…
+            LogRow { uid: format!("{}-0", content_hash(&entry)), entry: entry.clone() },
+            // …and one whose uid belongs to no such content.
+            LogRow { uid: "0000000000000000-0".into(), entry: entry.clone() },
+        ],
+        ..Round::default()
+    };
+
+    let mut pb = Peer::start(&b, false).unwrap();
+    pb.handle(&mut b, &WireMsg::Round(round)).expect_err("a forged uid rejects the round");
+    assert_eq!(b.log_entries().unwrap().len(), 0, "nothing from the poisoned round persisted");
+}
+
+/// Thread content is normalized on append (LF, trimmed, non-empty) and the
+/// renderer depends on it — so the sync path must apply the same
+/// normalization before hashing and storing, or identical turns get
+/// different uids across replicas and raw CRLF reaches the renderer.
+#[test]
+fn sync_normalizes_thread_content_before_verifying_and_storing_it() {
+    use mise_store::sync::{Round, ThreadRow, WireMsg};
+    use mise_store::threads::ThreadMessage;
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut a = create_at(dir.path(), "a");
+    let mut b = Store::create_bare(&dir.path().join("b")).unwrap();
+    run_sync(&mut a, &mut b);
+
+    let normalized = ThreadMessage {
+        thread: ThreadId::Planning,
+        role: Role::User,
+        content: "plan the week".into(),
+        created: DateTime::constant(2026, 7, 29, 9, 0, 0, 0),
+    };
+    let raw = ThreadMessage { content: "plan the week\r\n ".into(), ..normalized.clone() };
+    // An honest peer hashes the normalized form; the wire carries the raw one.
+    let uid = format!("{}-0", content_hash(&normalized));
+    let round = Round {
+        thread_entries: vec![ThreadRow { uid, message: raw }],
+        ..Round::default()
+    };
+
+    let mut pb = Peer::start(&b, false).unwrap();
+    pb.handle(&mut b, &WireMsg::Round(round)).unwrap();
+    let messages = b.thread_messages(&ThreadId::Planning).unwrap();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].content, "plan the week", "stored normalized, not raw");
+
+    // A message that normalizes to nothing rejects the round.
+    let empty = ThreadMessage { content: " \r\n ".into(), ..normalized.clone() };
+    let round = Round {
+        thread_entries: vec![ThreadRow { uid: format!("{}-0", content_hash(&empty)), message: empty }],
+        ..Round::default()
+    };
+    let mut pb = Peer::start(&b, false).unwrap();
+    pb.handle(&mut b, &WireMsg::Round(round)).expect_err("an empty message rejects the round");
 }
 
 #[test]
-fn thread_messages_sync_and_dedupe() {
+fn thread_messages_sync_across_devices() {
     let dir = tempfile::tempdir().unwrap();
     let mut a = create_at(dir.path(), "a");
     let mut b = Store::create_bare(&dir.path().join("b")).unwrap();
@@ -204,25 +318,22 @@ fn thread_messages_sync_and_dedupe() {
     let recipe_thread = ThreadId::Page(DocId::Recipe(slug("mapo-tofu")));
     b.append_thread_message(&recipe_thread, Role::User, "can I halve the sugar?", at(10))
         .unwrap();
-    // …and one message recorded identically on both devices.
+    // …and one message typed identically on both devices. Identity is
+    // (content, minting replica, occurrence), so these are two messages —
+    // each device said it once, and both records survive the merge.
     for s in [&mut a, &mut b] {
         s.append_thread_message(&ThreadId::Planning, Role::User, "checked off eggs", at(11))
             .unwrap();
     }
 
     let (out_a, out_b) = run_sync(&mut a, &mut b);
-    // The identical message has the same uid on both devices, so the uid
-    // exchange keeps it off the wire entirely.
-    assert_eq!(out_a.threads_sent, 2, "{out_a:?}");
-    assert_eq!(out_b.threads_sent, 1, "{out_b:?}");
+    assert_eq!(out_a.threads_sent, 3, "{out_a:?}");
+    assert_eq!(out_b.threads_sent, 2, "{out_b:?}");
     assert_eq!(a.corpus().unwrap(), b.corpus().unwrap());
     assert!(exports_equal(&a, &b));
-    assert_eq!(
-        a.thread_messages(&ThreadId::Planning).unwrap().len(),
-        3,
-        "identical message logged on both devices deduped"
-    );
+    assert_eq!(a.thread_messages(&ThreadId::Planning).unwrap().len(), 4);
 
+    // A row reaches every device exactly once: resync moves nothing.
     let (out_a, out_b) = run_sync(&mut a, &mut b);
     assert!(out_a.is_empty(), "{out_a:?}");
     assert!(out_b.is_empty(), "{out_b:?}");
@@ -443,7 +554,7 @@ fn v1_corpus_migrates_on_open() {
     // Backfill happened: hashes and distinct uids exist.
     let conn = rusqlite::Connection::open(root.join("mise.db")).unwrap();
     let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-    assert_eq!(version, 4);
+    assert_eq!(version, 5);
     let uids: Vec<String> = conn
         .prepare("SELECT uid FROM cook_log ORDER BY uid")
         .unwrap()

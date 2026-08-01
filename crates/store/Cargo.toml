@@ -19,6 +19,8 @@ similar.workspace = true
 rusqlite.workspace = true
 base64.workspace = true
 sha2.workspace = true
+# Mints each store's replica id, once: log/thread uids are replica-scoped.
+getrandom.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true

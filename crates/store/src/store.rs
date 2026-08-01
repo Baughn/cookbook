@@ -80,7 +80,11 @@ CREATE TABLE blobs (
   hash TEXT PRIMARY KEY,
   ext  TEXT NOT NULL
 ) STRICT;
-PRAGMA user_version = 4;
+CREATE TABLE meta (
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+) STRICT;
+PRAGMA user_version = 5;
 ";
 
 pub(crate) fn hex(bytes: &[u8]) -> String {
@@ -133,6 +137,25 @@ pub const DEFAULT_TIERS: &[(&str, &str)] = &[
 pub struct Store {
     conn: Connection,
     root: PathBuf,
+    /// This store's random identity, minted once at first open and kept in
+    /// `meta`. It scopes the occurrence index in log and thread uids, so
+    /// each replica counts only its own repeats.
+    replica: String,
+}
+
+/// Mint the replica id if this store has none yet, and return it.
+fn ensure_replica_id(conn: &Connection) -> Result<String> {
+    let existing: Option<String> = conn
+        .query_row("SELECT value FROM meta WHERE key = 'replica_id'", [], |r| r.get(0))
+        .optional()?;
+    if let Some(id) = existing {
+        return Ok(id);
+    }
+    let mut bytes = [0u8; 4];
+    getrandom::fill(&mut bytes).map_err(|e| StoreError::Io(std::io::Error::other(e)))?;
+    let id = hex(&bytes);
+    conn.execute("INSERT INTO meta (key, value) VALUES ('replica_id', ?1)", [&id])?;
+    Ok(id)
 }
 
 impl Store {
@@ -148,7 +171,8 @@ impl Store {
         std::fs::create_dir_all(root.join("export"))?;
         let conn = Connection::open(&db)?;
         conn.execute_batch(SCHEMA)?;
-        let store = Store { conn, root: root.to_path_buf() };
+        let replica = ensure_replica_id(&conn)?;
+        let store = Store { conn, root: root.to_path_buf(), replica };
         store.git(&["init", "-q"])?;
         Ok(store)
     }
@@ -175,7 +199,8 @@ impl Store {
         }
         let conn = Connection::open(&db)?;
         migrate(&conn)?;
-        Ok(Store { conn, root: root.to_path_buf() })
+        let replica = ensure_replica_id(&conn)?;
+        Ok(Store { conn, root: root.to_path_buf(), replica })
     }
 
     pub fn root(&self) -> &Path {
@@ -388,9 +413,10 @@ impl Store {
 
     // ------------------------------------------------------------- log --
 
-    /// Append a cook. The row's uid is its content hash plus an occurrence
-    /// index, so the same cook logged on two devices dedupes on sync while a
-    /// genuinely repeated identical cook stays two rows.
+    /// Append a cook. The row's uid is its content hash plus this replica's
+    /// id and occurrence index, so a cook is identified by who recorded it:
+    /// the row reaches every device exactly once, and repeats — even
+    /// partitioned ones — stay distinct rows.
     ///
     /// A first cook promotes a draft recipe to active — that rule lives here
     /// so no caller can log a cook and forget it. Promotion is a doc change
@@ -398,14 +424,20 @@ impl Store {
     /// row itself is clockless. The sync insert path does not promote — the
     /// origin device already did, and its doc change is on the way.
     pub fn append_log(&mut self, e: &LogEntry, provenance: &str, at: Timestamp) -> Result<String> {
-        let prefix = log_content_hash(e);
+        // The occurrence index counts only this replica's own repeats — the
+        // uid space is partitioned by replica id, so two devices logging the
+        // same dish while apart cannot mint colliding uids and collapse
+        // genuinely distinct cooks on merge.
+        let scope = format!("{}-{}", log_content_hash(e), self.replica);
         let n: i64 = self.conn.query_row(
             "SELECT COUNT(*) FROM cook_log WHERE uid LIKE ?1 || '-%'",
-            [&prefix],
+            [&scope],
             |r| r.get(0),
         )?;
-        let uid = format!("{prefix}-{n}");
-        self.insert_log_row(&uid, e)?;
+        let uid = format!("{scope}-{n}");
+        if !self.insert_log_row(&uid, e)? {
+            return Err(StoreError::Corrupt(format!("log uid {uid} already taken")));
+        }
         if let Some(slug) = &e.recipe {
             let id = DocId::Recipe(slug.clone());
             if self.exists(&id)? {
@@ -607,25 +639,24 @@ impl Store {
         content: &str,
         created: jiff::civil::DateTime,
     ) -> Result<String> {
-        let content = content.replace("\r\n", "\n").replace('\r', "");
-        let content = content.trim();
-        if content.is_empty() {
-            return Err(StoreError::Invalid("empty thread message".into()));
-        }
         let msg = ThreadMessage {
             thread: thread.clone(),
             role,
             content: content.to_string(),
             created,
-        };
-        let prefix = thread_content_hash(&msg);
+        }
+        .normalized()
+        .ok_or_else(|| StoreError::Invalid("empty thread message".into()))?;
+        let scope = format!("{}-{}", thread_content_hash(&msg), self.replica);
         let n: i64 = self.conn.query_row(
             "SELECT COUNT(*) FROM thread_messages WHERE uid LIKE ?1 || '-%'",
-            [&prefix],
+            [&scope],
             |r| r.get(0),
         )?;
-        let uid = format!("{prefix}-{n}");
-        self.insert_thread_row(&uid, &msg)?;
+        let uid = format!("{scope}-{n}");
+        if !self.insert_thread_row(&uid, &msg)? {
+            return Err(StoreError::Corrupt(format!("thread uid {uid} already taken")));
+        }
         Ok(uid)
     }
 
@@ -959,26 +990,81 @@ impl StoreTx<'_> {
         )?;
         Ok(inserted > 0)
     }
+
+    /// Sync ingress for a log row. The uid is the row's entire cross-replica
+    /// identity and it arrived off the wire, so rebind it to the content:
+    /// it must be `sha256(entry)[..16]-<nonempty suffix>` (the suffix form
+    /// changed over time; the content hash is the invariant). A mismatch
+    /// rejects the round — `INSERT OR IGNORE` would otherwise let a forged
+    /// uid shadow the genuine row forever.
+    pub(crate) fn ingest_log_row(&self, uid: &str, e: &LogEntry) -> Result<bool> {
+        let prefix = format!("{}-", log_content_hash(e));
+        if uid.strip_prefix(&prefix).is_none_or(|suffix| suffix.is_empty()) {
+            return Err(StoreError::Corrupt(format!(
+                "log row uid {uid:?} does not match its content"
+            )));
+        }
+        self.insert_log_row(uid, e)
+    }
+
+    /// Sync ingress for a thread row: normalize exactly as local append
+    /// does, then verify the uid against the normalized form — otherwise
+    /// identical turns hash to different uids across replicas and raw CRLF
+    /// reaches the renderer.
+    pub(crate) fn ingest_thread_row(&self, uid: &str, m: &ThreadMessage) -> Result<bool> {
+        let m = m.clone().normalized().ok_or_else(|| {
+            StoreError::Corrupt(format!("thread row {uid:?} is empty after normalization"))
+        })?;
+        let prefix = format!("{}-", thread_content_hash(&m));
+        if uid.strip_prefix(&prefix).is_none_or(|suffix| suffix.is_empty()) {
+            return Err(StoreError::Corrupt(format!(
+                "thread row uid {uid:?} does not match its content"
+            )));
+        }
+        self.insert_thread_row(uid, &m)
+    }
 }
 
 fn migrate(conn: &Connection) -> Result<()> {
     let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     match version {
-        4 => Ok(()),
-        3 => migrate_v3_to_v4(conn),
+        5 => Ok(()),
+        4 => migrate_v4_to_v5(conn),
+        3 => {
+            migrate_v3_to_v4(conn)?;
+            migrate_v4_to_v5(conn)
+        }
         2 => {
             migrate_v2_to_v3(conn)?;
-            migrate_v3_to_v4(conn)
+            migrate_v3_to_v4(conn)?;
+            migrate_v4_to_v5(conn)
         }
         1 => {
             migrate_v1_to_v2(conn)?;
             migrate_v2_to_v3(conn)?;
-            migrate_v3_to_v4(conn)
+            migrate_v3_to_v4(conn)?;
+            migrate_v4_to_v5(conn)
         }
         other => Err(StoreError::Corrupt(format!(
-            "unsupported schema version {other} (this build understands 1..=4)"
+            "unsupported schema version {other} (this build understands 1..=5)"
         ))),
     }
+}
+
+/// v4 → v5: a `meta` table for per-store facts, first of them the replica
+/// id that scopes new log/thread uids. Existing rows keep their two-part
+/// uids forever — sync verifies rows by content-hash prefix, not format.
+fn migrate_v4_to_v5(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "BEGIN;
+         CREATE TABLE meta (
+           key   TEXT PRIMARY KEY,
+           value TEXT NOT NULL
+         ) STRICT;
+         PRAGMA user_version = 5;
+         COMMIT;",
+    )?;
+    Ok(())
 }
 
 /// v3 → v4: every snapshot is dropped and rebuilt from a full replay of
@@ -1248,13 +1334,14 @@ mod tests {
             }
             // Poison the cadence snapshot the way the pre-fix sync path
             // could: bytes from a doc that predates rows below the boundary.
-            // An empty doc is the extreme member of that class. Then reset
-            // the version pragma to model a store from before the repair.
+            // An empty doc is the extreme member of that class. Then model a
+            // store from before the repair: version pragma 3, no meta table.
             let mut empty = AutoCommit::new();
             store
                 .conn
                 .execute("UPDATE doc_snapshots SET snapshot = ?1", [empty.save()])
                 .unwrap();
+            store.conn.execute("DROP TABLE meta", []).unwrap();
             store.conn.pragma_update(None, "user_version", 3).unwrap();
         }
         let store = Store::open(dir.path()).unwrap();

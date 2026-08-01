@@ -81,14 +81,21 @@ Settled 2026-07-29, at M2 build start:
   transaction per round, so a failure mid-round persists all of it or none
   of it — and an interrupted sync loses nothing. The peer machinery is sans-IO in `store/` — server, CLI,
   and tests drive the identical code; the transport is dumb pipe.
-- **Log-row identity: content hash + occurrence index.** Append-only rows
-  have no CRDT, so cross-replica dedupe keys on content: uid =
-  `sha256(entry)[..16]-<n>`. The same cook logged on two devices merges to
-  one row; a genuinely repeated identical cook is `-0`, `-1`. Log ordering
-  is (date, uid) — deterministic across replicas, so converged replicas
-  still export byte-identically. Change rows likewise carry their Automerge
-  change hash, deduping changes that arrive via two paths. Schema v2; v1
-  databases migrate on open by pure backfill.
+- **Log-row identity: content hash + replica + occurrence.** Append-only
+  rows have no CRDT, so cross-replica identity keys on content: uid =
+  `sha256(entry)[..16]-<replica-id>-<n>`, where the replica id is random,
+  minted once per store, and `<n>` counts that replica's own repeats. A row
+  reaches every device exactly once (sync dedupes on uid), and genuinely
+  repeated identical cooks stay distinct even when the repeats straddle a
+  partition — which also means the same cook logged independently on two
+  devices is two rows; identity is who recorded it, not just what it says.
+  Sync verifies every incoming row by recomputing the content hash against
+  the uid (thread content normalized first, exactly as local append does)
+  and rejects the round on mismatch; pre-replica two-part uids remain valid
+  forever under the same check. Log ordering is (date, uid) — deterministic
+  across replicas, so converged replicas still export byte-identically.
+  Change rows likewise carry their Automerge change hash, deduping changes
+  that arrive via two paths. Schema v5; older databases migrate on open.
 - **Auth.** One static bearer token (≥16 chars), `Authorization: Bearer` or
   `?token=` for browser clients that can't set WS headers; constant-time
   compare. Server reads it from `--token-file`, systemd
@@ -398,14 +405,16 @@ Settled 2026-08-01, after the first whole-codebase audit
   than a silently skipped one. This is what makes the policy enforced
   rather than merely remembered.
 - **Log and thread row uids become replica-scoped**:
-  `sha256(entry)[..16]-<replica-id>-<n>`, with a per-corpus random
-  replica id. The occurrence index was a purely local `COUNT(*)`, so two
-  partitioned replicas that each logged the same cook twice converged to
-  two rows rather than four. The promise here has always had two halves —
-  the same cook logged on two devices merges to one row, *and* a
-  genuinely repeated identical cook stays distinct — and only the first
-  held. Deferring this was itself a permanent decision, so it is made now
-  while history is shallow.
+  `sha256(entry)[..16]-<replica-id>-<n>`, with a random replica id minted
+  once per store. The occurrence index was a purely local `COUNT(*)`, so
+  two partitioned replicas that each logged the same cook twice converged
+  to two rows rather than four. The promise here has always had two
+  halves — the same cook logged on two devices merges to one row, *and* a
+  genuinely repeated identical cook stays distinct — and the two are
+  irreconcilable: the system cannot tell double-entry of one event from
+  two events. Replica-scoping keeps the second half and gives up the
+  first; a cook is now identified by who recorded it. Deferring this was
+  itself a permanent decision, so it is made now while history is shallow.
 
 ### Known, scheduled after M7
 
