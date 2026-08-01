@@ -832,3 +832,96 @@ fn a_mid_session_edit_survives_the_snapshot_cadence() {
     assert!(pantry_a.items.contains_key("mid-session"));
     assert!(exports_equal(&a, &b));
 }
+
+/// Hostile or malformed wire input is rejected without touching the store:
+/// unparseable doc ids, non-base64 payloads, garbage Automerge bytes. (Uid
+/// forgery and empty-normalizing messages have their own tests above.)
+#[test]
+fn hostile_wire_messages_are_rejected_without_touching_the_store() {
+    use base64::Engine;
+    use mise_store::sync::{DocMsg, Round, WireMsg};
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut a = create_at(dir.path(), "a");
+    let mut b = Store::create_bare(&dir.path().join("b")).unwrap();
+    run_sync(&mut a, &mut b);
+    let before = render(&b.corpus().unwrap());
+
+    let cases: Vec<(&str, DocMsg)> = vec![
+        (
+            "unparseable doc id",
+            DocMsg { doc: "recipe/Not A Slug".into(), data: "AA==".into() },
+        ),
+        ("not base64", DocMsg { doc: "queue".into(), data: "!!!not-base64!!!".into() }),
+        (
+            "garbage sync message",
+            DocMsg {
+                doc: "queue".into(),
+                data: base64::engine::general_purpose::STANDARD.encode(b"not automerge"),
+            },
+        ),
+    ];
+    for (name, doc_msg) in cases {
+        let round = Round { docs: vec![doc_msg], ..Round::default() };
+        let mut pb = Peer::start(&b, false).unwrap();
+        pb.handle(&mut b, &WireMsg::Round(round))
+            .expect_err(name);
+        assert_eq!(render(&b.corpus().unwrap()), before, "{name} mutated the store");
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: 16, ..ProptestConfig::default() })]
+
+    /// An interrupted session loses nothing: cut the pipe after a seeded
+    /// number of delivered messages, throw both peers away, and let a fresh
+    /// session finish the job — converged, and every row appears exactly
+    /// once. This is the invariant the stale-snapshot and per-doc
+    /// transaction defects broke.
+    #[test]
+    fn a_session_cut_at_any_point_loses_nothing(
+        ops_a in vec(arb_op(), 0..6),
+        ops_b in vec(arb_op(), 0..6),
+        cut in 0usize..12,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut a = create_at(dir.path(), "a");
+        let mut b = Store::create_bare(&dir.path().join("b")).unwrap();
+        run_sync(&mut a, &mut b);
+        for op in &ops_a { apply(&mut a, op); }
+        for op in &ops_b { apply(&mut b, op); }
+
+        // First session: strict alternation, pipe dies after `cut` deliveries.
+        let mut pa = Peer::start(&a, true).unwrap();
+        let mut pb = Peer::start(&b, false).unwrap();
+        let mut msg = pa.initial_round(&a).unwrap();
+        let mut to_b = true;
+        for _ in 0..cut {
+            let next = if to_b {
+                pb.handle(&mut b, &msg).unwrap()
+            } else {
+                pa.handle(&mut a, &msg).unwrap()
+            };
+            to_b = !to_b;
+            match next {
+                Some(n) => msg = n,
+                None => break, // completed cleanly before the cut
+            }
+        }
+        drop((pa, pb));
+
+        // Signal returns; fresh peers, fresh session.
+        run_sync(&mut a, &mut b);
+        let corpus = a.corpus().unwrap();
+        prop_assert_eq!(&corpus, &b.corpus().unwrap());
+        prop_assert!(exports_equal(&a, &b));
+
+        // Exactly once: counts match the ops applied, so nothing was lost
+        // to the cut and nothing was duplicated by the retry.
+        let count = |f: fn(&Op) -> bool| ops_a.iter().chain(&ops_b).filter(|o| f(o)).count();
+        prop_assert_eq!(a.log_entries().unwrap().len(), count(|o| matches!(o, Op::Log { .. })));
+        prop_assert_eq!(corpus.shopping.items.len(), count(|o| matches!(o, Op::Shopping { .. })));
+        let messages: usize = corpus.threads.values().map(Vec::len).sum();
+        prop_assert_eq!(messages, count(|o| matches!(o, Op::Thread { .. })));
+    }
+}
