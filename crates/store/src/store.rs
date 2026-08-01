@@ -80,7 +80,7 @@ CREATE TABLE blobs (
   hash TEXT PRIMARY KEY,
   ext  TEXT NOT NULL
 ) STRICT;
-PRAGMA user_version = 3;
+PRAGMA user_version = 4;
 ";
 
 pub(crate) fn hex(bytes: &[u8]) -> String {
@@ -964,16 +964,50 @@ impl StoreTx<'_> {
 fn migrate(conn: &Connection) -> Result<()> {
     let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     match version {
-        3 => Ok(()),
-        2 => migrate_v2_to_v3(conn),
+        4 => Ok(()),
+        3 => migrate_v3_to_v4(conn),
+        2 => {
+            migrate_v2_to_v3(conn)?;
+            migrate_v3_to_v4(conn)
+        }
         1 => {
             migrate_v1_to_v2(conn)?;
-            migrate_v2_to_v3(conn)
+            migrate_v2_to_v3(conn)?;
+            migrate_v3_to_v4(conn)
         }
         other => Err(StoreError::Corrupt(format!(
-            "unsupported schema version {other} (this build understands 1..=3)"
+            "unsupported schema version {other} (this build understands 1..=4)"
         ))),
     }
+}
+
+/// v3 → v4: every snapshot is dropped and rebuilt from a full replay of
+/// `doc_changes`. Builds before the snapshot-rebuild fix could save a sync
+/// session's stale doc as the cadence snapshot, hiding concurrent writers'
+/// changes from every load — but the change rows themselves were always
+/// intact, so a pure replay recovers everything a stale snapshot hid. No
+/// DDL; this is a data repair riding the version ladder so it runs exactly
+/// once.
+fn migrate_v3_to_v4(conn: &Connection) -> Result<()> {
+    let tx = conn.unchecked_transaction()?;
+    tx.execute("DELETE FROM doc_snapshots", [])?;
+    let docs: Vec<(String, i64)> = {
+        let mut stmt = tx.prepare(
+            "SELECT doc_id, MAX(seq) FROM doc_changes GROUP BY doc_id HAVING MAX(seq) >= ?1",
+        )?;
+        stmt.query_map([SNAPSHOT_EVERY], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    for (key, max_seq) in docs {
+        let mut doc = load_doc_rows(&tx, &key)?;
+        tx.execute(
+            "INSERT INTO doc_snapshots (doc_id, upto_seq, snapshot) VALUES (?1, ?2, ?3)",
+            params![key, max_seq, doc.save()],
+        )?;
+    }
+    tx.pragma_update(None, "user_version", 4)?;
+    tx.commit()?;
+    Ok(())
 }
 
 /// v2 → v3: thread rows gain the same content-hash uid identity as the log,
@@ -1190,6 +1224,42 @@ mod tests {
             }
         }
         panic!("sync did not terminate");
+    }
+
+    #[test]
+    fn opening_repairs_snapshots_written_from_a_stale_session_doc() {
+        let dir = tempfile::tempdir().unwrap();
+        let id = DocId::Pantry(slug("home"));
+        let item = |name: &str| crate::pages::PantryItemDoc {
+            name: name.into(),
+            presence: "have".into(),
+            bought: None,
+            tier: None,
+            note: None,
+        };
+        {
+            let mut store = Store::create(dir.path(), &slug("home"), 2, t0()).unwrap();
+            for i in 0..70 {
+                store
+                    .modify::<PantryDoc>(&id, "seed", t0(), |p| {
+                        p.items.insert(format!("item-{i}"), item(&format!("item-{i}")));
+                    })
+                    .unwrap();
+            }
+            // Poison the cadence snapshot the way the pre-fix sync path
+            // could: bytes from a doc that predates rows below the boundary.
+            // An empty doc is the extreme member of that class. Then reset
+            // the version pragma to model a store from before the repair.
+            let mut empty = AutoCommit::new();
+            store
+                .conn
+                .execute("UPDATE doc_snapshots SET snapshot = ?1", [empty.save()])
+                .unwrap();
+            store.conn.pragma_update(None, "user_version", 3).unwrap();
+        }
+        let store = Store::open(dir.path()).unwrap();
+        let pantry: PantryDoc = store.get(&id).unwrap();
+        assert_eq!(pantry.items.len(), 70, "the repair rebuilt the snapshot from the intact rows");
     }
 
     #[test]

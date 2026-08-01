@@ -443,7 +443,7 @@ fn v1_corpus_migrates_on_open() {
     // Backfill happened: hashes and distinct uids exist.
     let conn = rusqlite::Connection::open(root.join("mise.db")).unwrap();
     let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-    assert_eq!(version, 3);
+    assert_eq!(version, 4);
     let uids: Vec<String> = conn
         .prepare("SELECT uid FROM cook_log ORDER BY uid")
         .unwrap()
