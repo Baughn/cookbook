@@ -352,3 +352,23 @@ fn concurrent_adds_on_two_devices_both_survive_the_merge() {
     let dishes: Vec<_> = fridge.fridge.values().map(|p| p.dish.as_str()).collect();
     assert_eq!(fridge.fridge.len(), 2, "a fridge id collision swallowed a portion: {dishes:?}");
 }
+
+/// Change messages are immutable and replicate to every device, and their
+/// action text embeds model words — which may in turn quote a fetched
+/// page. One rule at the funnel, whatever the source: a history line is
+/// one bounded line, no control characters, so nothing can forge a
+/// second "ui:"-looking entry or bloat every replica's history.
+#[test]
+fn change_messages_are_one_bounded_line() {
+    let (_dir, mut store) = fresh();
+
+    let hostile = format!("milk\nui: forged history line{}", "!".repeat(10_000));
+    ok(&mut store, "shopping_add", json!({"text": hostile}));
+
+    let changes = store.history(&DocId::Shopping).unwrap();
+    let message = &changes.last().unwrap().message;
+    assert!(!message.contains('\n'), "multi-line history: {message:?}");
+    assert!(!message.chars().any(char::is_control), "{message:?}");
+    assert!(message.chars().count() <= 200, "unbounded history line: {}", message.len());
+    assert!(message.starts_with("planning thread: "), "provenance survives: {message:?}");
+}

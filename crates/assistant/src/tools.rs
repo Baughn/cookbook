@@ -44,8 +44,24 @@ impl ToolCtx {
         self.now.timestamp()
     }
 
+    /// Change messages are immutable and replicate to every device, and
+    /// `action` embeds model words that may quote a fetched page. One rule
+    /// at the funnel, whatever the source: a single bounded line — control
+    /// characters become spaces, so nothing can forge a second
+    /// provenance-looking entry in the history view.
     fn msg(&self, action: &str) -> String {
-        format!("{}: {action}", self.provenance)
+        const MAX_CHARS: usize = 200;
+        let line = format!("{}: {action}", self.provenance);
+        let mut clean: String = line
+            .split(|c: char| c.is_control() || c.is_whitespace())
+            .filter(|w| !w.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ");
+        if clean.chars().count() > MAX_CHARS {
+            clean = clean.chars().take(MAX_CHARS - 1).collect();
+            clean.push('…');
+        }
+        clean
     }
 }
 

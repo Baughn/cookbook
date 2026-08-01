@@ -69,7 +69,7 @@ Five findings are deliberately out of scope and scheduled after M7 (recorded in
 - [x] A CSP on static responses *(split from #67; needs an e2e run to prove the SPA still boots)*
 - [x] Auth is a layer, not ten call sites — #56, #57, #77 *(H4; route-table test first)*
 - [x] The token file's mode is enforced on every write — #61
-- [ ] Provenance is normalized before it enters history — #41
+- [x] Provenance is normalized before it enters history — #41
 
 ### Phase 5 — Store-mode readiness (web + tools)
 - [ ] 401 loops back to the gate from every call site — #73 *(five lines, closes ~13 sites)*
