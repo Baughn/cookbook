@@ -79,7 +79,7 @@ Five findings are deliberately out of scope and scheduled after M7 (recorded in
 - [x] One frame budget, honestly enforced — #53, #54, #55
 - [x] Tool inputs reject what they don't understand — #37, #39
 - [x] Edit affordances only appear where editing works — #70, #76
-- [ ] The queue survives a dangling recipe reference — #40 *(after #4)*
+- [x] The queue survives a dangling recipe reference — #40 *(after #4)*
 
 ### Phase 6 — Model path & assistant loop
 - [ ] Byte boundaries survive chunk splits — #25, #28, #81

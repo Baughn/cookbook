@@ -5,7 +5,8 @@ export type VerdictView =
 	| { kind: 'ready' }
 	| { kind: 'lead'; step: string; ready_date: string; ready_time: string }
 	| { kind: 'shop'; tier: string | null; tier_name: string; items: string[] }
-	| { kind: 'missing-equipment'; items: string[] };
+	| { kind: 'missing-equipment'; items: string[] }
+	| { kind: 'recipe-missing' };
 
 export interface DishView {
 	title: string;

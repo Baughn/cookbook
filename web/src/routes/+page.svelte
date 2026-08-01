@@ -32,13 +32,20 @@
 				return `shop — ${v.tier_name}: ${v.items.join(', ')}`;
 			case 'missing-equipment':
 				return `missing equipment here: ${v.items.join(', ')}`;
+			case 'recipe-missing':
+				return 'recipe missing (not on this device yet?)';
 		}
 	}
 
 	function verdictClass(d: DishView): string {
-		return { idea: 'secondary', ready: 'ready', lead: 'lead', shop: 'shop', 'missing-equipment': 'blocked' }[
-			d.verdict.kind
-		];
+		return {
+			idea: 'secondary',
+			ready: 'ready',
+			lead: 'lead',
+			shop: 'shop',
+			'missing-equipment': 'blocked',
+			'recipe-missing': 'blocked'
+		}[d.verdict.kind];
 	}
 </script>
 

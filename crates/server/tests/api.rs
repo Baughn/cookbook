@@ -193,3 +193,38 @@ async fn location_view_is_structured() {
     assert_eq!(loc["view"]["pantry"]["miso"]["tier"], "shop");
     assert!(loc["view"]["tiers"].as_array().unwrap().iter().any(|t| t["id"] == "shop"));
 }
+
+/// One dangling recipe reference in the queue doc degrades one row; the
+/// home screen never 404s over it.
+#[tokio::test]
+async fn a_dangling_recipe_reference_does_not_404_the_queue() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = seeded(dir.path());
+    store
+        .modify::<mise_store::pages::QueueDoc>(
+            &mise_store::DocId::Queue,
+            "sync skew",
+            jiff::Timestamp::from_second(9).unwrap(),
+            |q| {
+                q.entries.insert(
+                    "ghost".into(),
+                    mise_store::pages::QueueEntryDoc {
+                        dishes: vec![mise_store::pages::DishRefDoc {
+                            recipe: Some("ghost-dish".into()),
+                            title: "Ghost dish".into(),
+                        }],
+                        reason: None,
+                        added: "2026-07-28".into(),
+                    },
+                );
+            },
+        )
+        .unwrap();
+    let server = Server::spawn(store).await;
+
+    let queue = server.get_json("/api/queue").await;
+    let entries = queue["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 2, "{queue}");
+    let ghost = entries.iter().find(|e| e["id"] == "ghost").unwrap();
+    assert_eq!(ghost["dishes"][0]["verdict"]["kind"], "recipe-missing", "{ghost}");
+}

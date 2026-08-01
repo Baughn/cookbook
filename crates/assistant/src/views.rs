@@ -62,6 +62,9 @@ pub enum VerdictView {
         items: Vec<String>,
     },
     MissingEquipment { items: Vec<String> },
+    /// The referenced recipe isn't in this store — a replica's queue doc
+    /// may legitimately run ahead of its recipe docs between syncs.
+    RecipeMissing,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -148,9 +151,25 @@ fn dish_view(
             verdict: VerdictView::Idea,
         });
     };
-    let s = Slug::new(recipe_slug.as_str())
-        .map_err(|e| mise_store::StoreError::Corrupt(e.to_string()))?;
-    let doc: RecipeDoc = store.get(&DocId::Recipe(s.clone()))?;
+    // The queue is the home screen; a dangling reference degrades this
+    // one row instead of failing the view. Referential integrity between
+    // separate Automerge docs is not enforceable by construction, and
+    // sync explicitly allows a queue doc to run ahead of its recipes.
+    let missing = || DishView {
+        title: dish.title.clone(),
+        recipe: Some(recipe_slug.clone()),
+        effort: None,
+        unlinked: 0,
+        verdict: VerdictView::RecipeMissing,
+    };
+    let Ok(s) = Slug::new(recipe_slug.as_str()) else {
+        return Ok(missing());
+    };
+    let doc: RecipeDoc = match store.get(&DocId::Recipe(s.clone())) {
+        Ok(doc) => doc,
+        Err(mise_store::StoreError::NotFound(_)) => return Ok(missing()),
+        Err(e) => return Err(e),
+    };
     let meta = doc.to_core(&s)?;
     let assessment = readiness::assess(&meta, view);
     let verdict = match assessment.verdict(&view.tiers) {
@@ -201,6 +220,7 @@ fn dish_line(d: &DishView) -> String {
         VerdictView::MissingEquipment { items } => {
             format!("missing equipment here: {}", items.join(", "))
         }
+        VerdictView::RecipeMissing => "recipe missing (not on this device yet?)".to_string(),
     };
     let unlinked = match d.unlinked {
         0 => String::new(),

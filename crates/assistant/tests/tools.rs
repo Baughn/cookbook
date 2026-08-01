@@ -6,7 +6,7 @@ use jiff::tz::TimeZone;
 use mise_assistant::tools::{ToolCtx, execute};
 use mise_assistant::turn::ToolCall;
 use mise_core::types::Slug;
-use mise_store::pages::{FridgeDoc, QueueDoc, RecipeDoc, ShoppingDoc, SteeringDoc};
+use mise_store::pages::{DishRefDoc, FridgeDoc, QueueDoc, QueueEntryDoc, RecipeDoc, ShoppingDoc, SteeringDoc};
 use mise_store::{DocId, Store};
 use serde_json::{Value, json};
 
@@ -414,4 +414,35 @@ fn an_unknown_tier_is_rejected_with_the_real_ones_named() {
     // The location's real tiers still pass.
     ok(&mut store, "pantry_set", json!({"item": "miso", "presence": "low", "tier": "shop"}));
     ok(&mut store, "shopping_add", json!({"text": "lamb shoulder", "tier": "butcher"}));
+}
+
+/// The queue is the home screen, and sync legitimately lets a queue doc
+/// run ahead of its recipe docs — one dangling reference degrades one
+/// row, never the whole view.
+#[test]
+fn a_dangling_recipe_reference_degrades_one_row_not_the_queue() {
+    let (_dir, mut store) = fresh();
+    seed_recipe(&mut store);
+    ok(&mut store, "queue_add", json!({"title": "Mapo tofu", "recipe": "mapo-tofu"}));
+    // A replica whose queue caught up before its recipe docs: this entry
+    // references a recipe the store has never seen.
+    store
+        .modify::<QueueDoc>(&DocId::Queue, "sync skew", jiff::Timestamp::UNIX_EPOCH, |q| {
+            q.entries.insert(
+                "ghost".into(),
+                QueueEntryDoc {
+                    dishes: vec![DishRefDoc {
+                        recipe: Some("ghost-dish".into()),
+                        title: "Ghost dish".into(),
+                    }],
+                    reason: None,
+                    added: "2026-07-28".into(),
+                },
+            );
+        })
+        .unwrap();
+    let out = ok(&mut store, "queue_status", json!({}));
+    assert!(out.contains("Mapo tofu"), "the healthy row still renders: {out}");
+    assert!(out.contains("Ghost dish"), "the broken row is present, degraded: {out}");
+    assert!(out.contains("recipe missing"), "{out}");
 }
