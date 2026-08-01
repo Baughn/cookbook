@@ -32,3 +32,5 @@ tracing-subscriber.workspace = true
 tokio-tungstenite.workspace = true
 tempfile.workspace = true
 reqwest.workspace = true
+# Only to send a real SIGTERM in tests/shutdown.rs; std has no API for it.
+libc.workspace = true

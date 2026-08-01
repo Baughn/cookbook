@@ -1365,6 +1365,7 @@ dependencies = [
  "dotenvy",
  "futures-util",
  "jiff",
+ "libc",
  "mise-assistant",
  "mise-core",
  "mise-store",
