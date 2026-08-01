@@ -143,6 +143,21 @@ pub struct Store {
     replica: String,
 }
 
+/// Connection tuning, applied before anything else touches the database.
+/// The design supports a `mise` CLI running beside the server on one file:
+/// WAL lets readers run under a writer, and the busy timeout makes a second
+/// writer wait instead of failing with an immediate "database is locked" —
+/// which pairs with [`Store::transaction`] taking the write lock up front,
+/// where the timeout can retry it (a deferred upgrade cannot).
+fn tune(conn: &Connection) -> Result<()> {
+    // journal_mode returns the resulting mode as a row, so pragma_update
+    // would reject it.
+    conn.query_row("PRAGMA journal_mode = WAL", [], |_| Ok(()))?;
+    conn.pragma_update(None, "busy_timeout", 5000)?;
+    conn.pragma_update(None, "foreign_keys", true)?;
+    Ok(())
+}
+
 /// Mint the replica id if this store has none yet, and return it.
 fn ensure_replica_id(conn: &Connection) -> Result<String> {
     let existing: Option<String> = conn
@@ -170,6 +185,7 @@ impl Store {
         std::fs::create_dir_all(root.join("photos"))?;
         std::fs::create_dir_all(root.join("export"))?;
         let conn = Connection::open(&db)?;
+        tune(&conn)?;
         conn.execute_batch(SCHEMA)?;
         let replica = ensure_replica_id(&conn)?;
         let store = Store { conn, root: root.to_path_buf(), replica };
@@ -198,6 +214,7 @@ impl Store {
             return Err(StoreError::NoCorpus(root.to_path_buf()));
         }
         let conn = Connection::open(&db)?;
+        tune(&conn)?;
         migrate(&conn)?;
         let replica = ensure_replica_id(&conn)?;
         Ok(Store { conn, root: root.to_path_buf(), replica })
@@ -266,7 +283,15 @@ impl Store {
         &mut self,
         f: impl FnOnce(&StoreTx<'_>) -> Result<R>,
     ) -> Result<R> {
-        let stx = StoreTx { tx: self.conn.transaction()? };
+        // Immediate: take the write lock at BEGIN, where the busy timeout
+        // can wait for it. A deferred transaction that reads before writing
+        // needs a lock upgrade, and an upgrade that finds another writer
+        // fails with SQLITE_BUSY no matter the timeout.
+        let stx = StoreTx {
+            tx: self
+                .conn
+                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?,
+        };
         let out = f(&stx)?;
         stx.tx.commit()?;
         Ok(out)
@@ -1385,6 +1410,24 @@ mod tests {
         let store = Store::open(dir.path()).unwrap();
         let pantry: PantryDoc = store.get(&id).unwrap();
         assert_eq!(pantry.items.len(), 70, "the repair rebuilt the snapshot from the intact rows");
+    }
+
+    #[test]
+    fn the_connection_is_tuned_for_a_second_process() {
+        let dir = tempfile::tempdir().unwrap();
+        Store::create(dir.path(), &slug("home"), 2, t0()).unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        // The design supports a CLI beside the server on one file; these
+        // three are the difference between "waits briefly" and an immediate
+        // "database is locked" mid-operation.
+        let mode: String =
+            store.conn.query_row("PRAGMA journal_mode", [], |r| r.get(0)).unwrap();
+        assert_eq!(mode, "wal");
+        let timeout: i64 =
+            store.conn.query_row("PRAGMA busy_timeout", [], |r| r.get(0)).unwrap();
+        assert!(timeout >= 1000, "busy_timeout is {timeout}");
+        let fk: i64 = store.conn.query_row("PRAGMA foreign_keys", [], |r| r.get(0)).unwrap();
+        assert_eq!(fk, 1);
     }
 
     #[test]
