@@ -4,7 +4,7 @@
 
 mod support;
 
-use support::{Server, TOKEN, seeded};
+use support::{Server, seeded};
 
 #[tokio::test]
 async fn queue_view_carries_readiness_and_coverage() {
@@ -81,27 +81,16 @@ async fn history_and_revert_round_trip() {
     assert_eq!(status, 400);
 }
 
+// Auth coverage lives in tests/auth.rs as a route table; nothing here
+// re-asserts it.
 #[tokio::test]
-async fn threads_and_auth() {
+async fn thread_transcripts_read_back() {
     let dir = tempfile::tempdir().unwrap();
     let server = Server::spawn(seeded(dir.path())).await;
 
     let thread = server.get_json("/api/thread/planning").await;
     assert_eq!(thread["messages"][0]["role"], "user");
     assert_eq!(thread["messages"][0]["content"], "plan the week");
-
-    // Every /api route requires the token; ?token= works for browsers.
-    for path in [
-        "/api/queue",
-        "/api/pages",
-        "/api/page/queue",
-        "/api/history/queue",
-        "/api/thread/planning",
-    ] {
-        assert_eq!(server.get_anonymous(path).await.status(), 401, "{path}");
-    }
-    let resp = server.get_anonymous(&format!("/api/queue?token={TOKEN}")).await;
-    assert!(resp.status().is_success());
 }
 
 /// The tap surface: each edit action is the corresponding assistant tool —

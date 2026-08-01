@@ -12,8 +12,8 @@
 use std::collections::HashMap;
 
 use axum::Json;
-use axum::extract::{Path, Query, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::extract::{Path, State};
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use jiff::Zoned;
 use mise_assistant::views;
@@ -22,7 +22,7 @@ use serde::Deserialize;
 use serde_json::json;
 use tracing::warn;
 
-use crate::{AppState, authorized};
+use crate::AppState;
 
 /// Uniform error mapping: what the caller got wrong is 4xx with a message,
 /// the rest is a logged 500.
@@ -38,18 +38,9 @@ fn fail(e: StoreError) -> Response {
     (status, Json(json!({"error": e.to_string()}))).into_response()
 }
 
-fn unauthorized() -> Response {
-    StatusCode::UNAUTHORIZED.into_response()
-}
-
 pub(crate) async fn queue(
     State(state): State<AppState>,
-    headers: HeaderMap,
-    Query(query): Query<HashMap<String, String>>,
 ) -> Response {
-    if !authorized(&state, &headers, &query) {
-        return unauthorized();
-    }
     let store = state.store.lock().await;
     match views::queue_view(&store, Zoned::now().datetime()) {
         Ok(view) => Json(view).into_response(),
@@ -59,12 +50,7 @@ pub(crate) async fn queue(
 
 pub(crate) async fn pages(
     State(state): State<AppState>,
-    headers: HeaderMap,
-    Query(query): Query<HashMap<String, String>>,
 ) -> Response {
-    if !authorized(&state, &headers, &query) {
-        return unauthorized();
-    }
     let store = state.store.lock().await;
     let listing = (|| -> Result<serde_json::Value, StoreError> {
         let corpus = store.corpus()?;
@@ -115,12 +101,7 @@ pub(crate) async fn pages(
 /// The markdown export stays render-only; nothing in the app parses it.
 pub(crate) async fn location(
     State(state): State<AppState>,
-    headers: HeaderMap,
-    Query(query): Query<HashMap<String, String>>,
 ) -> Response {
-    if !authorized(&state, &headers, &query) {
-        return unauthorized();
-    }
     let store = state.store.lock().await;
     match store.active_view() {
         Ok((slug, view)) => {
@@ -163,13 +144,8 @@ fn known_doc_ids(corpus: &mise_store::pages::CorpusState) -> Vec<DocId> {
 
 pub(crate) async fn page(
     State(state): State<AppState>,
-    headers: HeaderMap,
-    Query(query): Query<HashMap<String, String>>,
     Path(path): Path<String>,
 ) -> Response {
-    if !authorized(&state, &headers, &query) {
-        return unauthorized();
-    }
     let store = state.store.lock().await;
     let content = (|| -> Result<Option<String>, StoreError> {
         let files = mise_store::render::render(&store.corpus()?);
@@ -186,13 +162,8 @@ pub(crate) async fn page(
 
 pub(crate) async fn history(
     State(state): State<AppState>,
-    headers: HeaderMap,
-    Query(query): Query<HashMap<String, String>>,
     Path(doc): Path<String>,
 ) -> Response {
-    if !authorized(&state, &headers, &query) {
-        return unauthorized();
-    }
     let store = state.store.lock().await;
     let result = DocId::parse(&doc).and_then(|id| store.history(&id));
     match result {
@@ -222,13 +193,8 @@ pub(crate) struct RevertRequest {
 
 pub(crate) async fn revert(
     State(state): State<AppState>,
-    headers: HeaderMap,
-    Query(query): Query<HashMap<String, String>>,
     Json(request): Json<RevertRequest>,
 ) -> Response {
-    if !authorized(&state, &headers, &query) {
-        return unauthorized();
-    }
     let mut store = state.store.lock().await;
     let result = DocId::parse(&request.doc).and_then(|id| {
         let short = &request.hash[..request.hash.len().min(8)];
@@ -260,17 +226,12 @@ const UI_ACTIONS: &[(&str, &str)] = &[
 
 pub(crate) async fn edit(
     State(state): State<AppState>,
-    headers: HeaderMap,
-    Query(query): Query<HashMap<String, String>>,
     Path(action): Path<String>,
     Json(body): Json<serde_json::Value>,
 ) -> Response {
     use mise_assistant::tools::{self, ToolCtx};
     use mise_assistant::turn::ToolCall;
 
-    if !authorized(&state, &headers, &query) {
-        return unauthorized();
-    }
     let (tool, input) = if action == "recipe-status" {
         // recipe_edit, narrowed to the status field: only these two keys
         // pass, so no payload can smuggle a body edit through.
@@ -318,13 +279,8 @@ pub(crate) async fn edit(
 
 pub(crate) async fn thread(
     State(state): State<AppState>,
-    headers: HeaderMap,
-    Query(query): Query<HashMap<String, String>>,
     Path(thread): Path<String>,
 ) -> Response {
-    if !authorized(&state, &headers, &query) {
-        return unauthorized();
-    }
     let store = state.store.lock().await;
     let id = match mise_store::ThreadId::parse(&thread) {
         Ok(id) => id,

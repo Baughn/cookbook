@@ -70,9 +70,10 @@ impl AppState {
 }
 
 pub fn app(state: AppState) -> Router {
-    let mut router = Router::new()
-        .route("/health", get(|| async { "ok" }))
-        .route("/sync", get(ws_sync))
+    // Every route in this sub-router sits behind the auth layer, which
+    // decides on the request head — before any body is buffered. A route
+    // added here is authed by default.
+    let authed = Router::new()
         // A downscaled photo in base64 blows straight past axum's 2 MB
         // default; the Photo validator enforces the real ceiling.
         .route(
@@ -86,10 +87,19 @@ pub fn app(state: AppState) -> Router {
         .route("/api/revert", post(api::revert))
         .route("/api/location", get(api::location))
         .route("/api/edit/{action}", post(api::edit))
-        .route("/api/thread/{*thread}", get(api::thread));
+        .route("/api/thread/{*thread}", get(api::thread))
+        .layer(axum::middleware::from_fn_with_state(state.clone(), require_auth));
+    let mut router = Router::new()
+        .route("/health", get(|| async { "ok" }))
+        // /sync authenticates in its own handler: browsers cannot set
+        // headers on a WebSocket handshake, so it alone accepts ?token=.
+        .route("/sync", get(ws_sync))
+        .merge(authed);
     if let Some(dir) = &state.static_dir {
         // The SvelteKit build is a static SPA: unknown paths fall back to
-        // index.html and the app routes client-side.
+        // index.html and the app routes client-side. The fallback hangs on
+        // the outer router — the SPA must render its token prompt before it
+        // has a token to send.
         let serve = tower_http::services::ServeDir::new(dir.as_ref())
             .fallback(tower_http::services::ServeFile::new(dir.join("index.html")));
         router = router.fallback_service(serve);
@@ -120,15 +130,7 @@ pub struct ChatImage {
 /// `tool`, `done`, `error` events). The store lock is held only around
 /// store work — never across model calls — so sync sessions keep flowing
 /// while the model thinks.
-async fn chat_endpoint(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Query(query): Query<HashMap<String, String>>,
-    Json(request): Json<ChatRequest>,
-) -> Response {
-    if !authorized(&state, &headers, &query) {
-        return StatusCode::UNAUTHORIZED.into_response();
-    }
+async fn chat_endpoint(State(state): State<AppState>, Json(request): Json<ChatRequest>) -> Response {
     let Some(config) = state.chat.clone() else {
         return (StatusCode::SERVICE_UNAVAILABLE, "no model configured on this server")
             .into_response();
@@ -146,15 +148,35 @@ fn token_matches(provided: &str, expected: &str) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
-/// Bearer token from the Authorization header, or `?token=` for clients
-/// that cannot set WebSocket headers (browsers).
-fn authorized(state: &AppState, headers: &HeaderMap, query: &HashMap<String, String>) -> bool {
-    let header_token = headers
+/// Bearer token from the Authorization header — the only place HTTP routes
+/// accept one. Query strings land in proxy logs, browser history and
+/// Referer headers; only the WebSocket handshake gets that fallback.
+fn authorized(state: &AppState, headers: &HeaderMap) -> bool {
+    headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "));
-    let provided = header_token.or_else(|| query.get("token").map(String::as_str));
-    provided.is_some_and(|t| token_matches(t, &state.token))
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .is_some_and(|t| token_matches(t, &state.token))
+}
+
+/// The auth layer over every HTTP route: a 401 is written from the request
+/// head alone, before any body is read.
+async fn require_auth(
+    State(state): State<AppState>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    if !authorized(&state, request.headers()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    next.run(request).await
+}
+
+/// The WebSocket gate: the header if the client can set one, `?token=` for
+/// browsers, which cannot on a handshake.
+fn authorized_ws(state: &AppState, headers: &HeaderMap, query: &HashMap<String, String>) -> bool {
+    authorized(state, headers)
+        || query.get("token").is_some_and(|t| token_matches(t, &state.token))
 }
 
 async fn ws_sync(
@@ -163,7 +185,7 @@ async fn ws_sync(
     headers: HeaderMap,
     Query(query): Query<HashMap<String, String>>,
 ) -> Response {
-    if !authorized(&state, &headers, &query) {
+    if !authorized_ws(&state, &headers, &query) {
         warn!("sync connection rejected: bad or missing token");
         return StatusCode::UNAUTHORIZED.into_response();
     }

@@ -111,18 +111,30 @@ pub struct Server {
 impl Server {
     /// Start a server with no model configured. `/chat` answers 503.
     pub async fn spawn(store: Store) -> Server {
-        Server::start(store, None).await
+        Server::start(store, None, None).await
     }
 
     /// Start a server pointed at a scripted model endpoint.
     pub async fn spawn_with_chat(store: Store, chat: ChatConfig) -> Server {
-        Server::start(store, Some(chat)).await
+        Server::start(store, Some(chat), None).await
     }
 
-    async fn start(store: Store, chat: Option<ChatConfig>) -> Server {
+    /// Start a server that also serves a static web app, as production does.
+    pub async fn spawn_with_static(store: Store, dir: std::path::PathBuf) -> Server {
+        Server::start(store, None, Some(dir)).await
+    }
+
+    async fn start(
+        store: Store,
+        chat: Option<ChatConfig>,
+        static_dir: Option<std::path::PathBuf>,
+    ) -> Server {
         let mut state = AppState::new(store, TOKEN.to_string());
         if let Some(config) = chat {
             state = state.with_chat(config);
+        }
+        if let Some(dir) = static_dir {
+            state = state.with_static_dir(dir);
         }
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();

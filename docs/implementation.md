@@ -96,9 +96,14 @@ Settled 2026-07-29, at M2 build start:
   across replicas, so converged replicas still export byte-identically.
   Change rows likewise carry their Automerge change hash, deduping changes
   that arrive via two paths. Schema v5; older databases migrate on open.
-- **Auth.** One static bearer token (≥16 chars), `Authorization: Bearer` or
-  `?token=` for browser clients that can't set WS headers; constant-time
-  compare. Server reads it from `--token-file`, systemd
+- **Auth.** One static bearer token (≥16 chars), constant-time compare,
+  enforced by a middleware layer over every HTTP route — the 401 is
+  decided from the request head, before any body is buffered, and a new
+  route is authed by default. Header only (`Authorization: Bearer`);
+  `?token=` is accepted solely on the `/sync` WebSocket handshake, where
+  browsers can't set headers. Open by design: `/health` and the static
+  app, which must render its token prompt before it has a token to send.
+  Server reads it from `--token-file`, systemd
   `$CREDENTIALS_DIRECTORY/token`, or `$MISE_TOKEN`. In production the
   token file is an agenix secret fed through `LoadCredential`; in dev,
   both binaries load a git-ignored `.env` via dotenvy, so `MISE_TOKEN`
