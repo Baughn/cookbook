@@ -204,3 +204,50 @@ async fn chat_about_a_missing_page_reports_an_error_event() {
     assert!(body.contains("event: error"), "{body}");
     assert!(body.contains("no page recipe/nope"), "{body}");
 }
+
+/// The frame budget is one number: recon's combined cap is the authority,
+/// and the transport limit sits above it — so an oversized shelf recon
+/// gets recon's own friendly error, never an opaque 413.
+#[tokio::test]
+async fn an_oversized_recon_gets_recons_error_not_a_413() {
+    let dir = tempfile::tempdir().unwrap();
+    let chat = spawn_fake_anthropic(vec![text_reply("unreached")]).await;
+    let server = Server::spawn_with_chat(empty(dir.path()), chat).await;
+
+    // Four frames, each within the per-photo cap, together over the
+    // combined cap.
+    let frame = "A".repeat(5_100_000);
+    let images: Vec<_> = (0..4)
+        .map(|_| serde_json::json!({"media_type": "image/jpeg", "data": frame}))
+        .collect();
+    let body = server
+        .post_text("/chat", serde_json::json!({"message": "the shelf", "images": images}))
+        .await;
+    assert!(body.contains("event: error"), "{body:.200}");
+    assert!(body.contains("too large together"), "{body:.200}");
+}
+
+/// A proposal naming a location the store doesn't know can never be
+/// applied or completed — it comes back to the model as an error, and
+/// nothing is parked or shown.
+#[tokio::test]
+async fn a_proposal_for_an_unknown_location_is_an_error_not_a_parked_dud() {
+    let dir = tempfile::tempdir().unwrap();
+    let chat = spawn_fake_anthropic(vec![
+        tool_use(
+            "propose_pantry_diff",
+            &serde_json::json!({
+                "location": "basement",
+                "lines": [{"item": "miso", "presence": "out", "reason": "no jar visible"}],
+            }),
+        ),
+        text_reply("Which location did you mean?"),
+    ])
+    .await;
+    let server = Server::spawn_with_chat(empty(dir.path()), chat).await;
+
+    let body = server.post_text("/chat", serde_json::json!({"message": "recon this"})).await;
+    assert!(!body.contains("event: proposal"), "{body}");
+    assert!(body.contains("Which location did you mean?"), "the model got to retry: {body}");
+    assert!(server.state.proposals.lock().await.is_empty(), "nothing parked");
+}

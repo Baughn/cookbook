@@ -76,7 +76,7 @@ Five findings are deliberately out of scope and scheduled after M7 (recorded in
 - [x] A shared composer, used by the thread and the drafting box — #72 *(carries the draft-restoration half of #68 — one composer had to pick one failure behavior, and it picked the right one)*
 - [x] An exchange can be cancelled, and a failed send keeps your work — #68, #69, #78
 - [x] Photos are downscaled one at a time and capped before upload — #74, #75
-- [ ] One frame budget, honestly enforced — #53, #54, #55
+- [x] One frame budget, honestly enforced — #53, #54, #55
 - [ ] Tool inputs reject what they don't understand — #37, #39
 - [ ] Edit affordances only appear where editing works — #70, #76
 - [ ] The queue survives a dangling recipe reference — #40 *(after #4)*

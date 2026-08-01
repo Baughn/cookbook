@@ -19,9 +19,12 @@ pub const PROPOSE_PANTRY_DIFF: &str = "propose_pantry_diff";
 /// What the Messages API accepts as an image source.
 const MEDIA_TYPES: &[&str] = &["image/jpeg", "image/png", "image/webp", "image/gif"];
 
-/// Base64 length cap (~6 MB decoded). The web client downscales to well
-/// under this; the cap is a backstop against raw phone photos.
-const MAX_DATA: usize = 8_000_000;
+/// The Messages API refuses images above 5 MB decoded; this is that
+/// ceiling in base64 chars (3 bytes → 4 chars), so anything the API
+/// would bounce gets the friendly "downscale before upload" error
+/// locally first. The web client downscales to well under this; the cap
+/// is a backstop against raw phone photos entering through the CLI.
+const MAX_DATA: usize = 5 * 1024 * 1024 / 3 * 4;
 
 /// The presence vocabulary a proposal line may use — mirrors `pantry_set`.
 const PRESENCES: &[&str] = &["have", "low", "out"];
@@ -33,8 +36,10 @@ const MAX_LINES: usize = 80;
 const MAX_PHOTOS: usize = 12;
 
 /// Combined base64 cap across an exchange's photos — the API's request
-/// ceiling is the real limit, this keeps us clear of it.
-const MAX_TOTAL: usize = 20_000_000;
+/// ceiling is the real limit, this keeps us clear of it. Pub because it
+/// is the authoritative frame budget: the server derives its transport
+/// limit from this number, so the friendly errors here stay reachable.
+pub const MAX_TOTAL: usize = 20_000_000;
 
 /// A photo attached to one user turn. Lives only in the live exchange:
 /// never stored, never synced, never exported.
@@ -194,6 +199,16 @@ pub fn execute_propose(call: &ToolCall) -> (ToolOutcome, Option<Proposal>) {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_photo_the_api_would_refuse_is_refused_here_first() {
+        // Between our cap and the Messages API's 5 MB decoded ceiling
+        // there must be nothing: anything the API would bounce gets the
+        // friendly "downscale before upload" message locally instead.
+        let photo = Photo { media_type: "image/jpeg".into(), data: "A".repeat(7_000_000) };
+        let e = photo.validate().unwrap_err();
+        assert!(e.contains("downscale before upload"), "{e}");
+    }
 
     #[test]
     fn proposals_normalize_and_validate() {

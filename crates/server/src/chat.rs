@@ -113,11 +113,37 @@ async fn exchange(
                         // also parks in memory so its taps survive the
                         // exchange — see AppState::proposals.
                         let (outcome, proposal) = recon::execute_propose(call);
-                        if let Some(p) = &proposal {
-                            send(tx, "proposal", json!(p));
-                            state.proposals.lock().await.insert(thread.to_string(), p.clone());
+                        // Recon itself never touches the store, but a
+                        // proposal for a location the store doesn't know
+                        // can never be applied or completed — every tap
+                        // would 400 and the parked entry would never be
+                        // dropped. Turn the miss into a model-facing
+                        // error so it retries with a real location.
+                        let unknown = match &proposal {
+                            Some(p) => match &p.location {
+                                Some(l) => {
+                                    let store = state.store.lock().await;
+                                    let s: mise_store::pages::StateDoc =
+                                        store.get(&mise_store::DocId::State)?;
+                                    (!s.locations.contains_key(l.as_str())).then(|| l.clone())
+                                }
+                                None => None,
+                            },
+                            None => None,
+                        };
+                        if let Some(l) = unknown {
+                            outcomes.push(mise_assistant::turn::ToolOutcome {
+                                tool_use_id: call.id.clone(),
+                                content: format!("no location {l}"),
+                                is_error: true,
+                            });
+                        } else {
+                            if let Some(p) = &proposal {
+                                send(tx, "proposal", json!(p));
+                                state.proposals.lock().await.insert(thread.to_string(), p.clone());
+                            }
+                            outcomes.push(outcome);
                         }
-                        outcomes.push(outcome);
                     } else {
                         let mut store = state.store.lock().await;
                         outcomes.push(tools::execute(&mut store, &ctx, call)?);

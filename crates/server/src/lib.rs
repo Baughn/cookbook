@@ -75,10 +75,15 @@ pub fn app(state: AppState) -> Router {
     // added here is authed by default.
     let authed = Router::new()
         // A downscaled photo in base64 blows straight past axum's 2 MB
-        // default; the Photo validator enforces the real ceiling.
+        // default. recon::MAX_TOTAL is the authoritative frame budget;
+        // the transport limit sits above it (message text + JSON
+        // envelope) so recon's own friendly errors stay reachable —
+        // an oversized shelf gets "too large together", never a 413.
         .route(
             "/chat",
-            post(chat_endpoint).layer(axum::extract::DefaultBodyLimit::max(12 * 1024 * 1024)),
+            post(chat_endpoint).layer(axum::extract::DefaultBodyLimit::max(
+                mise_assistant::recon::MAX_TOTAL + 1024 * 1024,
+            )),
         )
         .route("/api/queue", get(api::queue))
         .route("/api/pages", get(api::pages))
