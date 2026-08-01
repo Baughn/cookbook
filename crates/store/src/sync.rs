@@ -8,8 +8,10 @@
 //! initiator sees an empty round in both directions and says `done`, which
 //! the responder echoes. Docs the other side has never heard of simply show up as sync
 //! messages for unknown ids and get created. Everything received is
-//! persisted after each round, so an interrupted sync loses nothing and the
-//! next session picks up where things stand.
+//! persisted after each round — in one transaction, all of it or none of
+//! it, so a failure mid-round cannot strand half a location's sibling
+//! docs — and an interrupted sync loses nothing; the next session picks up
+//! where things stand.
 //!
 //! [`Peer`] is sans-IO: both the server and any client drive it by shuttling
 //! [`WireMsg`] values over whatever pipe they have. Tests drive two peers
@@ -26,7 +28,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::docid::DocId;
 use crate::error::{Result, StoreError};
-use crate::store::Store;
+use crate::store::{Store, StoreTx};
 use crate::threads::ThreadMessage;
 
 // ------------------------------------------------------------------ wire --
@@ -231,18 +233,17 @@ impl Peer {
             .collect()
     }
 
-    /// Persist everything received so far: new changes per doc (hash-deduped,
-    /// doc rows created for docs sync introduced), so an interrupted session
-    /// loses nothing.
-    fn commit(&mut self, store: &mut Store) -> Result<()> {
+    /// Persist every doc change received so far (hash-deduped, doc rows
+    /// created for docs sync introduced), inside the round's transaction.
+    fn commit(&mut self, tx: &StoreTx<'_>) -> Result<()> {
         for (id, dp) in self.docs.iter_mut() {
             let changes: Vec<Change> =
                 dp.doc.get_changes(&dp.baseline).into_iter().cloned().collect();
             if changes.is_empty() {
                 continue;
             }
-            store.ensure_doc_row(&DocId::parse(id)?)?;
-            if store.append_changes(id, &changes, &mut dp.doc)? > 0 {
+            tx.ensure_doc_row(&DocId::parse(id)?)?;
+            if tx.append_changes(id, &changes, &mut dp.doc)? > 0 {
                 self.outcome.docs_updated.insert(id.clone());
             }
             dp.baseline = dp.doc.get_heads();
@@ -287,17 +288,24 @@ impl Peer {
                     .map_err(|e| StoreError::Corrupt(format!("bad sync message: {e}")))?;
                     dp.doc.sync().receive_sync_message(&mut dp.state, message)?;
                 }
-                for row in &round.log_entries {
-                    if store.insert_log_row(&row.uid, &row.entry)? {
-                        self.outcome.log_added += 1;
+                // One transaction for everything the round delivered — log
+                // rows, thread rows, doc changes. A failure between per-doc
+                // writes must not persist half a location's sibling docs:
+                // corpus() cannot read a pantry whose siblings are missing,
+                // so a partial round would take down every read.
+                store.transaction(|tx| {
+                    for row in &round.log_entries {
+                        if tx.insert_log_row(&row.uid, &row.entry)? {
+                            self.outcome.log_added += 1;
+                        }
                     }
-                }
-                for row in &round.thread_entries {
-                    if store.insert_thread_row(&row.uid, &row.message)? {
-                        self.outcome.threads_added += 1;
+                    for row in &round.thread_entries {
+                        if tx.insert_thread_row(&row.uid, &row.message)? {
+                            self.outcome.threads_added += 1;
+                        }
                     }
-                }
-                self.commit(store)?;
+                    self.commit(tx)
+                })?;
 
                 // What they are missing, answered in this same round — these
                 // are locals, not protocol state: they are built and shipped

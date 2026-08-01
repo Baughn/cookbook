@@ -23,3 +23,6 @@ sha2.workspace = true
 [dev-dependencies]
 proptest.workspace = true
 tempfile.workspace = true
+# The authorizer hook is how the atomicity tests deny one INSERT mid-unit —
+# the same failure surface as SQLITE_BUSY, a full disk, or a kill.
+rusqlite = { workspace = true, features = ["hooks"] }

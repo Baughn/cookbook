@@ -77,8 +77,9 @@ Settled 2026-07-29, at M2 build start:
   new to one side are created by sync), plus a one-time exchange of log-row
   uids followed by whichever entries the other side lacks. The initiator
   says `done` after an empty round in both directions; the responder echoes
-  it. Every round is persisted before replying, so an interrupted sync
-  loses nothing. The peer machinery is sans-IO in `store/` — server, CLI,
+  it. Every round is persisted before replying — atomically, one SQLite
+  transaction per round, so a failure mid-round persists all of it or none
+  of it — and an interrupted sync loses nothing. The peer machinery is sans-IO in `store/` — server, CLI,
   and tests drive the identical code; the transport is dumb pipe.
 - **Log-row identity: content hash + occurrence index.** Append-only rows
   have no CRDT, so cross-replica dedupe keys on content: uid =

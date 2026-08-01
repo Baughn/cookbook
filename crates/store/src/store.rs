@@ -253,63 +253,22 @@ impl Store {
             .get_last_local_change()
             .expect("commit reported a change")
             .clone();
-        self.append_changes(key, &[change], doc)?;
+        self.transaction(|tx| tx.append_changes(key, &[change], doc))?;
         Ok(())
     }
 
-    /// Append changes to a doc's history, deduplicating by change hash —
-    /// sync can deliver a change along more than one path. `doc` must
-    /// already contain the changes (it supplies snapshot bytes on cadence).
-    /// Returns how many rows were actually new.
-    pub(crate) fn append_changes(
+    /// Run one atomic write unit; committed only if `f` returns Ok. Every
+    /// path that writes more than one row goes through here, so a kill, a
+    /// full disk, or SQLITE_BUSY between statements cannot leave a doc row
+    /// without its changes, or half a sync round's sibling docs.
+    pub(crate) fn transaction<R>(
         &mut self,
-        key: &str,
-        changes: &[Change],
-        doc: &mut AutoCommit,
-    ) -> Result<usize> {
-        let tx = self.conn.transaction()?;
-        let mut seq: i64 = tx.query_row(
-            "SELECT COALESCE(MAX(seq), 0) FROM doc_changes WHERE doc_id = ?1",
-            [key],
-            |r| r.get::<_, i64>(0),
-        )?;
-        let mut inserted = 0;
-        for change in changes {
-            let hash = hex(&change.hash().0);
-            let known: Option<i64> = tx
-                .query_row(
-                    "SELECT seq FROM doc_changes WHERE doc_id = ?1 AND hash = ?2",
-                    params![key, hash],
-                    |r| r.get(0),
-                )
-                .optional()?;
-            if known.is_some() {
-                continue;
-            }
-            seq += 1;
-            tx.execute(
-                "INSERT INTO doc_changes (doc_id, seq, hash, change) VALUES (?1, ?2, ?3, ?4)",
-                params![key, seq, hash, change.raw_bytes()],
-            )?;
-            inserted += 1;
-            if seq % SNAPSHOT_EVERY == 0 {
-                tx.execute(
-                    "INSERT INTO doc_snapshots (doc_id, upto_seq, snapshot) VALUES (?1, ?2, ?3)",
-                    params![key, seq, doc.save()],
-                )?;
-            }
-        }
-        tx.commit()?;
-        Ok(inserted)
-    }
-
-    /// Make sure a doc row exists (sync may introduce docs we've never seen).
-    pub(crate) fn ensure_doc_row(&self, id: &DocId) -> Result<()> {
-        self.conn.execute(
-            "INSERT OR IGNORE INTO docs (id, kind) VALUES (?1, ?2)",
-            params![id.to_string(), id.kind()],
-        )?;
-        Ok(())
+        f: impl FnOnce(&StoreTx<'_>) -> Result<R>,
+    ) -> Result<R> {
+        let stx = StoreTx { tx: self.conn.transaction()? };
+        let out = f(&stx)?;
+        stx.tx.commit()?;
+        Ok(out)
     }
 
     /// Every doc id in the store, in id order.
@@ -338,14 +297,19 @@ impl Store {
         let mut doc = AutoCommit::new();
         reconcile(&mut doc, value)?;
         let committed = doc.commit_with(stamp(provenance, at));
-        self.conn.execute(
-            "INSERT INTO docs (id, kind) VALUES (?1, ?2)",
-            params![key, id.kind()],
-        )?;
-        if committed.is_some() {
-            self.persist_change(&key, &mut doc)?;
-        }
-        Ok(())
+        // One transaction: a doc row without its first change is a doc no
+        // read can hydrate, and `Exists` blocks the retry that would fix it.
+        self.transaction(|tx| {
+            tx.insert_doc_row(id)?;
+            if committed.is_some() {
+                let change = doc
+                    .get_last_local_change()
+                    .expect("commit reported a change")
+                    .clone();
+                tx.append_changes(&key, &[change], &mut doc)?;
+            }
+            Ok(())
+        })
     }
 
     /// Hydrate, mutate, reconcile, persist. Returns the new value. A no-op
@@ -479,25 +443,9 @@ impl Store {
         Ok(uid)
     }
 
-    /// Idempotent insert of a log row with a known uid (the sync path).
+    /// Idempotent insert of a log row with a known uid.
     pub(crate) fn insert_log_row(&mut self, uid: &str, e: &LogEntry) -> Result<bool> {
-        let inserted = self.conn.execute(
-            "INSERT OR IGNORE INTO cook_log
-               (uid, date, kind, recipe, title, location, servings, verdict, tags)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            params![
-                uid,
-                e.date.to_string(),
-                e.kind.to_string(),
-                e.recipe.as_ref().map(|s| s.as_str().to_string()),
-                e.title,
-                e.location,
-                e.servings,
-                e.verdict,
-                serde_json::to_string(&e.tags)?,
-            ],
-        )?;
-        Ok(inserted > 0)
+        self.transaction(|tx| tx.insert_log_row(uid, e))
     }
 
     pub(crate) fn log_uids(&self) -> Result<Vec<String>> {
@@ -705,20 +653,9 @@ impl Store {
         Ok(uid)
     }
 
-    /// Idempotent insert of a thread row with a known uid (the sync path).
+    /// Idempotent insert of a thread row with a known uid.
     pub(crate) fn insert_thread_row(&mut self, uid: &str, m: &ThreadMessage) -> Result<bool> {
-        let inserted = self.conn.execute(
-            "INSERT OR IGNORE INTO thread_messages (uid, thread, role, content, created)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![
-                uid,
-                m.thread.to_string(),
-                m.role.to_string(),
-                m.content,
-                m.created.to_string(),
-            ],
-        )?;
-        Ok(inserted > 0)
+        self.transaction(|tx| tx.insert_thread_row(uid, m))
     }
 
     pub(crate) fn thread_uids(&self) -> Result<Vec<String>> {
@@ -910,6 +847,115 @@ impl Store {
 
 /// Bring an existing database up to the current schema. Fresh databases are
 /// created at the current version by `SCHEMA` directly.
+/// One atomic write unit: a doc creation, or everything a sync round
+/// persists. Constructed only by [`Store::transaction`]; nothing inside is
+/// visible to readers — or survives a failure — until it commits whole.
+pub(crate) struct StoreTx<'a> {
+    tx: rusqlite::Transaction<'a>,
+}
+
+impl StoreTx<'_> {
+    /// The doc row for a brand-new doc; fails if it already exists.
+    pub(crate) fn insert_doc_row(&self, id: &DocId) -> Result<()> {
+        self.tx.execute(
+            "INSERT INTO docs (id, kind) VALUES (?1, ?2)",
+            params![id.to_string(), id.kind()],
+        )?;
+        Ok(())
+    }
+
+    /// Make sure a doc row exists (sync may introduce docs we've never seen).
+    pub(crate) fn ensure_doc_row(&self, id: &DocId) -> Result<()> {
+        self.tx.execute(
+            "INSERT OR IGNORE INTO docs (id, kind) VALUES (?1, ?2)",
+            params![id.to_string(), id.kind()],
+        )?;
+        Ok(())
+    }
+
+    /// Append changes to a doc's history, deduplicating by change hash —
+    /// sync can deliver a change along more than one path. `doc` must
+    /// already contain the changes (it supplies snapshot bytes on cadence).
+    /// Returns how many rows were actually new.
+    pub(crate) fn append_changes(
+        &self,
+        key: &str,
+        changes: &[Change],
+        doc: &mut AutoCommit,
+    ) -> Result<usize> {
+        let mut seq: i64 = self.tx.query_row(
+            "SELECT COALESCE(MAX(seq), 0) FROM doc_changes WHERE doc_id = ?1",
+            [key],
+            |r| r.get::<_, i64>(0),
+        )?;
+        let mut inserted = 0;
+        for change in changes {
+            let hash = hex(&change.hash().0);
+            let known: Option<i64> = self
+                .tx
+                .query_row(
+                    "SELECT seq FROM doc_changes WHERE doc_id = ?1 AND hash = ?2",
+                    params![key, hash],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if known.is_some() {
+                continue;
+            }
+            seq += 1;
+            self.tx.execute(
+                "INSERT INTO doc_changes (doc_id, seq, hash, change) VALUES (?1, ?2, ?3, ?4)",
+                params![key, seq, hash, change.raw_bytes()],
+            )?;
+            inserted += 1;
+            if seq % SNAPSHOT_EVERY == 0 {
+                self.tx.execute(
+                    "INSERT INTO doc_snapshots (doc_id, upto_seq, snapshot) VALUES (?1, ?2, ?3)",
+                    params![key, seq, doc.save()],
+                )?;
+            }
+        }
+        Ok(inserted)
+    }
+
+    /// Idempotent insert of a log row with a known uid.
+    pub(crate) fn insert_log_row(&self, uid: &str, e: &LogEntry) -> Result<bool> {
+        let inserted = self.tx.execute(
+            "INSERT OR IGNORE INTO cook_log
+               (uid, date, kind, recipe, title, location, servings, verdict, tags)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                uid,
+                e.date.to_string(),
+                e.kind.to_string(),
+                e.recipe.as_ref().map(|s| s.as_str().to_string()),
+                e.title,
+                e.location,
+                e.servings,
+                e.verdict,
+                serde_json::to_string(&e.tags)?,
+            ],
+        )?;
+        Ok(inserted > 0)
+    }
+
+    /// Idempotent insert of a thread row with a known uid.
+    pub(crate) fn insert_thread_row(&self, uid: &str, m: &ThreadMessage) -> Result<bool> {
+        let inserted = self.tx.execute(
+            "INSERT OR IGNORE INTO thread_messages (uid, thread, role, content, created)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                uid,
+                m.thread.to_string(),
+                m.role.to_string(),
+                m.content,
+                m.created.to_string(),
+            ],
+        )?;
+        Ok(inserted > 0)
+    }
+}
+
 fn migrate(conn: &Connection) -> Result<()> {
     let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     match version {
@@ -1069,4 +1115,123 @@ fn remove_empty_dirs(base: &Path, dir: &Path) -> Result<bool> {
         }
     }
     Ok(empty && dir != base)
+}
+
+#[cfg(test)]
+mod tests {
+    //! Atomicity of the store's write units, proven by denying one INSERT
+    //! mid-unit through SQLite's authorizer — the same failure surface as
+    //! SQLITE_BUSY, a full disk, or a kill between statements. These live
+    //! inside the module because they need the raw connection to attach the
+    //! hook; nothing else should.
+
+    use super::*;
+    use crate::sync::Peer;
+    use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
+
+    fn t0() -> Timestamp {
+        Timestamp::UNIX_EPOCH
+    }
+
+    fn slug(s: &str) -> Slug {
+        Slug::new(s).unwrap()
+    }
+
+    fn recipe() -> RecipeDoc {
+        RecipeDoc {
+            schema_version: 1,
+            title: "Mapo tofu".into(),
+            servings: 4,
+            effort: "weekday".into(),
+            lead: None,
+            tags: Default::default(),
+            equipment: vec![],
+            ingredients: vec![],
+            source: None,
+            status: "active".into(),
+            body: "".into(),
+        }
+    }
+
+    /// Deny the `n`th INSERT into `table`; everything else proceeds.
+    fn deny_insert(store: &Store, table: &'static str, n: u32) {
+        let mut seen = 0;
+        store.conn.authorizer(Some(move |ctx: AuthContext<'_>| match ctx.action {
+            AuthAction::Insert { table_name } if table_name == table => {
+                seen += 1;
+                if seen == n { Authorization::Deny } else { Authorization::Allow }
+            }
+            _ => Authorization::Allow,
+        }));
+    }
+
+    fn allow_all(store: &Store) {
+        store.conn.authorizer(None::<fn(AuthContext<'_>) -> Authorization>);
+    }
+
+    /// Drive a full sync session; the first store initiates.
+    fn pump(a: &mut Store, b: &mut Store) -> Result<()> {
+        let mut pa = Peer::start(a, true)?;
+        let mut pb = Peer::start(b, false)?;
+        let mut msg = pa.initial_round(a)?;
+        for _ in 0..64 {
+            let reply = match pb.handle(b, &msg)? {
+                Some(r) => r,
+                None => return Ok(()),
+            };
+            match pa.handle(a, &reply)? {
+                Some(next) => msg = next,
+                None => return Ok(()),
+            }
+        }
+        panic!("sync did not terminate");
+    }
+
+    #[test]
+    fn a_create_that_fails_midway_leaves_no_trace() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::create(dir.path(), &slug("home"), 2, t0()).unwrap();
+        let id = DocId::Recipe(slug("mapo-tofu"));
+
+        deny_insert(&store, "doc_changes", 1);
+        store
+            .create_doc(&id, &recipe(), "test", t0())
+            .expect_err("the change insert was denied");
+        allow_all(&store);
+
+        // A doc row with no change rows is a doc no read can hydrate; if the
+        // failed create left one behind, every read dies and the retry below
+        // bounces off Exists — the store cannot repair itself.
+        assert!(!store.exists(&id).unwrap(), "the failed create left a torn doc behind");
+        store.corpus().expect("every read still works after a failed create");
+        store.create_doc(&id, &recipe(), "test", t0()).expect("the same create works on retry");
+        assert_eq!(store.get::<RecipeDoc>(&id).unwrap().title, "Mapo tofu");
+    }
+
+    #[test]
+    fn a_sync_round_that_fails_midway_persists_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut a = Store::create(&dir.path().join("a"), &slug("home"), 2, t0()).unwrap();
+        let mut b = Store::create_bare(&dir.path().join("b")).unwrap();
+        pump(&mut a, &mut b).unwrap();
+
+        a.add_location(&slug("cabin"), 2, "test", t0()).unwrap();
+
+        // The next session carries five changes, one per doc, persisted in
+        // id order: the four cabin docs, then state. Denying the fourth cuts
+        // the round after pantry/cabin and before shops/cabin — the torn
+        // sibling set corpus() cannot read.
+        deny_insert(&b, "doc_changes", 4);
+        pump(&mut a, &mut b).expect_err("the round was cut short");
+        allow_all(&b);
+
+        b.corpus().expect("reads survive an interrupted sync round");
+
+        // The next session delivers the location whole, and both sides agree.
+        pump(&mut a, &mut b).unwrap();
+        assert_eq!(
+            crate::render::render(&a.corpus().unwrap()),
+            crate::render::render(&b.corpus().unwrap()),
+        );
+    }
 }

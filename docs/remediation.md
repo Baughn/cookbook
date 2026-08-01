@@ -51,7 +51,7 @@ Five findings are deliberately out of scope and scheduled after M7 (recorded in
 - [x] Shutdown drains; the corpus is private — #84, #86, #87
 
 ### Phase 3 — Data integrity: store & sync
-- [ ] One transaction per doc creation and per sync round — #9, #21 *(H1)*
+- [x] One transaction per doc creation and per sync round — #9, #21 *(H1)*
 - [ ] Snapshots are rebuilt, not copied from a stale session doc — #20
 - [ ] A one-time snapshot repair on open *(recovers what #20 hid — the changes are still in `doc_changes`)*
 - [ ] Sync verifies uids and normalizes on ingest; uids go replica-scoped — #17, #18, #19, #16 *(H2)*
