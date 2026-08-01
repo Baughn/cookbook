@@ -988,7 +988,10 @@ fn fridge_add(store: &mut Store, ctx: &ToolCtx, input: &Value) -> ToolResult {
         .map(|d| parse_date(d, ctx.today()))
         .transpose()?
         .unwrap_or(ctx.today());
-    let mut assigned = String::new();
+    // Minted, never positional: portion ids are CRDT map keys, and two
+    // replicas both picking the lowest free `p1` while apart merge to one
+    // surviving portion.
+    let assigned = store.mint_id("p").map_err(Fail::from)?;
     store
         .modify::<FridgeDoc>(
             &DocId::Fridge(loc.clone()),
@@ -999,13 +1002,8 @@ fn fridge_add(store: &mut Store, ctx: &ToolCtx, input: &Value) -> ToolResult {
                     Some(name) => f.freezers.entry(name.trim().to_string()).or_default(),
                     None => &mut f.fridge,
                 };
-                let id = (1..)
-                    .map(|n| format!("p{n}"))
-                    .find(|c| !portions.contains_key(c))
-                    .expect("unbounded candidate ids");
-                assigned = id.clone();
                 portions.insert(
-                    id,
+                    assigned.clone(),
                     PortionDoc { dish: dish.clone(), servings: a.servings, date: date.to_string() },
                 );
             },
@@ -1123,19 +1121,15 @@ fn shopping_add(store: &mut Store, ctx: &ToolCtx, input: &Value) -> ToolResult {
     let text = must_trim(&a.text, "text")?;
     let tier = a.tier.as_deref().map(slug).transpose()?;
     let requested = a.id.as_deref().map(slug).transpose()?;
-    let mut assigned = String::new();
+    // Minted, never positional — see fridge_add.
+    let assigned = match &requested {
+        Some(id) => id.to_string(),
+        None => store.mint_id("s").map_err(Fail::from)?,
+    };
     store
         .modify::<ShoppingDoc>(&DocId::Shopping, &ctx.msg(&format!("shopping add {text}")), ctx.at(), |d| {
-            let id = match &requested {
-                Some(id) => id.to_string(),
-                None => (1..)
-                    .map(|n| format!("s{n}"))
-                    .find(|c| !d.items.contains_key(c))
-                    .expect("unbounded candidate ids"),
-            };
-            assigned = id.clone();
             d.items.insert(
-                id,
+                assigned.clone(),
                 ShoppingItemDoc {
                     text: text.clone(),
                     tier: tier.as_ref().map(|t| t.to_string()),

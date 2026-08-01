@@ -174,22 +174,28 @@ fn pantry_and_equipment() {
     ok(&mut store, "equipment_remove", json!({"item": "stand-mixer"}));
 }
 
+/// The assigned id from an "added … as <id>" tool reply.
+fn id_from(msg: &str) -> String {
+    msg.rsplit_once(" as ").unwrap().1.split_whitespace().next().unwrap().to_string()
+}
+
 #[test]
 fn fridge_flow() {
     let (_dir, mut store) = fresh();
 
     let msg = ok(&mut store, "fridge_add", json!({"dish": "Dal", "servings": 4}));
-    assert!(msg.contains("as p1"), "{msg}");
+    let p_dal = id_from(&msg);
     let msg = ok(&mut store, "fridge_add", json!({"dish": "Stock", "servings": 2, "freezer": "basement"}));
-    assert!(msg.contains("as p1"), "ids are per-compartment: {msg}");
+    let p_stock = id_from(&msg);
+    assert_ne!(p_dal, p_stock, "ids are minted, never reused — even across compartments");
 
     let doc: FridgeDoc = store.get(&DocId::Fridge(Slug::new("home").unwrap())).unwrap();
-    assert_eq!(doc.fridge["p1"].dish, "Dal");
-    assert_eq!(doc.freezers["basement"]["p1"].dish, "Stock");
+    assert_eq!(doc.fridge[&p_dal].dish, "Dal");
+    assert_eq!(doc.freezers["basement"][&p_stock].dish, "Stock");
 
-    err(&mut store, "fridge_remove", json!({"id": "p1", "freezer": "attic"}));
+    err(&mut store, "fridge_remove", json!({"id": p_stock, "freezer": "attic"}));
     err(&mut store, "fridge_remove", json!({"id": "p9"}));
-    ok(&mut store, "fridge_remove", json!({"id": "p1", "freezer": "basement"}));
+    ok(&mut store, "fridge_remove", json!({"id": p_stock, "freezer": "basement"}));
     let doc: FridgeDoc = store.get(&DocId::Fridge(Slug::new("home").unwrap())).unwrap();
     assert!(doc.freezers.is_empty(), "empty freezer compartment pruned");
 }
@@ -223,12 +229,12 @@ fn shopping_flow() {
     let (_dir, mut store) = fresh();
 
     let msg = ok(&mut store, "shopping_add", json!({"text": "duck legs", "tier": "butcher"}));
-    assert!(msg.contains("as s1"), "{msg}");
+    let s_duck = id_from(&msg);
     ok(&mut store, "shopping_add", json!({"text": "wakame", "id": "wakame"}));
 
-    ok(&mut store, "shopping_update", json!({"id": "s1", "done": true}));
+    ok(&mut store, "shopping_update", json!({"id": s_duck, "done": true}));
     let doc: ShoppingDoc = store.get(&DocId::Shopping).unwrap();
-    assert!(doc.items["s1"].done);
+    assert!(doc.items[&s_duck].done);
 
     ok(&mut store, "shopping_update", json!({"id": "wakame", "remove": true}));
     err(&mut store, "shopping_update", json!({"id": "wakame", "done": true}));
@@ -291,4 +297,53 @@ fn recipe_edit_takes_non_ascii_bodies() {
     ok(&mut store, "recipe_edit", json!({"slug": "mapo-tofu", "body": body}));
     let doc: RecipeDoc = store.get(&DocId::Recipe(Slug::new("mapo-tofu").unwrap())).unwrap();
     assert_eq!(doc.body.as_str(), body);
+}
+
+/// The charter's basement scenario, through the real tool path: two devices
+/// each add items while apart. Positional ids (both sides minting `s1`)
+/// collide on merge — Automerge resolves the two concurrent puts at one key
+/// to one winner, and the loser's item vanishes from every replica and from
+/// the export, silently.
+#[test]
+fn concurrent_adds_on_two_devices_both_survive_the_merge() {
+    use mise_store::sync::Peer;
+    fn sync(a: &mut Store, b: &mut Store) {
+        let mut pa = Peer::start(a, true).unwrap();
+        let mut pb = Peer::start(b, false).unwrap();
+        let mut msg = pa.initial_round(a).unwrap();
+        loop {
+            let reply = match pb.handle(b, &msg).unwrap() {
+                Some(r) => r,
+                None => return,
+            };
+            match pa.handle(a, &reply).unwrap() {
+                Some(next) => msg = next,
+                None => return,
+            }
+        }
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut a = Store::create(
+        &dir.path().join("a"),
+        &Slug::new("home").unwrap(),
+        2,
+        jiff::Timestamp::UNIX_EPOCH,
+    )
+    .unwrap();
+    let mut b = Store::create_bare(&dir.path().join("b")).unwrap();
+    sync(&mut a, &mut b);
+
+    ok(&mut a, "shopping_add", json!({"text": "milk"}));
+    ok(&mut b, "shopping_add", json!({"text": "eggs"}));
+    ok(&mut a, "fridge_add", json!({"dish": "Dal", "servings": 2}));
+    ok(&mut b, "fridge_add", json!({"dish": "Stock", "servings": 3}));
+
+    sync(&mut a, &mut b);
+    let shopping: ShoppingDoc = a.get(&DocId::Shopping).unwrap();
+    let texts: Vec<_> = shopping.items.values().map(|i| i.text.as_str()).collect();
+    assert_eq!(shopping.items.len(), 2, "a shopping id collision swallowed an item: {texts:?}");
+    let fridge: FridgeDoc = a.get(&DocId::Fridge(Slug::new("home").unwrap())).unwrap();
+    let dishes: Vec<_> = fridge.fridge.values().map(|p| p.dish.as_str()).collect();
+    assert_eq!(fridge.fridge.len(), 2, "a fridge id collision swallowed a portion: {dishes:?}");
 }

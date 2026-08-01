@@ -57,7 +57,7 @@ Five findings are deliberately out of scope and scheduled after M7 (recorded in
 - [x] Sync verifies uids and normalizes on ingest; uids go replica-scoped — #17, #18, #19, #16 *(H2)*
 - [x] The export regenerates itself — #13 *(H5)*
 - [x] An incomplete location degrades instead of erasing the export — #22 *(H6)*
-- [ ] WAL and a busy timeout — #12
+- [x] WAL and a busy timeout — #12
 - [ ] Shopping items and fridge portions get replica-safe ids — #36, #93 *(legacy `s1` keys go inert, never reused)*
 - [ ] Coverage saturates; servings are bounded at ingress — #0, #1
 - [ ] Interrupted sessions and hostile peers are tested — #23

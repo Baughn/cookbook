@@ -11,7 +11,8 @@ use std::path::Path;
 use jiff::civil::{Date, DateTime};
 use mise_core::types::{CookKind, LogEntry, Slug};
 use mise_store::pages::{
-    DishRefDoc, PantryDoc, PantryItemDoc, QueueDoc, QueueEntryDoc, RecipeDoc, StateDoc,
+    DishRefDoc, PantryDoc, PantryItemDoc, QueueDoc, QueueEntryDoc, RecipeDoc, ShoppingDoc,
+    ShoppingItemDoc, StateDoc,
 };
 use mise_store::render::render;
 use mise_store::sync::{Peer, SyncOutcome};
@@ -347,6 +348,7 @@ enum Op {
     Queue { k: u8, title: String },
     Log { day: u8, title: String },
     Thread { k: u8, text: String },
+    Shopping { text: String },
 }
 
 fn arb_op() -> impl Strategy<Value = Op> {
@@ -356,6 +358,7 @@ fn arb_op() -> impl Strategy<Value = Op> {
         (any::<u8>(), word()).prop_map(|(k, title)| Op::Queue { k, title }),
         (any::<u8>(), word()).prop_map(|(day, title)| Op::Log { day, title }),
         (any::<u8>(), word()).prop_map(|(k, text)| Op::Thread { k, text }),
+        word().prop_map(|text| Op::Shopping { text }),
     ]
 }
 
@@ -422,6 +425,19 @@ fn apply(store: &mut Store, op: &Op) {
                 )
                 .unwrap();
         }
+        // A minted id per add — never a fixed key space, which converges by
+        // silently swallowing concurrent adds. The property counts them.
+        Op::Shopping { text } => {
+            let id = store.mint_id("s").unwrap();
+            store
+                .modify::<ShoppingDoc>(&DocId::Shopping, "prop", t0(), |d| {
+                    d.items.insert(
+                        id.clone(),
+                        ShoppingItemDoc { text: text.clone(), tier: None, done: false },
+                    );
+                })
+                .unwrap();
+        }
     }
 }
 
@@ -448,8 +464,15 @@ proptest! {
         }
         run_sync(&mut a, &mut b);
 
-        prop_assert_eq!(a.corpus().unwrap(), b.corpus().unwrap());
+        let corpus = a.corpus().unwrap();
+        prop_assert_eq!(&corpus, &b.corpus().unwrap());
         prop_assert!(exports_equal(&a, &b));
+        // Convergence alone would pass a merge that swallowed items; every
+        // add must actually survive it.
+        let added = ops_a.iter().chain(&ops_b)
+            .filter(|op| matches!(op, Op::Shopping { .. }))
+            .count();
+        prop_assert_eq!(corpus.shopping.items.len(), added);
 
         let (out_a, out_b) = run_sync(&mut a, &mut b);
         prop_assert!(out_a.is_empty(), "{:?}", out_a);
@@ -669,6 +692,82 @@ fn an_idempotent_resync_is_empty_even_though_it_learned_the_shape() {
     assert!(out_b.is_empty(), "{out_b:?}");
     assert_eq!(out_a.peer_schema, Some(mise_store::pages::SCHEMA_VERSION));
     assert_ne!(out_a, SyncOutcome::default(), "learning it is still recorded");
+}
+
+/// The charter's motivating scenario, through the real interfaces end to
+/// end: offline shopping-list checkoffs in a signal-dead store while a
+/// desktop thread edits the pantry. Two real stores, real sync rounds, real
+/// persistence — and afterwards the two-devices promise: equal corpus,
+/// byte-identical exports, nothing lost in either direction.
+#[test]
+fn basement_checkoff_merges_with_desktop_pantry_edit() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut desktop = create_at(dir.path(), "desktop");
+    let mut phone = Store::create_bare(&dir.path().join("phone")).unwrap();
+
+    // Shared starting state: eggs on the list, miso in the pantry.
+    let eggs = desktop.mint_id("s").unwrap();
+    desktop
+        .modify::<ShoppingDoc>(&DocId::Shopping, "seed", t0(), |d| {
+            d.items.insert(
+                eggs.clone(),
+                ShoppingItemDoc { text: "eggs".into(), tier: None, done: false },
+            );
+        })
+        .unwrap();
+    desktop
+        .modify::<PantryDoc>(&DocId::Pantry(slug("home")), "seed", t0(), |p| {
+            p.items.insert(
+                "miso".into(),
+                PantryItemDoc {
+                    name: "miso".into(),
+                    presence: "have".into(),
+                    bought: None,
+                    tier: None,
+                    note: None,
+                },
+            );
+        })
+        .unwrap();
+    run_sync(&mut desktop, &mut phone);
+
+    // In the basement, offline: eggs bought, plus an impulse add.
+    let dashi = phone.mint_id("s").unwrap();
+    phone
+        .modify::<ShoppingDoc>(&DocId::Shopping, "basement", t0(), |d| {
+            d.items.get_mut(&eggs).unwrap().done = true;
+            d.items.insert(
+                dashi.clone(),
+                ShoppingItemDoc { text: "instant dashi".into(), tier: None, done: false },
+            );
+        })
+        .unwrap();
+    // Meanwhile the desktop planning thread edits the pantry.
+    desktop
+        .modify::<PantryDoc>(&DocId::Pantry(slug("home")), "planning thread", t0(), |p| {
+            p.items.get_mut("miso").unwrap().presence = "out".into();
+            p.items.insert(
+                "duck-legs".into(),
+                PantryItemDoc {
+                    name: "duck legs".into(),
+                    presence: "have".into(),
+                    bought: Some("2026-07-28".into()),
+                    tier: Some("butcher".into()),
+                    note: None,
+                },
+            );
+        })
+        .unwrap();
+
+    // Signal returns.
+    run_sync(&mut desktop, &mut phone);
+    let corpus = desktop.corpus().unwrap();
+    assert_eq!(corpus, phone.corpus().unwrap());
+    assert!(exports_equal(&desktop, &phone));
+    assert!(corpus.shopping.items[&eggs].done, "the checkoff survived");
+    assert_eq!(corpus.shopping.items[&dashi].text, "instant dashi");
+    assert_eq!(corpus.locations["home"].pantry.items["miso"].presence, "out");
+    assert_eq!(corpus.locations["home"].pantry.items["duck-legs"].presence, "have");
 }
 
 /// The motivating disaster for stale snapshots: a sync session is open (a

@@ -476,6 +476,25 @@ impl Store {
         Ok(uid)
     }
 
+    /// A fresh collection-item id — `<prefix>-<replica>-<seq>` — from a
+    /// monotonic per-store counter. Shopping items and fridge portions are
+    /// CRDT map keys, so their ids are their identity: positional ids
+    /// (`s1`) collide across replicas, where the merge resolves both puts
+    /// to one winner and the other item silently vanishes; and lowest-free
+    /// reuse lets a stale remove delete a stranger. The counter never
+    /// reuses, and legacy positional keys stay inert — never reused, never
+    /// renumbered.
+    pub fn mint_id(&mut self, prefix: &str) -> Result<String> {
+        let seq: i64 = self.conn.query_row(
+            "INSERT INTO meta (key, value) VALUES ('id_seq', '1')
+             ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + 1
+             RETURNING CAST(value AS INTEGER)",
+            [],
+            |r| r.get(0),
+        )?;
+        Ok(format!("{prefix}-{}-{seq}", self.replica))
+    }
+
     /// Idempotent insert of a log row with a known uid.
     pub(crate) fn insert_log_row(&mut self, uid: &str, e: &LogEntry) -> Result<bool> {
         self.transaction(|tx| tx.insert_log_row(uid, e))
