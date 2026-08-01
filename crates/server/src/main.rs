@@ -127,9 +127,13 @@ async fn main() -> Result<()> {
         state = state.with_static_dir(dir.clone());
     }
 
+    // Handlers first, listener second: a bound socket is the readiness
+    // signal (systemd's, and the shutdown test's TCP probe), so by the time
+    // anyone can connect, the graceful drain must already own SIGTERM.
+    let shutdown = shutdown_signal();
     let listener = tokio::net::TcpListener::bind(args.listen).await?;
     info!("serving corpus {} on {}", root.display(), args.listen);
-    axum::serve(listener, app(state)).with_graceful_shutdown(shutdown_signal()).await?;
+    axum::serve(listener, app(state)).with_graceful_shutdown(shutdown).await?;
     info!("drained; stopping");
     Ok(())
 }
@@ -143,34 +147,63 @@ async fn main() -> Result<()> {
 /// streams mid-frame. A restart landing inside `Store::export`, which
 /// rewrites and removes files before `git add`/`commit`, is the case that
 /// leaves the readable backup half-written.
-async fn shutdown_signal() {
-    let interrupt = async {
-        let _ = tokio::signal::ctrl_c().await;
-        "interrupt"
-    };
-
+///
+/// Not an async fn: the handlers are registered when this is *called*, not
+/// when the returned future is first polled. `axum::serve` polls the
+/// shutdown future only after the listener is up, so an async fn would leave
+/// a window where the server accepts connections while a signal still hits
+/// the kernel default — a race the shutdown test lost under a loaded
+/// machine.
+fn shutdown_signal() -> impl std::future::Future<Output = ()> {
     #[cfg(unix)]
-    let terminate = async {
+    let (mut interrupt, mut terminate) = {
         use tokio::signal::unix::{SignalKind, signal};
-        match signal(SignalKind::terminate()) {
-            Ok(mut sigterm) => {
-                sigterm.recv().await;
-            }
-            // Nothing sane to do but keep serving; never resolve, so the
-            // other arm still works.
+        let register = |kind, name: &str| match signal(kind) {
+            Ok(s) => Some(s),
+            // Nothing sane to do but keep serving; the arm never resolves,
+            // so the other one still works.
             Err(e) => {
-                tracing::error!("cannot listen for SIGTERM, shutdown will not be graceful: {e}");
-                std::future::pending::<()>().await;
+                tracing::error!("cannot listen for {name}, that shutdown path will not be graceful: {e}");
+                None
             }
-        }
-        "terminate"
+        };
+        (
+            register(SignalKind::interrupt(), "SIGINT"),
+            register(SignalKind::terminate(), "SIGTERM"),
+        )
     };
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<&str>();
 
-    let signal = tokio::select! {
-        s = interrupt => s,
-        s = terminate => s,
-    };
-    info!("{signal}; draining in-flight requests");
+    async move {
+        #[cfg(unix)]
+        let signal = {
+            let interrupt = async {
+                match interrupt.as_mut() {
+                    Some(s) => {
+                        s.recv().await;
+                    }
+                    None => std::future::pending().await,
+                }
+                "interrupt"
+            };
+            let terminate = async {
+                match terminate.as_mut() {
+                    Some(s) => {
+                        s.recv().await;
+                    }
+                    None => std::future::pending().await,
+                }
+                "terminate"
+            };
+            tokio::select! {
+                s = interrupt => s,
+                s = terminate => s,
+            }
+        };
+        #[cfg(not(unix))]
+        let signal = {
+            let _ = tokio::signal::ctrl_c().await;
+            "interrupt"
+        };
+        info!("{signal}; draining in-flight requests");
+    }
 }
