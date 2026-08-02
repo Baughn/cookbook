@@ -92,13 +92,13 @@ Five findings are deliberately out of scope and scheduled after M7 (recorded in
 
 ### Phase 7 — Edges & operations
 - [x] The CLI renders the queue from `views`, not a copy — #4 *(pulled forward from Phase 7: #40 wanted it first)*
-- [ ] Sync always exports what it persisted — #58, #59
-- [ ] Remote URLs and join failures are recoverable — #60, #63
-- [ ] Remove reports what actually happened — #64
-- [ ] Sync reports what actually happened — #62, #66
-- [ ] Remote mode's guarantees are tested — #65
-- [ ] A revert hash can't panic the handler — #8 *(after H4)*
-- [ ] The unit follows `services.mise.root` — #85, #89, #90, #88
+- [x] Sync always exports what it persisted — #58, #59
+- [x] Remote URLs and join failures are recoverable — #60, #63
+- [x] Remove reports what actually happened — #64
+- [x] Sync reports what actually happened — #62, #66
+- [x] Remote mode's guarantees are tested — #65 *(rode with the fixes above: normalize_url table, retryable join, thread-only export, push-only and cut-off sessions; the remote.json mode tests landed in Phase 4)*
+- [x] A revert hash can't panic the handler — #8 *(after H4)*
+- [x] The unit follows `services.mise.root` — #85, #89, #90, #88 *(#88's sandbox directives rode along in Phase 2; `nix build` gate green, `systemd-analyze security` stays a deploy-time check on the NixOS host)*
 
 ### Phase 8 — Remaining drift & quality
 - [ ] Shop needs are one per pantry item — #3
