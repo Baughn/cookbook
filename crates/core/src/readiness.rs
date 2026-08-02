@@ -63,24 +63,27 @@ pub fn assess(recipe: &RecipeMeta, location: &LocationView) -> Readiness {
         .cloned()
         .collect();
 
-    let mut shop = Vec::new();
+    // Keyed by pantry item: a recipe may legitimately name one item on
+    // several lines (soy sauce in the marinade and again in the sauce), and
+    // that is one thing to buy. The tier comes from the pantry entry, so
+    // duplicates always agree on it.
+    let mut shop = std::collections::BTreeMap::new();
     let mut unlinked = Vec::new();
     for line in &recipe.ingredients {
         match &line.pantry {
             None => unlinked.push(line.text.clone()),
             Some(slug) => match location.pantry.get(slug) {
                 Some(item) if item.presence != Presence::Out => {}
-                Some(item) => shop.push(ShopNeed {
-                    item: slug.clone(),
-                    tier: item.tier.clone(),
-                }),
-                None => shop.push(ShopNeed {
-                    item: slug.clone(),
-                    tier: None,
-                }),
+                Some(item) => {
+                    shop.insert(slug.clone(), item.tier.clone());
+                }
+                None => {
+                    shop.insert(slug.clone(), None);
+                }
             },
         }
     }
+    let shop = shop.into_iter().map(|(item, tier)| ShopNeed { item, tier }).collect();
 
     Readiness {
         missing_equipment,
@@ -233,6 +236,25 @@ mod tests {
             Verdict::NeedsShopping { tier: Some(t) } => assert_eq!(t.as_str(), "town"),
             v => panic!("expected town-tier shopping, got {v:?}"),
         }
+    }
+
+    #[test]
+    fn one_pantry_item_on_two_lines_is_one_shop_need() {
+        // Soy sauce in the marinade and again in the sauce is one item to
+        // buy, not two entries in the shop verdict.
+        let r = recipe(
+            vec![
+                linked("miso for the marinade", "miso"),
+                linked("miso for the sauce", "miso"),
+            ],
+            &[],
+        );
+        let loc = home();
+        let readiness = assess(&r, &loc);
+        assert_eq!(
+            readiness.shop,
+            vec![ShopNeed { item: slug("miso"), tier: Some(slug("town")) }]
+        );
     }
 
     #[test]
