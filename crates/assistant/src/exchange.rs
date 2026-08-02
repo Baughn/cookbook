@@ -14,6 +14,22 @@ use crate::seam::Model;
 use crate::tools::{self, ToolCtx};
 use crate::turn::{Step, Turn};
 
+/// The stamp for a thread's next message: `now`, pushed just past the
+/// thread's latest stamp when civil time stalled or stepped backwards
+/// (a DST fall-back, an NTP step). Thread order is (created, uid) and
+/// drives both the export transcript and the history the model resumes,
+/// so a new message must never sort before what came before it. Shared
+/// by both drivers — one clamp, not two copies.
+pub fn stamp_after(
+    last: Option<jiff::civil::DateTime>,
+    now: jiff::civil::DateTime,
+) -> jiff::civil::DateTime {
+    match last {
+        Some(last) if now <= last => last.saturating_add(jiff::SignedDuration::from_nanos(1)),
+        _ => now,
+    }
+}
+
 /// Progress events for display: streamed text, tool activity, and recon
 /// proposals on their way to being shown as tappable lines.
 pub enum ExchangeEvent<'a> {
@@ -57,7 +73,8 @@ pub async fn run_exchange<M: Model, F: Fetch>(
     // have stamped a message after this one.
     let stored = recon::transcript_text(user_message, photos.len());
     let (system, mut history) = context::assemble(store, thread, now)?;
-    store.append_thread_message(thread, Role::User, &stored, now)?;
+    let asked = stamp_after(store.last_thread_stamp(thread)?, now);
+    store.append_thread_message(thread, Role::User, &stored, asked)?;
     let mut outgoing = crate::seam::ChatMessage::user_text(stored);
     outgoing.content.splice(0..0, photos.iter().map(Photo::block));
     history.push(outgoing);
@@ -96,10 +113,7 @@ pub async fn run_exchange<M: Model, F: Fetch>(
 
     // Clamp against a stalled or backwards clock: whatever answers the
     // question — the reply, or a failure marker — must sort after it.
-    let mut replied = clock().datetime();
-    if replied <= now {
-        replied = now.saturating_add(jiff::SignedDuration::from_nanos(1));
-    }
+    let replied = stamp_after(Some(asked), clock().datetime());
     match result {
         Ok(reply) => {
             store.append_thread_message(thread, Role::Assistant, &reply, replied)?;

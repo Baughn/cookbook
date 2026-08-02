@@ -65,7 +65,7 @@ async fn exchange(
     let started = Zoned::now();
     let ctx = ToolCtx { now: started.clone(), provenance: provenance(&thread) };
     let now = started.datetime();
-    let (system, history) = {
+    let (system, history, asked) = {
         let mut store = state.store.lock().await;
         if let ThreadId::Page(id) = &thread
             && !store.exists(id)?
@@ -79,11 +79,15 @@ async fn exchange(
         // a message after this one (same shape as run_exchange).
         let stored = recon::transcript_text(&message, photos.len());
         let (system, mut history) = context::assemble(&store, &thread, now)?;
-        store.append_thread_message(&thread, Role::User, &stored, now)?;
+        // Same clamp as run_exchange: the question must sort after
+        // everything already on the thread, even when civil time stepped
+        // backwards since the last message was stamped.
+        let asked = mise_assistant::exchange::stamp_after(store.last_thread_stamp(&thread)?, now);
+        store.append_thread_message(&thread, Role::User, &stored, asked)?;
         let mut outgoing = mise_assistant::seam::ChatMessage::user_text(stored);
         outgoing.content.splice(0..0, photos.iter().map(recon::Photo::block));
         history.push(outgoing);
-        (system, history)
+        (system, history, asked)
     };
 
     let mut turn = Turn::new(system, history);
@@ -157,10 +161,7 @@ async fn exchange(
         let mut store = state.store.lock().await;
         // Same monotonicity clamp as run_exchange: whatever answers the
         // question — the reply, or a failure marker — must sort after it.
-        let mut replied = Zoned::now().datetime();
-        if replied <= now {
-            replied = now.saturating_add(jiff::SignedDuration::from_nanos(1));
-        }
+        let replied = mise_assistant::exchange::stamp_after(Some(asked), Zoned::now().datetime());
         let mut summary: String = if message.is_empty() && !photos.is_empty() {
             "[photo]".to_string()
         } else {

@@ -749,6 +749,27 @@ impl Store {
             .collect()
     }
 
+    /// The latest stamp on one thread — what a new message must sort
+    /// after. Textual MAX matches chronological order because the stamps
+    /// serialize in ISO form.
+    pub fn last_thread_stamp(
+        &self,
+        thread: &ThreadId,
+    ) -> Result<Option<jiff::civil::DateTime>> {
+        let created: Option<String> = self.conn.query_row(
+            "SELECT MAX(created) FROM thread_messages WHERE thread = ?1",
+            [thread.to_string()],
+            |r| r.get(0),
+        )?;
+        created
+            .map(|c| {
+                c.parse().map_err(|e| {
+                    StoreError::Corrupt(format!("thread row: bad datetime: {e}"))
+                })
+            })
+            .transpose()
+    }
+
     /// One thread's messages in (created, uid) order — deterministic across
     /// replicas, same argument as the cook log.
     pub fn thread_messages(&self, thread: &ThreadId) -> Result<Vec<ThreadMessage>> {

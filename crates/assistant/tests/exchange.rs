@@ -354,6 +354,47 @@ async fn photo_recon_proposes_without_touching_the_store() {
     assert_eq!(images, 0, "the photo is transient; only its placeholder persists");
 }
 
+/// Civil time can step backwards — a DST fall-back, an NTP correction —
+/// and thread order is (created, uid), driving both the export transcript
+/// and the history the model resumes. A user turn stamped verbatim from
+/// a stepped-back clock used to place the whole exchange *before*
+/// earlier ones; it must clamp past the thread's latest stamp, exactly
+/// as the reply already clamps past its question.
+#[tokio::test]
+async fn a_backwards_clock_cannot_scramble_the_transcript() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store =
+        Store::create(&dir.path().join("corpus"), &Slug::new("home").unwrap(), 2, jiff::Timestamp::UNIX_EPOCH).unwrap();
+    store
+        .append_thread_message(
+            &ThreadId::Planning,
+            Role::Assistant,
+            "stamped before the clock stepped back",
+            DateTime::constant(2026, 7, 30, 9, 0, 0, 0),
+        )
+        .unwrap();
+
+    let mut model = Scripted {
+        turns: vec![ModelTurn {
+            content: vec![ContentBlock::Text { text: "Sure.".into() }],
+            stop: StopReason::EndTurn,
+        }],
+        seen: vec![],
+    };
+    // ticking() reads 2026-07-29 18:00 — the day *before* the seeded stamp.
+    run_exchange(&mut model, &mut no_fetch(), &mut store, &ThreadId::Planning, "hello?", &[], &mut ticking(), &mut |_| {})
+        .await
+        .unwrap();
+
+    let msgs = store.thread_messages(&ThreadId::Planning).unwrap();
+    assert_eq!(msgs.len(), 3);
+    assert_eq!(msgs[0].content, "stamped before the clock stepped back");
+    assert_eq!(msgs[1].content, "hello?", "the new exchange sorts after what came before");
+    assert_eq!(msgs[2].role, Role::Assistant);
+    assert!(msgs[1].created > msgs[0].created);
+    assert!(msgs[2].created > msgs[1].created);
+}
+
 /// An exchange that dies after a tool round has already mutated the store
 /// must not leave the thread as a dangling question: a failure marker
 /// lands as the answer, and the mutation stands for the caller to export.
