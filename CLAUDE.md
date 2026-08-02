@@ -75,7 +75,7 @@ Update this list whenever a document is added.
 Overall design & goals: docs/design.md
 Implementation: docs/implementation.md
 Audit reports (newest is current): docs/reviews/
-Remediation campaign (in progress): docs/remediation.md
+Remediation campaign (complete, 2026-08-02): docs/remediation.md
 
 Docs and code describe the same system, and the invariant is *agreement* — not
 "every commit updates the docs." When a change alters behavior the docs

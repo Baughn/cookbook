@@ -1,6 +1,8 @@
 # Remediation campaign — audit findings before M7
 
-*Last updated: 2026-08-02.*
+*Last updated: 2026-08-02. **Campaign complete**: all 89 in-scope findings
+fixed; every "done when" item below is pinned by a named, passing test except
+the manual eval run, which stays a by-hand step against the real API.*
 
 Working sequence for the 94 findings in
 [the 2026-07-31 review](reviews/2026-07-31-codebase-review.md). That document
@@ -101,21 +103,32 @@ Five findings are deliberately out of scope and scheduled after M7 (recorded in
 - [x] The unit follows `services.mise.root` — #85, #89, #90, #88 *(#88's sandbox directives rode along in Phase 2; `nix build` gate green, `systemd-analyze security` stays a deploy-time check on the NixOS host)*
 
 ### Phase 8 — Remaining drift & quality
-- [ ] Shop needs are one per pantry item — #3
-- [ ] Context assembles only what the prompt needs — #35, #29, #30
-- [ ] The assistant can see recipe status — #38
-- [ ] Edits change only the fields they name — #42, #43
-- [ ] Provenance and lead time are asserted, not assumed — #44, #6
+- [x] Shop needs are one per pantry item — #3
+- [x] Context assembles only what the prompt needs — #35, #29, #30 *(two
+  commits: `Store::render_page` + agreement property; tail caching and the
+  unknown-block policy)*
+- [x] The assistant can see recipe status — #38
+- [x] Edits change only the fields they name — #42, #43
+- [x] Provenance and lead time are asserted, not assumed — #44, #6 *(the
+  widened lead-time property immediately caught a real saturation bug in the
+  jiff SignedDuration path; ready_at/act_by now go through a minutes Span)*
 - [x] A failed apply survives the batch — #71 *(scheduled here: the fix reuses
   the shared-corpus e2e flow this phase repairs)*
-- [ ] The e2e suite can actually fail — #79, #80, #82
+- [x] The e2e suite can actually fail — #79, #80, #82 *(#80's mount-identity
+  assertion verified red under a deliberate `{#key}` wrap before landing)*
 
 ## Done when
 
-- `cargo test` green; `cd web && npm run e2e` green at 375px.
-- Historical doc fixtures hydrate, and `revert` reaches each of them.
-- Two real stores through `run_sync` (basement checkoff) converge **and**
-  export byte-identically.
-- `rm -rf export/`, run any mutation: it regenerates and commits.
-- A thread-only sync produces `export/threads/planning.md` on the receiver.
-- `cargo run -p mise-evals` by hand — recon and draft-from-URL unchanged.
+- [x] `cargo test` green; `cd web && npm run e2e` green at 375px (9 specs).
+- [x] Historical doc fixtures hydrate, and `revert` reaches each of them
+  (`frozen_v1_docs_hydrate_render_and_revert`).
+- [x] Two real stores through `run_sync` (basement checkoff) converge **and**
+  export byte-identically (`replicas_converge`,
+  `converged_replicas_export_identically`, and
+  `devices_join_edit_offline_and_converge` through the real CLI interfaces).
+- [x] `rm -rf export/`, run any mutation: it regenerates and commits
+  (`the_export_regenerates_itself_after_deletion`).
+- [x] A thread-only sync produces `export/threads/planning.md` on the receiver
+  (`a_thread_only_sync_exports_the_transcript`).
+- [ ] `cargo run -p mise-evals` by hand — recon and draft-from-URL unchanged.
+  *(The one manual step: real API, real cost, never CI.)*
