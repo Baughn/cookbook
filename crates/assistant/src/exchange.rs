@@ -50,16 +50,16 @@ pub async fn run_exchange<M: Model, F: Fetch>(
     let ctx = ToolCtx { now: now.clone(), provenance: context::provenance(thread) };
     let now = now.datetime();
     // Photos ride only this exchange: the thread stores a counted
-    // placeholder, and the image blocks are attached to the outgoing turn
-    // below.
+    // placeholder, and the image blocks are attached to the outgoing
+    // turn. That turn is built locally and pushed explicitly — never
+    // found by thread ordering, where a replica's fast clock may already
+    // have stamped a message after this one.
     let stored = recon::transcript_text(user_message, photos.len());
-    store.append_thread_message(thread, Role::User, &stored, now)?;
     let (system, mut history) = context::assemble(store, thread, now)?;
-    if let Some(last) = history.last_mut()
-        && !photos.is_empty()
-    {
-        last.content.splice(0..0, photos.iter().map(Photo::block));
-    }
+    store.append_thread_message(thread, Role::User, &stored, now)?;
+    let mut outgoing = crate::seam::ChatMessage::user_text(stored);
+    outgoing.content.splice(0..0, photos.iter().map(Photo::block));
+    history.push(outgoing);
 
     let mut turn = Turn::new(system, history);
     let mut tools_used = Vec::new();

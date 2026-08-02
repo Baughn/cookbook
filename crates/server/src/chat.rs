@@ -73,15 +73,16 @@ async fn exchange(
             return Err(AssistantError::Protocol(format!("no page {id} to talk about")));
         }
         // Photos ride only this exchange: the thread stores a counted
-        // placeholder, the image blocks go on the wire below.
+        // placeholder, the image blocks go on the wire. The outgoing turn
+        // is built locally and pushed explicitly — never found by thread
+        // ordering, where a replica's fast clock may already have stamped
+        // a message after this one (same shape as run_exchange).
         let stored = recon::transcript_text(&message, photos.len());
-        store.append_thread_message(&thread, Role::User, &stored, now)?;
         let (system, mut history) = context::assemble(&store, &thread, now)?;
-        if let Some(last) = history.last_mut()
-            && !photos.is_empty()
-        {
-            last.content.splice(0..0, photos.iter().map(recon::Photo::block));
-        }
+        store.append_thread_message(&thread, Role::User, &stored, now)?;
+        let mut outgoing = mise_assistant::seam::ChatMessage::user_text(stored);
+        outgoing.content.splice(0..0, photos.iter().map(recon::Photo::block));
+        history.push(outgoing);
         (system, history)
     };
 

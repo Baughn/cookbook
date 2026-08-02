@@ -354,6 +354,66 @@ async fn photo_recon_proposes_without_touching_the_store() {
     assert_eq!(images, 0, "the photo is transient; only its placeholder persists");
 }
 
+/// Thread rows merge across replicas by uid union with caller-supplied
+/// civil stamps, so a message stamped *later* than this exchange's user
+/// turn can already exist — a phone in a timezone ahead, a fast clock.
+/// Photos must ride the message they arrived with, not whichever message
+/// sorts last: an image block inside an assistant turn is a wire error,
+/// and inside an older user turn it is a silent lie.
+#[tokio::test]
+async fn photos_attach_to_this_message_not_whichever_sorts_last() {
+    use mise_assistant::recon::Photo;
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut store =
+        Store::create(&dir.path().join("corpus"), &Slug::new("home").unwrap(), 2, jiff::Timestamp::UNIX_EPOCH).unwrap();
+    // An assistant turn from "the future" relative to the ticking clock.
+    store
+        .append_thread_message(
+            &ThreadId::Planning,
+            Role::Assistant,
+            "hello from a fast clock",
+            DateTime::constant(2026, 7, 30, 9, 0, 0, 0),
+        )
+        .unwrap();
+
+    let mut model = Scripted {
+        turns: vec![ModelTurn {
+            content: vec![ContentBlock::Text { text: "Noted.".into() }],
+            stop: StopReason::EndTurn,
+        }],
+        seen: vec![],
+    };
+    let photos = [Photo { media_type: "image/jpeg".into(), data: "QUJD".into() }];
+    run_exchange(
+        &mut model,
+        &mut no_fetch(),
+        &mut store,
+        &ThreadId::Planning,
+        "here's the shelf",
+        &photos,
+        &mut ticking(),
+        &mut |_| {},
+    )
+    .await
+    .unwrap();
+
+    let sent = &model.seen[0].messages;
+    let last = sent.last().unwrap();
+    assert!(
+        matches!(last.role, mise_assistant::seam::ChatRole::User),
+        "the outgoing turn is this exchange's user message",
+    );
+    assert!(matches!(&last.content[0], ContentBlock::Image { .. }), "photos ride it");
+    // …and nothing else in the history picked up an image block.
+    let stray = sent[..sent.len() - 1]
+        .iter()
+        .flat_map(|m| &m.content)
+        .filter(|b| matches!(b, ContentBlock::Image { .. }))
+        .count();
+    assert_eq!(stray, 0, "no image landed in an earlier (or assistant) message");
+}
+
 /// A malformed proposal comes back as an error tool result — the model's
 /// problem, not an abort, and still nothing lands in the store.
 #[tokio::test]
