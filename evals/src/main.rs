@@ -501,6 +501,29 @@ async fn pantry_recon(report: &mut Report) -> Result<()> {
     Ok(())
 }
 
+/// Which scenarios to run. Unknown names are an error, not an empty run:
+/// the exit code is the number of failed checks precisely so a shell loop
+/// notices regressions, and a typo that runs nothing must not read as
+/// all-green.
+fn resolve<'a>(all: &[&'a str], requested: &[String]) -> std::result::Result<Vec<&'a str>, String> {
+    if requested.is_empty() {
+        return Ok(all.to_vec());
+    }
+    let unknown: Vec<&str> = requested
+        .iter()
+        .map(String::as_str)
+        .filter(|r| !all.contains(r))
+        .collect();
+    if !unknown.is_empty() {
+        return Err(format!(
+            "unknown scenario(s): {}; valid: {}",
+            unknown.join(", "),
+            all.join(", "),
+        ));
+    }
+    Ok(all.iter().copied().filter(|n| requested.iter().any(|r| r == n)).collect())
+}
+
 #[tokio::main]
 async fn main() -> Result<ExitCode> {
     let _ = dotenvy::dotenv();
@@ -513,10 +536,13 @@ async fn main() -> Result<ExitCode> {
         "calculator-page",
         "pantry-recon",
     ];
-    let run_list: Vec<&str> = if requested.is_empty() {
-        all.to_vec()
-    } else {
-        all.iter().copied().filter(|n| requested.iter().any(|r| r == n)).collect()
+    let run_list: Vec<&str> = match resolve(&all, &requested) {
+        Ok(list) => list,
+        Err(e) => {
+            eprintln!("{e}");
+            // 255 is past any real failed-check count (they're capped there).
+            return Ok(ExitCode::from(255));
+        }
     };
 
     let mut report = Report { checks: vec![] };
@@ -539,5 +565,23 @@ async fn main() -> Result<ExitCode> {
         report.checks.len(),
         failed,
     );
-    Ok(ExitCode::from(u8::try_from(failed.min(255)).unwrap()))
+    Ok(ExitCode::from(u8::try_from(failed.min(254)).unwrap()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve;
+
+    #[test]
+    fn a_misspelled_scenario_is_an_error_not_an_empty_green_run() {
+        let all = ["plan-week", "debrief"];
+        let e = resolve(&all, &["plan-weeek".to_string()]).unwrap_err();
+        assert!(e.contains("plan-weeek"), "{e}");
+        assert!(e.contains("plan-week, debrief"), "names the valid ones: {e}");
+        // One good name doesn't excuse a bad one alongside it.
+        assert!(resolve(&all, &["debrief".into(), "nope".into()]).is_err());
+
+        assert_eq!(resolve(&all, &[]).unwrap(), vec!["plan-week", "debrief"]);
+        assert_eq!(resolve(&all, &["debrief".to_string()]).unwrap(), vec!["debrief"]);
+    }
 }
