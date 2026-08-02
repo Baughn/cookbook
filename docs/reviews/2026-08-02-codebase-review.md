@@ -125,6 +125,21 @@ only so the chain stays honest; do not re-litigate them.
 14. 🟠 **Reject a caller `id` in `shopping_add`** — `crates/assistant/src/tools.rs:1215`. Drop the field (address existing items via `shopping_update`) so a content-derived id can't reopen the cross-replica collision the mint closed (#81).
 15. 🟠 **Trailing-dot hostname refusal** — `crates/assistant/src/fetch.rs:85`. Strip a single trailing `.` before matching; add `http://localhost./` to the policy table and a trailing-dot hop to the redirect test (#38).
 
+## Resolved since this report
+
+_2026-08-03 — single internal mutation API._ The CLI was a forked copy of the
+tool layer; it now marshals its args and calls `tools::execute`, the one
+internal API the HTTP surface (`/api/edit`) already uses. That one consolidation
+closed **#33** and, by construction, its instances **#31** (HIGH — fridge ids
+minted, not positional), **#32** (tier validated), **#35** (servings bounded at
+CLI ingress), **#50** (equipment note preserved), **#51** (queue upsert patches).
+Folded in: **#81** (`shopping_add` no longer trusts a caller id) and **#80** (the
+convergence property now exercises and counts fridge portions; a CLI-binary
+partition test and a CLI/tool parity test guard the surfaces). Fixes span jj
+commits `zvsyutsk` (#81), `ztovxqmw` (#80), `kmkkkktp` (#33 et al.), `nuzswywm`
+(#56 tests). Not yet addressed: **#52** (CLI `wss://` TLS) and the remaining
+findings below.
+
 ---
 
 ## Region index
