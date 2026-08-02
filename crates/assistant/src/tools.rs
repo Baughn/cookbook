@@ -568,7 +568,15 @@ fn list_pages(store: &Store) -> ToolResult {
                     .map(|(k, v)| format!("{k}={v}"))
                     .collect::<Vec<_>>()
                     .join(";");
-                format!(" — {} [{}] ({})", r.title, tags, r.effort)
+                // Status carries planning semantics (drafts and retired
+                // recipes stay out of rotation), so the listing is the
+                // model's one cheap place to see it. Active is the normal
+                // case and stays unannotated.
+                let status = match r.status {
+                    mise_core::types::RecipeStatus::Active => String::new(),
+                    s => format!(", {s}"),
+                };
+                format!(" — {} [{}] ({}{status})", r.title, tags, r.effort)
             })
             .unwrap_or_default();
         out.push_str(&format!("{path}{annotation}\n"));

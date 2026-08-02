@@ -338,6 +338,31 @@ fn reads_and_search() {
     assert!(none.contains("no matches"), "{none}");
 }
 
+/// Status has real semantics — drafts stay out of rotation, retired means
+/// out of rotation and the browse surface — so the model must be able to
+/// see it without a read_page per recipe.
+#[test]
+fn list_pages_distinguishes_draft_and_retired_recipes() {
+    let (_dir, mut store) = fresh();
+    seed_recipe(&mut store); // mapo-tofu, active
+    ok(&mut store, "recipe_add", json!({"slug": "duck-curry", "title": "Duck curry", "status": "draft"}));
+    ok(&mut store, "recipe_add", json!({"slug": "old-stew", "title": "Old stew"}));
+    ok(&mut store, "recipe_edit", json!({"slug": "old-stew", "status": "retired"}));
+
+    let pages = ok(&mut store, "list_pages", json!({}));
+    let line = |slug: &str| {
+        pages
+            .lines()
+            .find(|l| l.starts_with(&format!("recipes/{slug}.md")))
+            .unwrap_or_else(|| panic!("no line for {slug}: {pages}"))
+            .to_string()
+    };
+    assert!(line("duck-curry").contains("draft"), "{pages}");
+    assert!(line("old-stew").contains("retired"), "{pages}");
+    // Active is the normal case and stays unannotated.
+    assert!(!line("mapo-tofu").contains("active"), "{pages}");
+}
+
 #[test]
 fn bad_input_and_unknown_tools_are_model_problems() {
     let (_dir, mut store) = fresh();
