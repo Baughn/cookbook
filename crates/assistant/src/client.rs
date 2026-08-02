@@ -357,30 +357,39 @@ impl Assembler {
     }
 
     fn finish(self) -> Result<ModelTurn> {
-        let content = self
-            .blocks
-            .into_iter()
-            .map(|p| match p {
-                Partial::Text(text) => Ok(ContentBlock::Text { text }),
+        let stop = self
+            .stop
+            .ok_or_else(|| AssistantError::Api("stream ended without a stop reason".into()))?;
+        let mut content = Vec::new();
+        for p in self.blocks {
+            content.push(match p {
+                Partial::Text(text) => ContentBlock::Text { text },
                 Partial::ToolUse { id, name, input_json } => {
                     let input = if input_json.is_empty() {
                         json!({})
                     } else {
-                        serde_json::from_str(&input_json).map_err(|e| {
-                            AssistantError::Api(format!("tool input didn't parse: {e}"))
-                        })?
+                        match serde_json::from_str(&input_json) {
+                            Ok(v) => v,
+                            // A max_tokens cut mid input_json leaves a JSON
+                            // prefix. The turn driver's contract is "yield
+                            // what text we have"; drop the half-call so it
+                            // can, instead of failing the whole turn.
+                            Err(_) if stop == StopReason::MaxTokens => continue,
+                            Err(e) => {
+                                return Err(AssistantError::Api(format!(
+                                    "tool input didn't parse: {e}"
+                                )));
+                            }
+                        }
                     };
-                    Ok(ContentBlock::ToolUse { id, name, input })
+                    ContentBlock::ToolUse { id, name, input }
                 }
                 Partial::Thinking { thinking, signature } => {
-                    Ok(ContentBlock::Thinking { thinking, signature })
+                    ContentBlock::Thinking { thinking, signature }
                 }
-                Partial::Redacted { data } => Ok(ContentBlock::RedactedThinking { data }),
-            })
-            .collect::<Result<Vec<_>>>()?;
-        let stop = self
-            .stop
-            .ok_or_else(|| AssistantError::Api("stream ended without a stop reason".into()))?;
+                Partial::Redacted { data } => ContentBlock::RedactedThinking { data },
+            });
+        }
         Ok(ModelTurn { content, stop })
     }
 }
@@ -575,6 +584,40 @@ mod tests {
                 input: json!({}),
             }],
         );
+    }
+
+    /// A `max_tokens` cut mid `input_json_delta` leaves a JSON prefix in
+    /// the tool block. The turn driver's contract is "yield what text we
+    /// have" — so the half-call is dropped and the text survives, instead
+    /// of the whole turn failing as a parse error.
+    #[test]
+    fn a_truncated_tool_call_yields_the_text_that_preceded_it() {
+        let truncated = |stop: &str| {
+            let mut a = Assembler::default();
+            feed(&mut a, "content_block_start", r#"{"content_block":{"type":"text","text":"Adding it"}}"#);
+            feed(&mut a, "content_block_stop", "{}");
+            feed(
+                &mut a,
+                "content_block_start",
+                r#"{"content_block":{"type":"tool_use","id":"c1","name":"queue_add"}}"#,
+            );
+            feed(
+                &mut a,
+                "content_block_delta",
+                r#"{"delta":{"type":"input_json_delta","partial_json":"{\"title\":\"Da"}}"#,
+            );
+            feed(&mut a, "message_delta", &format!(r#"{{"delta":{{"stop_reason":"{stop}"}}}}"#));
+            a.finish()
+        };
+
+        let turn = truncated("max_tokens").unwrap();
+        assert_eq!(turn.stop, StopReason::MaxTokens);
+        assert_eq!(turn.content, vec![ContentBlock::Text { text: "Adding it".into() }]);
+
+        // Under any other stop reason a broken tool input is still fatal:
+        // the model claims the call is complete and it does not parse.
+        let e = truncated("tool_use").unwrap_err();
+        assert!(e.to_string().contains("tool input didn't parse"), "{e}");
     }
 
     #[test]

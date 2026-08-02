@@ -124,7 +124,7 @@ fn model_sent_tool_result_is_rejected() {
 }
 
 #[test]
-fn max_tokens_ends_the_exchange_even_with_calls() {
+fn max_tokens_ends_the_exchange_even_with_calls_and_says_so() {
     let mut turn = turn_with("x");
     let step = turn
         .absorb(ModelTurn {
@@ -132,7 +132,33 @@ fn max_tokens_ends_the_exchange_even_with_calls() {
             stop: StopReason::MaxTokens,
         })
         .unwrap();
-    assert_eq!(step, Step::Done("So far…".into()));
+    // What text we have, but never presented as a complete answer.
+    let Step::Done(reply) = step else { panic!("expected Done") };
+    assert!(reply.starts_with("So far…"), "{reply}");
+    assert!(reply.contains("cut short"), "a truncated turn must report truncation: {reply}");
+}
+
+#[test]
+fn a_truncated_turn_with_no_text_is_an_error_not_an_empty_reply() {
+    let mut turn = turn_with("x");
+    let e = turn
+        .absorb(ModelTurn {
+            content: vec![tool_use("c1", "queue_status", json!({}))],
+            stop: StopReason::MaxTokens,
+        })
+        .unwrap_err();
+    assert!(e.to_string().contains("cut"), "{e}");
+}
+
+#[test]
+fn an_empty_reply_is_an_error_not_a_success() {
+    // A turn that ends the exchange having said nothing is a failure the
+    // caller must see — not `done {"reply":""}` and a dangling question.
+    let mut turn = turn_with("x");
+    let e = turn
+        .absorb(ModelTurn { content: vec![], stop: StopReason::EndTurn })
+        .unwrap_err();
+    assert!(e.to_string().contains("without a reply"), "{e}");
 }
 
 #[test]

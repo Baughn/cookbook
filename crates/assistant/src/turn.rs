@@ -110,8 +110,25 @@ impl Turn {
 
         // A stop for any reason other than tool use ends the exchange, calls
         // or no calls: `max_tokens` mid-call yields what text we have rather
-        // than a half-executed round.
+        // than a half-executed round — but says so, and an exchange that
+        // ends with nothing said is a failure the caller must see, never a
+        // successful empty reply over a dangling question.
         if turn.stop != StopReason::ToolUse || calls.is_empty() {
+            if turn.stop == StopReason::MaxTokens {
+                if self.reply.is_empty() {
+                    return Err(AssistantError::Api(
+                        "the reply was cut off by the length limit before any text arrived"
+                            .into(),
+                    ));
+                }
+                self.reply.push_str("\n\n(reply cut short — the length limit was hit)");
+                return Ok(Step::Done(self.reply.clone()));
+            }
+            if self.reply.is_empty() {
+                return Err(AssistantError::Api(
+                    "the model ended its turn without a reply".into(),
+                ));
+            }
             return Ok(Step::Done(self.reply.clone()));
         }
         self.rounds += 1;
