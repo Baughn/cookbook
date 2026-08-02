@@ -221,6 +221,92 @@ fn a_push_only_sync_says_pushed_not_already_in_sync() {
     assert!(out.contains("already in sync"), "{out}");
 }
 
+/// #31, at the surface it actually regressed: two devices each add a fridge
+/// portion while offline, and both survive the merge. Before the CLI routed
+/// through the tool, `mise fridge add` scanned for the lowest free `p<n>` in
+/// the local replica, so both picked `p1` and one portion was destroyed on
+/// sync. The mint the tool uses is replica-scoped, so the two ids differ.
+#[test]
+fn cli_fridge_adds_on_two_devices_both_survive_the_merge() {
+    use mise_store::DocId;
+    use mise_store::pages::FridgeDoc;
+
+    let dir = tempfile::tempdir().unwrap();
+    let url = spawn_server(dir.path());
+    let a = dir.path().join("a");
+    let b = dir.path().join("b");
+    mise(&a, &["init", "--from", &url, "--token", TOKEN]);
+    mise(&b, &["init", "--from", &url, "--token", TOKEN]);
+
+    // Offline on both — the signal-dead-kitchen case.
+    mise(&a, &["fridge", "add", "Sunday mapo", "--servings", "3"]);
+    mise(&b, &["fridge", "add", "Chili", "--servings", "4"]);
+
+    mise(&a, &["sync"]);
+    mise(&b, &["sync"]);
+    mise(&a, &["sync"]);
+
+    let home = Slug::new("home").unwrap();
+    let fridge: FridgeDoc = Store::open(&a).unwrap().get(&DocId::Fridge(home)).unwrap();
+    let dishes: Vec<_> = fridge.fridge.values().map(|p| p.dish.as_str()).collect();
+    assert_eq!(fridge.fridge.len(), 2, "a fridge id collision swallowed a portion: {dishes:?}");
+    assert_eq!(export_tree(&a), export_tree(&b));
+}
+
+/// #56 / #33 standing guard: the same operation through the `mise` binary and
+/// through `tools::execute` must leave identical document state, so the two
+/// surfaces cannot drift apart again. Non-minting ops only — a minted id is
+/// replica-scoped and so is deliberately *not* identical across corpora.
+/// Change timestamps live in Automerge metadata, not the hydrated corpus, so a
+/// wall-clock CLI and a fixed-clock tool still compare equal on content.
+#[test]
+fn cli_and_tool_leave_identical_doc_state() {
+    use mise_assistant::tools::{self, ToolCtx};
+    use mise_assistant::turn::ToolCall;
+    use serde_json::json;
+
+    let cases: &[(&[&str], &str, serde_json::Value)] = &[
+        (
+            &["pantry", "set", "miso", "--presence", "out", "--tier", "town"],
+            "pantry_set",
+            json!({"item": "miso", "presence": "out", "tier": "town"}),
+        ),
+        (
+            &["equipment", "add", "wok", "--note", "carbon steel"],
+            "equipment_set",
+            json!({"item": "wok", "note": "carbon steel"}),
+        ),
+        (
+            &["queue", "add", "Dal", "--reason", "cheap"],
+            "queue_add",
+            json!({"title": "Dal", "reason": "cheap"}),
+        ),
+    ];
+
+    for (argv, tool, input) in cases {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Slug::new("home").unwrap();
+
+        // The CLI arm: a real subprocess into its own corpus.
+        let cli_root = dir.path().join("cli");
+        mise(&cli_root, &["init", "--location", "home", "--headcount", "2"]);
+        mise(&cli_root, argv);
+
+        // The tool arm: the same input straight through tools::execute.
+        let tool_root = dir.path().join("tool");
+        let mut store =
+            Store::create(&tool_root, &home, 2, jiff::Timestamp::now()).unwrap();
+        let ctx = ToolCtx { now: jiff::Zoned::now(), provenance: "cli".into() };
+        let call = ToolCall { id: "t".into(), name: (*tool).into(), input: input.clone() };
+        let out = tools::execute(&mut store, &ctx, &call).unwrap();
+        assert!(!out.is_error, "{tool}: {}", out.content);
+
+        let cli = Store::open(&cli_root).unwrap().corpus().unwrap();
+        let via_tool = store.corpus().unwrap();
+        assert_eq!(cli, via_tool, "CLI and tool diverged on {tool}");
+    }
+}
+
 /// A server hanging up mid-session — graceful shutdown, proxy idle
 /// timeout — used to produce exit 0 and "already in sync". Received data
 /// is persisted either way; only the reporting and exit status lie.
