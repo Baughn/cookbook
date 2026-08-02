@@ -259,7 +259,8 @@ pub fn tool_defs() -> Vec<ToolDef> {
         ToolDef {
             name: "queue_add",
             description: "Put a dish (or a recipe-less idea) on the queue, or the someday \
-                          shelf. Upserts by id.",
+                          shelf. Upserts by id: an existing entry keeps its age and its \
+                          dishes, and only the reason is updated.",
             input_schema: obj(
                 json!({
                     "title": s("Dish title as it should appear."),
@@ -395,7 +396,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
         ToolDef {
             name: "equipment_set",
             description: "Record a piece of kitchen equipment at a location, optionally with a \
-                          note.",
+                          note. Only the fields you pass change; an empty note clears it.",
             input_schema: obj(
                 json!({
                     "item": s("Equipment slug: wok, stand-mixer, …"),
@@ -662,22 +663,43 @@ fn queue_add(store: &mut Store, ctx: &ToolCtx, input: &Value) -> ToolResult {
     };
     let doc_id = if a.someday { DocId::Someday } else { DocId::Queue };
     let today = ctx.today();
+    let mut existed = false;
     store
         .modify::<QueueDoc>(&doc_id, &ctx.msg(&format!("queue add {id}")), ctx.at(), |q| {
-            q.entries.insert(
-                id.to_string(),
-                QueueEntryDoc {
-                    dishes: vec![DishRefDoc {
-                        recipe: recipe.as_ref().map(|r| r.to_string()),
-                        title,
-                    }],
-                    reason: a.reason.as_deref().and_then(opt_trim),
-                    added: today.to_string(),
-                },
-            );
+            match q.entries.get_mut(&id.to_string()) {
+                // Upsert = patch. Age is load-bearing ("21d on the queue"
+                // exists so stale entries are noticeable) and a multi-dish
+                // entry is a menu — so an existing entry keeps its `added`
+                // and its dishes, and only the reason moves. Changing the
+                // dish itself is queue_remove + queue_add.
+                Some(entry) => {
+                    existed = true;
+                    if let Some(r) = a.reason.as_deref() {
+                        entry.reason = opt_trim(r);
+                    }
+                }
+                None => {
+                    q.entries.insert(
+                        id.to_string(),
+                        QueueEntryDoc {
+                            dishes: vec![DishRefDoc {
+                                recipe: recipe.as_ref().map(|r| r.to_string()),
+                                title,
+                            }],
+                            reason: a.reason.as_deref().and_then(opt_trim),
+                            added: today.to_string(),
+                        },
+                    );
+                }
+            }
         })
         .map_err(Fail::from)?;
-    Ok(format!("queued {id}{}", if a.someday { " (someday)" } else { "" }))
+    let shelf = if a.someday { " (someday)" } else { "" };
+    Ok(if existed {
+        format!("updated {id}{shelf} — kept its place, age, and dishes")
+    } else {
+        format!("queued {id}{shelf}")
+    })
 }
 
 fn queue_remove(store: &mut Store, ctx: &ToolCtx, input: &Value) -> ToolResult {
@@ -982,10 +1004,13 @@ fn equipment_set(store: &mut Store, ctx: &ToolCtx, input: &Value) -> ToolResult 
             &ctx.msg(&format!("equipment {loc}: set {item}")),
             ctx.at(),
             |e| {
-                e.items.insert(
-                    item.to_string(),
-                    a.note.as_deref().map(str::trim).unwrap_or_default().to_string(),
-                );
+                // Entry-and-patch, same contract as pantry_set: only the
+                // fields you pass change. An explicit "" clears the note;
+                // omitting it keeps what's there.
+                let entry = e.items.entry(item.to_string()).or_default();
+                if let Some(n) = a.note.as_deref() {
+                    *entry = n.trim().to_string();
+                }
             },
         )
         .map_err(Fail::from)?;

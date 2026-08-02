@@ -6,7 +6,7 @@ use jiff::tz::TimeZone;
 use mise_assistant::tools::{ToolCtx, execute};
 use mise_assistant::turn::ToolCall;
 use mise_core::types::Slug;
-use mise_store::pages::{DishRefDoc, FridgeDoc, QueueDoc, QueueEntryDoc, RecipeDoc, ShoppingDoc, SteeringDoc};
+use mise_store::pages::{DishRefDoc, EquipmentDoc, FridgeDoc, QueueDoc, QueueEntryDoc, RecipeDoc, ShoppingDoc, SteeringDoc};
 use mise_store::{DocId, Store};
 use serde_json::{Value, json};
 
@@ -172,6 +172,61 @@ fn pantry_and_equipment() {
     ok(&mut store, "equipment_set", json!({"item": "stand-mixer", "note": "borrowed"}));
     err(&mut store, "equipment_remove", json!({"item": "wok"}));
     ok(&mut store, "equipment_remove", json!({"item": "stand-mixer"}));
+}
+
+#[test]
+fn equipment_set_without_a_note_keeps_the_existing_note() {
+    let (_dir, mut store) = fresh();
+    let home = DocId::Equipment(Slug::new("home").unwrap());
+    ok(&mut store, "equipment_set", json!({"item": "stand-mixer", "note": "borrowed"}));
+
+    // "Only the fields you pass change": omitting note is not clearing it.
+    ok(&mut store, "equipment_set", json!({"item": "stand-mixer"}));
+    let doc: EquipmentDoc = store.get(&home).unwrap();
+    assert_eq!(doc.items["stand-mixer"], "borrowed");
+
+    // An explicit empty string is the clear operation.
+    ok(&mut store, "equipment_set", json!({"item": "stand-mixer", "note": ""}));
+    let doc: EquipmentDoc = store.get(&home).unwrap();
+    assert_eq!(doc.items["stand-mixer"], "");
+}
+
+#[test]
+fn queue_add_on_an_existing_id_keeps_age_and_siblings() {
+    let (_dir, mut store) = fresh();
+    ok(&mut store, "queue_add", json!({"title": "Mapo tofu", "reason": "craving"}));
+    // Grow the entry into a menu, the way a merge or another surface can.
+    store
+        .modify::<QueueDoc>(&DocId::Queue, "test: add a side", jiff::Timestamp::UNIX_EPOCH, |q| {
+            q.entries
+                .get_mut("mapo-tofu")
+                .unwrap()
+                .dishes
+                .push(DishRefDoc { recipe: None, title: "Smashed cucumbers".into() });
+        })
+        .unwrap();
+
+    // Twelve days on, the model re-adds the id to amend the reason — the
+    // only way it has to do that. Age is load-bearing ("21d on the queue"
+    // exists so stale entries are noticeable) and menus render as menus.
+    let later = DateTime::constant(2026, 8, 10, 12, 0, 0, 0);
+    let ctx = ToolCtx {
+        now: later.to_zoned(TimeZone::UTC).unwrap(),
+        provenance: "planning thread".into(),
+    };
+    let call = ToolCall {
+        id: "t2".into(),
+        name: "queue_add".into(),
+        input: json!({"title": "Mapo tofu", "reason": "uses the tofu today"}),
+    };
+    let out = execute(&mut store, &ctx, &call).unwrap();
+    assert!(!out.is_error, "{}", out.content);
+
+    let queue: QueueDoc = store.get(&DocId::Queue).unwrap();
+    let entry = &queue.entries["mapo-tofu"];
+    assert_eq!(entry.added, "2026-07-29", "re-adding must not reset the entry's age");
+    assert_eq!(entry.dishes.len(), 2, "re-adding must not collapse a menu to one dish");
+    assert_eq!(entry.reason.as_deref(), Some("uses the tofu today"));
 }
 
 /// The assigned id from an "added … as <id>" tool reply.
