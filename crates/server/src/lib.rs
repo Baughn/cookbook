@@ -37,7 +37,9 @@ pub struct ChatConfig {
 pub struct AppState {
     pub store: Arc<Mutex<Store>>,
     pub token: Arc<String>,
-    pub chat: Option<Arc<ChatConfig>>,
+    /// The model client, built once at startup so every exchange shares
+    /// one connection pool; cloned per exchange (the pool is shared).
+    pub chat: Option<mise_assistant::client::AnthropicClient>,
     /// Built web app to serve at `/`; sync/API-only without it.
     pub static_dir: Option<Arc<std::path::PathBuf>>,
     /// The latest recon proposal per thread — live until completed or
@@ -59,7 +61,11 @@ impl AppState {
     }
 
     pub fn with_chat(mut self, config: ChatConfig) -> AppState {
-        self.chat = Some(Arc::new(config));
+        self.chat = Some(
+            mise_assistant::client::AnthropicClient::new(config.api_key)
+                .with_model(config.model)
+                .with_base_url(config.base_url),
+        );
         self
     }
 
@@ -160,12 +166,12 @@ pub struct ChatImage {
 /// store work — never across model calls — so sync sessions keep flowing
 /// while the model thinks.
 async fn chat_endpoint(State(state): State<AppState>, Json(request): Json<ChatRequest>) -> Response {
-    let Some(config) = state.chat.clone() else {
+    let Some(client) = state.chat.clone() else {
         return (StatusCode::SERVICE_UNAVAILABLE, "no model configured on this server")
             .into_response();
     };
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
-    tokio::spawn(chat::drive(state, config, request, tx));
+    tokio::spawn(chat::drive(state, client, request, tx));
     let stream = futures_util::stream::poll_fn(move |cx| rx.poll_recv(cx))
         .map(Ok::<_, std::convert::Infallible>);
     Sse::new(stream).keep_alive(KeepAlive::default()).into_response()

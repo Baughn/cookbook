@@ -19,6 +19,14 @@ pub const DEFAULT_MODEL: &str = "claude-opus-5";
 pub const DEFAULT_BASE_URL: &str = "https://api.anthropic.com";
 const MAX_TOKENS: u32 = 8192;
 
+/// A blackholed connection (NAT expiry, suspend, uplink flap) must fail,
+/// not hang a stream open forever: bound the TCP connect and the silence
+/// between chunks. `read_timeout` is per-read, so a long exchange is fine
+/// as long as bytes keep arriving.
+const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+const READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
+
+#[derive(Clone)]
 pub struct AnthropicClient {
     http: reqwest::Client,
     base_url: String,
@@ -29,7 +37,12 @@ pub struct AnthropicClient {
 impl AnthropicClient {
     pub fn new(api_key: impl Into<String>) -> AnthropicClient {
         AnthropicClient {
-            http: reqwest::Client::new(),
+            http: reqwest::Client::builder()
+                .connect_timeout(CONNECT_TIMEOUT)
+                .read_timeout(READ_TIMEOUT)
+                .tcp_keepalive(std::time::Duration::from_secs(30))
+                .build()
+                .expect("client construction is infallible with these options"),
             base_url: DEFAULT_BASE_URL.to_string(),
             api_key: api_key.into(),
             model: DEFAULT_MODEL.to_string(),
@@ -55,25 +68,50 @@ impl Model for AnthropicClient {
         on_delta: &mut (dyn FnMut(&str) + Send),
     ) -> Result<ModelTurn> {
         let body = request_body(&self.model, req);
-        let response = self
-            .http
-            .post(format!("{}/v1/messages", self.base_url))
-            .header("x-api-key", &self.api_key)
-            .header("anthropic-version", ANTHROPIC_VERSION)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| AssistantError::Api(format!("request failed: {e}")))?;
-
-        let status = response.status();
-        if !status.is_success() {
-            let detail = response.text().await.unwrap_or_default();
-            let message = serde_json::from_str::<Value>(&detail)
-                .ok()
-                .and_then(|v| v["error"]["message"].as_str().map(str::to_string))
-                .unwrap_or(detail);
-            return Err(AssistantError::Api(format!("{status}: {message}")));
-        }
+        // Retries happen only here, before any delta has been emitted:
+        // once streaming starts, a broken stream is a broken exchange.
+        let mut attempt = 0;
+        let response = loop {
+            attempt += 1;
+            let sent = self
+                .http
+                .post(format!("{}/v1/messages", self.base_url))
+                .header("x-api-key", &self.api_key)
+                .header("anthropic-version", ANTHROPIC_VERSION)
+                .json(&body)
+                .send()
+                .await;
+            let response = match sent {
+                Ok(r) => r,
+                Err(e) => match backoff(None, attempt, None) {
+                    Some(delay) => {
+                        tokio::time::sleep(delay).await;
+                        continue;
+                    }
+                    None => return Err(AssistantError::Api(format!("request failed: {e}"))),
+                },
+            };
+            let status = response.status();
+            if status.is_success() {
+                break response;
+            }
+            let retry_after = response
+                .headers()
+                .get("retry-after")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.trim().parse::<u64>().ok());
+            match backoff(Some(status.as_u16()), attempt, retry_after) {
+                Some(delay) => tokio::time::sleep(delay).await,
+                None => {
+                    let detail = response.text().await.unwrap_or_default();
+                    let message = serde_json::from_str::<Value>(&detail)
+                        .ok()
+                        .and_then(|v| v["error"]["message"].as_str().map(str::to_string))
+                        .unwrap_or(detail);
+                    return Err(AssistantError::Api(format!("{status}: {message}")));
+                }
+            }
+        };
 
         let mut frames = SseFrames::default();
         let mut assembler = Assembler::default();
@@ -94,6 +132,36 @@ impl Model for AnthropicClient {
         }
         assembler.finish()
     }
+}
+
+/// Attempts before giving up, counting the first.
+const MAX_ATTEMPTS: usize = 3;
+
+/// The retry decision, pure so it is testable without a network: whether
+/// this failure warrants another attempt and after how long. `status` is
+/// `None` for a transport failure (connect refused, reset before headers)
+/// — those never emitted a delta either, so they are equally safe to
+/// retry. 4xx other than 429 means the request itself is wrong; retrying
+/// would re-send the same mistake.
+fn backoff(
+    status: Option<u16>,
+    attempt: usize,
+    retry_after_secs: Option<u64>,
+) -> Option<std::time::Duration> {
+    if attempt >= MAX_ATTEMPTS {
+        return None;
+    }
+    let retryable = match status {
+        None => true,
+        Some(429) => true,
+        Some(s) => (500..=599).contains(&s), // 529 overloaded included
+    };
+    if !retryable {
+        return None;
+    }
+    // Honour retry-after within reason; otherwise exponential from 1 s.
+    let secs = retry_after_secs.unwrap_or(1 << (attempt - 1)).min(30);
+    Some(std::time::Duration::from_secs(secs))
 }
 
 // ------------------------------------------------------------- requests --
@@ -634,6 +702,33 @@ mod tests {
         let a = Assembler::default();
         let e = a.finish().unwrap_err();
         assert!(e.to_string().contains("without a stop reason"), "{e}");
+    }
+
+    /// The retry policy in one table: what retries, what doesn't, and for
+    /// how long. The loop around it is the thin IO remainder, exercised by
+    /// evals and real use per the charter.
+    #[test]
+    fn retries_are_bounded_backed_off_and_honour_retry_after() {
+        use std::time::Duration;
+
+        // Transport failures and 429/5xx retry, with exponential backoff.
+        assert_eq!(backoff(None, 1, None), Some(Duration::from_secs(1)));
+        assert_eq!(backoff(Some(429), 1, None), Some(Duration::from_secs(1)));
+        assert_eq!(backoff(Some(529), 2, None), Some(Duration::from_secs(2)));
+        assert_eq!(backoff(Some(500), 2, None), Some(Duration::from_secs(2)));
+
+        // retry-after is honoured, but never past the cap.
+        assert_eq!(backoff(Some(429), 1, Some(7)), Some(Duration::from_secs(7)));
+        assert_eq!(backoff(Some(429), 1, Some(3600)), Some(Duration::from_secs(30)));
+
+        // The budget is bounded: the last attempt's failure is final.
+        assert_eq!(backoff(Some(429), MAX_ATTEMPTS, None), None);
+        assert_eq!(backoff(None, MAX_ATTEMPTS, None), None);
+
+        // A request the server rejected as wrong stays rejected.
+        assert_eq!(backoff(Some(400), 1, None), None);
+        assert_eq!(backoff(Some(401), 1, None), None);
+        assert_eq!(backoff(Some(404), 1, None), None);
     }
 
     #[test]

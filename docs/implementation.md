@@ -1,6 +1,6 @@
 # Implementation plan
 
-*Last updated: 2026-08-01 (schema-change policy, after the first whole-codebase audit). Companion to [design.md](design.md); this document
+*Last updated: 2026-08-02 (model-path hardening: framer, deadlines, retries). Companion to [design.md](design.md); this document
 covers the technical shape and build order. Decisions here resolve the "Open
 questions" section of the design doc.*
 
@@ -158,9 +158,16 @@ Settled 2026-07-29, at M3 build start:
   to export paths.
 - **Anthropic client.** Hand-rolled over `reqwest` (rustls); pinned
   `anthropic-version: 2023-06-01`; streaming SSE with an incremental
-  framer and turn assembler (both pure, unit-tested); `cache_control`
-  markers on the system block and last tool; image content blocks mapped
-  and ready for M5. Default model `claude-opus-5`, overridable
+  framer (byte-oriented, line-ending-agnostic, bounded buffer) and turn
+  assembler (both pure, unit-tested); `cache_control` markers on the
+  system block and last tool; image content blocks mapped and ready for
+  M5. Connect and between-chunk read timeouts, so a blackholed
+  connection fails instead of hanging the stream; 429/5xx and transport
+  failures retry with bounded backoff honouring `retry-after`, only
+  before the first delta — the retry decision is a pure function, the
+  loop around it is the thin IO remainder. The server builds the client
+  once at startup and clones it per exchange, sharing one connection
+  pool. Default model `claude-opus-5`, overridable
   (`mise chat --model`, `services.mise.model`).
 - **Surfaces.** CLI: `mise chat "…" [--page recipe/x]` streams text to
   stdout and tool activity to stderr. Server: `POST /chat` (bearer-authed)

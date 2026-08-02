@@ -17,7 +17,7 @@ use serde_json::json;
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::{info, warn};
 
-use crate::{AppState, ChatConfig, ChatRequest};
+use crate::{AppState, ChatRequest};
 
 type Tx = UnboundedSender<Event>;
 
@@ -28,11 +28,11 @@ fn send(tx: &Tx, event: &str, data: serde_json::Value) {
 
 pub(crate) async fn drive(
     state: AppState,
-    config: std::sync::Arc<ChatConfig>,
+    client: AnthropicClient,
     request: ChatRequest,
     tx: Tx,
 ) {
-    match exchange(&state, &config, &request, &tx).await {
+    match exchange(&state, client, &request, &tx).await {
         Ok(()) => {}
         Err(e) => {
             warn!("chat exchange failed: {e}");
@@ -43,7 +43,7 @@ pub(crate) async fn drive(
 
 async fn exchange(
     state: &AppState,
-    config: &ChatConfig,
+    mut client: AnthropicClient,
     request: &ChatRequest,
     tx: &Tx,
 ) -> Result<()> {
@@ -85,9 +85,6 @@ async fn exchange(
         (system, history)
     };
 
-    let mut client =
-        AnthropicClient::new(config.api_key.clone()).with_model(config.model.clone());
-    client = client.with_base_url(config.base_url.clone());
     let mut turn = Turn::new(system, history);
     let mut fetcher = mise_assistant::fetch::HttpFetch::new();
     let mut tools_used: Vec<String> = Vec::new();
