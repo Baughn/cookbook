@@ -107,6 +107,33 @@ fn devices_join_edit_offline_and_converge() {
     assert!(out.contains("already in sync"), "{out}");
 }
 
+/// A join whose first sync fails (bad token, server down) leaves a bare
+/// corpus with no documents. That must be retryable — `init --from` again
+/// with the problem fixed — not a dead end where every command says
+/// "no such document: state" and re-init says "already initialized".
+#[test]
+fn a_failed_join_can_be_retried() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = spawn_server(dir.path());
+    let root = dir.path().join("c");
+
+    let out = Command::new(env!("CARGO_BIN_EXE_mise"))
+        .arg("--root")
+        .arg(&root)
+        .args(["init", "--from", &url, "--token", "wrong-token-9876543210zyxwvu"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "a bad token must fail the join");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("init --from"), "the error names the recovery: {stderr}");
+
+    // Same command, right token: the half-joined root is picked up and
+    // the first sync retried.
+    let out = mise(&root, &["init", "--from", &url, "--token", TOKEN]);
+    assert!(out.contains("joined corpus"), "{out}");
+    mise(&root, &["queue"]);
+}
+
 #[test]
 fn sync_without_remote_fails_helpfully() {
     let dir = tempfile::tempdir().unwrap();

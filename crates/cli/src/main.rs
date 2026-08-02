@@ -328,9 +328,23 @@ fn main() -> Result<()> {
         Cmd::Init { from: Some(url), token, token_file, .. } => {
             let token = read_token(token, token_file)?;
             let url = remote::normalize_url(&url)?;
-            let mut store = Store::create_bare(&root)?;
+            let mut store = match Store::create_bare(&root) {
+                Ok(store) => store,
+                // A bare corpus with no state doc is a join whose first
+                // sync died; the fix is retrying, not "already
+                // initialized".
+                Err(create_err) => match Store::open(&root) {
+                    Ok(store) if !store.exists(&DocId::State)? => store,
+                    _ => return Err(create_err.into()),
+                },
+            };
             remote::save(&root, &remote::Remote { url: url.clone(), token: token.clone() })?;
-            let outcome = remote::sync(&mut store, &url, &token)?;
+            let outcome = remote::sync(&mut store, &url, &token).with_context(|| {
+                format!(
+                    "joined, but the first sync failed — fix the URL or token and run \
+                     `mise init --from {url}` again"
+                )
+            })?;
             store.export("sync: joined corpus")?;
             println!(
                 "joined corpus at {} from {url}: {}",

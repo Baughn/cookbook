@@ -70,9 +70,14 @@ pub fn normalize_url(url: &str) -> Result<String> {
     } else {
         bail!("server URL must start with ws://, wss://, http://, or https://");
     };
+    // Trim trailing slashes *before* deciding whether a path was given:
+    // "https://host/" is a bare host with copy-paste residue, not a
+    // request for the server's root — and the value is saved, so getting
+    // this wrong makes every later sync 404.
+    let url = url.trim_end_matches('/');
     let after_scheme = url.split_once("://").expect("checked above").1;
     Ok(if after_scheme.contains('/') {
-        url.trim_end_matches('/').to_string()
+        url.to_string()
     } else {
         format!("{url}/sync")
     })
@@ -167,6 +172,25 @@ mod tests {
 
     fn remote() -> Remote {
         Remote { url: "wss://cook.example.com/sync".into(), token: "0123456789abcdef".into() }
+    }
+
+    /// Trailing slashes are what browsers and copy-paste produce, and the
+    /// normalized value is *saved* — a bad one makes every later sync 404.
+    #[test]
+    fn urls_normalize_with_and_without_trailing_slashes() {
+        for (given, want) in [
+            ("https://cook.example.com", "wss://cook.example.com/sync"),
+            ("https://cook.example.com/", "wss://cook.example.com/sync"),
+            ("https://cook.example.com/sync", "wss://cook.example.com/sync"),
+            ("https://cook.example.com/sync/", "wss://cook.example.com/sync"),
+            ("http://127.0.0.1:7920", "ws://127.0.0.1:7920/sync"),
+            ("http://127.0.0.1:7920/", "ws://127.0.0.1:7920/sync"),
+            ("ws://host/custom/path", "ws://host/custom/path"),
+            ("ws://host/custom/path/", "ws://host/custom/path"),
+        ] {
+            assert_eq!(normalize_url(given).unwrap(), want, "from {given:?}");
+        }
+        assert!(normalize_url("ftp://host").is_err());
     }
 
     #[test]
