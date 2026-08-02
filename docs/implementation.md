@@ -247,7 +247,10 @@ Settled 2026-07-30, after M4 (planning M5 and beyond):
   when present (most recipe sites; exact ingredients/steps, zero life
   story), else Readability extraction (`dom_smoothie`) rendered to
   Markdown (`htmd`). Size cap, timeout, http(s) only, private ranges
-  blocked. The pipeline is deterministic — fixture-HTML tests in the
+  blocked; the network timeout covers the fetch, and extraction runs
+  separately on a blocking thread under its own deadline — Readability
+  is superlinear in DOM depth, so the byte cap bounds bytes, not work.
+  The pipeline is deterministic — fixture-HTML tests in the
   suite; draft quality from messy pages is an eval.
 - **Header nav and a real cookbook page.** Persistent nav: Queue,
   Cookbook, the active location's standing pages (equipment, pantry).

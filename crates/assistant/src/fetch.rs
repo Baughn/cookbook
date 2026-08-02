@@ -31,9 +31,42 @@ pub async fn execute_fetch<F: Fetch>(fetch: &mut F, call: &ToolCall) -> ToolOutc
         Ok(()) => {}
         Err(e) => return done(e, true),
     }
-    match fetch.fetch(url).await.and_then(|html| extract::extract(&html, url)) {
+    let html = match fetch.fetch(url).await {
+        Ok(html) => html,
+        Err(e) => return done(e, true),
+    };
+    let target = url.to_string();
+    match run_with_deadline(EXTRACT_DEADLINE, move || extract::extract(&html, &target)).await {
         Ok(md) => done(md, false),
         Err(e) => done(e, true),
+    }
+}
+
+/// Extraction's time budget. The fetch's own 20 s covers only the network;
+/// Readability is superlinear in DOM depth, and the byte cap bounds bytes,
+/// not work — a small, deeply nested page can grind for minutes.
+const EXTRACT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Run extraction work on a blocking thread under a deadline, so a
+/// pathological page neither stalls the async runtime driving the
+/// exchange nor holds the exchange open past its budget. On timeout the
+/// worker is left to finish in the background (CPU work can't be
+/// cancelled); the model gets an error result and the exchange moves on.
+async fn run_with_deadline<F>(
+    deadline: std::time::Duration,
+    work: F,
+) -> std::result::Result<String, String>
+where
+    F: FnOnce() -> std::result::Result<String, String> + Send + 'static,
+{
+    let work = tokio::task::spawn_blocking(work);
+    match tokio::time::timeout(deadline, work).await {
+        Ok(Ok(result)) => result,
+        Ok(Err(join)) => Err(format!("extraction failed: {join}")),
+        Err(_) => Err(format!(
+            "page too complex to extract within {}s — try another source",
+            deadline.as_secs(),
+        )),
     }
 }
 
@@ -166,6 +199,28 @@ impl Fetch for HttpFetch {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The motivating page is one paragraph in thousands of nested divs —
+    /// Readability's work is superlinear in DOM depth, so the 2 MB byte
+    /// cap bounds bytes but not work. The deadline mechanism is what's
+    /// under test; the work is injected so the suite doesn't have to burn
+    /// minutes of real Readability time to prove the cutoff.
+    #[tokio::test]
+    async fn overrunning_extraction_times_out_instead_of_stalling_the_exchange() {
+        let err = run_with_deadline(std::time::Duration::from_millis(20), || {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            Ok("never seen".into())
+        })
+        .await
+        .unwrap_err();
+        assert!(err.contains("too complex"), "{err}");
+
+        // Work that fits its budget flows through untouched.
+        let ok = run_with_deadline(std::time::Duration::from_secs(5), || Ok("article".into()))
+            .await
+            .unwrap();
+        assert_eq!(ok, "article");
+    }
 
     #[test]
     fn url_policy_rejects_the_obvious() {
