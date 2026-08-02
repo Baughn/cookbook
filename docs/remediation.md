@@ -106,6 +106,8 @@ Five findings are deliberately out of scope and scheduled after M7 (recorded in
 - [ ] The assistant can see recipe status — #38
 - [ ] Edits change only the fields they name — #42, #43
 - [ ] Provenance and lead time are asserted, not assumed — #44, #6
+- [x] A failed apply survives the batch — #71 *(scheduled here: the fix reuses
+  the shared-corpus e2e flow this phase repairs)*
 - [ ] The e2e suite can actually fail — #79, #80, #82
 
 ## Done when

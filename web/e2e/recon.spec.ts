@@ -97,3 +97,57 @@ test('photo → proposal → tap → correction → revised proposal', async ({ 
 	await expect(page.getByRole('heading', { name: 'Thread' })).toBeVisible();
 	await expect(page.getByLabel('recon proposal')).toHaveCount(0);
 });
+
+test('a mid-batch failure survives Apply all and the line can be retried', async ({ page }) => {
+	await enter(page, '/page/locations/home/pantry');
+	await expect(page.getByRole('heading', { name: 'Thread' })).toBeVisible();
+
+	// The previous spec (when it ran — the corpus is shared) left miso
+	// `out`, which would pre-apply its proposal line: reset it so the
+	// photo draws two tappable lines. On a fresh corpus miso doesn't
+	// exist yet and there is nothing to reset.
+	await page.getByRole('button', { name: 'Edit', exact: true }).click();
+	await expect(page.getByPlaceholder('New item', { exact: false })).toBeVisible();
+	if (await page.getByLabel('presence of miso').count()) {
+		await page.getByLabel('presence of miso').selectOption('have');
+		// A reload proves the change persisted server-side.
+		await page.reload();
+		await page.getByRole('button', { name: 'Edit', exact: true }).click();
+		await expect(page.getByLabel('presence of miso')).toHaveValue('have');
+	}
+
+	await page.getByLabel('shelf photo').setInputFiles({
+		name: 'shelf.png',
+		mimeType: 'image/png',
+		buffer: PNG
+	});
+	await page.getByPlaceholder('Snap the shelf', { exact: false }).fill('the shelf again');
+	await page.getByRole('button', { name: 'Send' }).click();
+	const card = page.getByLabel('recon proposal');
+	await expect(card.getByLabel('apply miso out')).toBeVisible();
+	await expect(card.getByLabel('apply rice have')).toBeVisible();
+
+	// miso's pantry-set fails; rice's succeeds. The batch runs in line
+	// order (miso first), so the success lands *after* the failure — the
+	// case where a loop that resets its banner per line shows two ✓s, no
+	// error, and a pantry still claiming miso is on the shelf.
+	await page.route('**/api/edit/pantry-set', async (route) => {
+		if (route.request().postDataJSON()?.item === 'miso') {
+			await route.fulfill({ status: 500, contentType: 'text/plain', body: 'boom' });
+		} else {
+			await route.continue();
+		}
+	});
+	await card.getByRole('button', { name: /Apply all/ }).click();
+
+	await expect(card.getByLabel('applied rice')).toBeVisible();
+	await expect(card.getByLabel('failed miso')).toBeVisible();
+	await expect(card.getByText('1 of 2 applied', { exact: false })).toBeVisible();
+	// The failed line keeps its Apply button: the fix is one tap away.
+	await expect(card.getByLabel('apply miso out')).toBeVisible();
+
+	// And once the server recovers, that tap completes the proposal.
+	await page.unroute('**/api/edit/pantry-set');
+	await card.getByLabel('apply miso out').click();
+	await expect(card.getByText('✓ All applied.')).toBeVisible();
+});
