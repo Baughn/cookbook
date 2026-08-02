@@ -123,16 +123,18 @@ impl Readiness {
     }
 }
 
-/// If you act now, when could this be on the table?
+/// If you act now, when could this be on the table? Clamped to the calendar's
+/// edge when the sum is not representable — the lead is always positive, so
+/// an add can only overflow forward.
 pub fn ready_at(now: DateTime, lead: &LeadTime) -> DateTime {
-    now.saturating_add(lead.duration())
+    now.checked_add(lead.span()).unwrap_or(DateTime::MAX)
 }
 
 /// To eat at `target`, when is the act-now step due? The defining identity —
 /// ready at `t` with lead `L` ⟺ act-now step due at `t − L` — is a property
 /// test in `tests/properties.rs`.
 pub fn act_by(target: DateTime, lead: &LeadTime) -> DateTime {
-    target.saturating_sub(lead.duration())
+    target.checked_sub(lead.span()).unwrap_or(DateTime::MIN)
 }
 
 #[cfg(test)]

@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 940c3a32e451716d3f4117d973ae0ef581068660c6deb2a28ff0156ca9ba5007 # shrinks to fridge = [], freezer = [Portion { dish: "leftovers", servings: 7304476, date: 2000-01-01 }], headcount = 1, today = 2000-01-01, extra = Portion { dish: "leftovers", servings: 9, date: 2000-01-01 }
+cc 5ba87823b706f417d3d282e43738236bd7a202c002a249a619a5e91d95608e86 # shrinks to act = 2000-01-01T00:00:00, target = 2000-01-01T00:00:00, lead = LeadTime { minutes: 4223370241, act_now_step: "act now" }

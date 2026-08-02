@@ -338,6 +338,46 @@ fn reads_and_search() {
     assert!(none.contains("no matches"), "{none}");
 }
 
+/// Provenance is the trust model's central invariant — every assistant edit
+/// records which conversation made it, and every mutating tool threads
+/// `ctx.msg` by hand. A copy-paste that dropped it would pass every doc-state
+/// assertion in this file, so the history itself is checked: one
+/// representative mutation per doc kind, each change carrying the
+/// conversation prefix and the exchange's timestamp.
+#[test]
+fn every_tool_edit_records_provenance() {
+    let (_dir, mut store) = fresh();
+    seed_recipe(&mut store);
+    let home = || Slug::new("home").unwrap();
+    let cases: Vec<(&str, Value, DocId)> = vec![
+        (
+            "recipe_edit",
+            json!({"slug": "mapo-tofu", "servings": 6}),
+            DocId::Recipe(Slug::new("mapo-tofu").unwrap()),
+        ),
+        ("queue_add", json!({"title": "Mapo tofu"}), DocId::Queue),
+        ("queue_add", json!({"title": "Croissants", "someday": true}), DocId::Someday),
+        ("pantry_set", json!({"item": "doubanjiang"}), DocId::Pantry(home())),
+        ("equipment_set", json!({"item": "wok"}), DocId::Equipment(home())),
+        ("fridge_add", json!({"dish": "leftovers", "servings": 2}), DocId::Fridge(home())),
+        ("shopping_add", json!({"text": "duck legs"}), DocId::Shopping),
+        ("steering_set", json!({"key": "yeast", "note": "beyond sourdough"}), DocId::Steering),
+        ("facts_set", json!({"key": "grinder", "fact": "hates cleaning it"}), DocId::Facts),
+    ];
+    for (tool, input, doc) in cases {
+        ok(&mut store, tool, input);
+        let history = store.history(&doc).unwrap();
+        let last = history.last().unwrap_or_else(|| panic!("{tool}: no history on {doc:?}"));
+        assert!(
+            last.message.starts_with("planning thread: "),
+            "{tool} wrote {:?} without conversation provenance",
+            last.message
+        );
+        let expected = now().to_zoned(TimeZone::UTC).unwrap().timestamp();
+        assert_eq!(last.time, Some(expected), "{tool} did not stamp the change time");
+    }
+}
+
 /// Status has real semantics — drafts stay out of rotation, retired means
 /// out of rotation and the browse surface — so the model must be able to
 /// see it without a read_page per recipe.

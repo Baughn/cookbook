@@ -7,7 +7,6 @@ use std::fmt;
 use std::num::NonZeroU32;
 use std::str::FromStr;
 
-use jiff::SignedDuration;
 use jiff::civil::Date;
 use serde::{Deserialize, Serialize};
 
@@ -144,8 +143,15 @@ pub struct LeadTime {
 }
 
 impl LeadTime {
-    pub fn duration(&self) -> SignedDuration {
-        SignedDuration::from_mins(i64::from(self.minutes.get()))
+    /// As a jiff `Span` of minutes — not a `SignedDuration`: jiff's duration
+    /// arithmetic on civil datetimes pre-checks the duration's day count
+    /// against the whole calendar range and rejects some representable sums,
+    /// which broke the lead-time round-trip identity at extreme leads. Spans
+    /// admit ~20k years of minutes, so any u32 count fits.
+    pub fn span(&self) -> jiff::Span {
+        jiff::Span::new()
+            .try_minutes(i64::from(self.minutes.get()))
+            .expect("u32 minutes always fit in a Span")
     }
 }
 

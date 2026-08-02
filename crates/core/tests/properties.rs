@@ -94,6 +94,26 @@ fn arb_lead() -> impl Strategy<Value = LeadTime> {
     })
 }
 
+/// The whole civil range, weighted toward the calendar's edges — saturation
+/// is exactly the regime a household-sized generator never reaches.
+fn arb_datetime_full() -> impl Strategy<Value = DateTime> {
+    let edge_year = prop_oneof![(-9999i16..=-9900), (9900i16..=9999)];
+    prop_oneof![
+        3 => arb_datetime(),
+        2 => (edge_year, 1i8..=12, 1i8..=28, 0i8..24, 0i8..60)
+            .prop_map(|(y, mo, d, h, mi)| Date::new(y, mo, d).unwrap().at(h, mi, 0, 0)),
+    ]
+}
+
+/// From minutes to millennia: u32::MAX minutes is ~8000 years, enough to
+/// push either lead-time function past the calendar's edge.
+fn arb_lead_full() -> impl Strategy<Value = LeadTime> {
+    prop_oneof![3 => 1u32..=20_160, 1 => 1u32..=u32::MAX].prop_map(|m| LeadTime {
+        minutes: NonZeroU32::new(m).unwrap(),
+        act_now_step: "act now".into(),
+    })
+}
+
 fn arb_recipe() -> impl Strategy<Value = RecipeMeta> {
     (
         vec((proptest::option::of(ing_slug()),), 0..8),
@@ -219,20 +239,44 @@ proptest! {
         );
     }
 
-    /// The defining lead-time identity: ready at `t` with lead `L` ⟺ the
-    /// act-now step is due at `t − L`, exactly, in both directions.
+    /// The defining lead-time identity, stated as the spec means it: the
+    /// dish can be on the table by `target` iff you act by the act-now
+    /// deadline. Asserted over the functions' outputs — never by
+    /// recomputing `t ± L`, which is the implementation's own formula and
+    /// cannot fail when the implementation is wrong. At the calendar's
+    /// edge the functions clamp instead of panicking, and the identity
+    /// holds exactly everywhere the arithmetic is representable.
     #[test]
     fn lead_time_is_consistent_under_time_shift(
-        t in arb_datetime(),
-        lead in arb_lead(),
+        act in arb_datetime_full(),
+        target in arb_datetime_full(),
+        lead in arb_lead_full(),
     ) {
-        let act = readiness::act_by(t, &lead);
-        prop_assert_eq!(act, t.checked_sub(lead.duration()).unwrap());
-        prop_assert_eq!(readiness::ready_at(act, &lead), t);
-        prop_assert_eq!(
-            readiness::ready_at(t, &lead),
-            t.checked_add(lead.duration()).unwrap()
-        );
+        let ready = readiness::ready_at(act, &lead);
+        let deadline = readiness::act_by(target, &lead);
+
+        // Saturation is visible in the outputs: a clamped result sits
+        // exactly on the calendar's edge. (An unclamped result can land
+        // there too; skipping that measure-zero case is conservative.)
+        if ready < DateTime::MAX && deadline > DateTime::MIN {
+            prop_assert_eq!(
+                ready <= target,
+                act <= deadline,
+                "ready_at({:?}) = {:?}, act_by({:?}) = {:?}",
+                act, ready, target, deadline,
+            );
+        }
+        // The functions are inverses wherever the result is representable:
+        if ready < DateTime::MAX {
+            prop_assert_eq!(readiness::act_by(ready, &lead), act);
+        }
+        if deadline > DateTime::MIN {
+            prop_assert_eq!(readiness::ready_at(deadline, &lead), target);
+        }
+        // Past the edge they clamp monotonically instead of panicking.
+        let (lo, hi) = if act <= target { (act, target) } else { (target, act) };
+        prop_assert!(readiness::ready_at(lo, &lead) <= readiness::ready_at(hi, &lead));
+        prop_assert!(readiness::act_by(lo, &lead) <= readiness::act_by(hi, &lead));
     }
 
     /// Coverage counts dinners: floor(servings / headcount), runs out exactly
