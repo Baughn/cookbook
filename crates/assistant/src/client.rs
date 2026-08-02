@@ -166,9 +166,12 @@ fn backoff(
 
 // ------------------------------------------------------------- requests --
 
-/// Our seam types → the Messages API body. The system prompt and the tool
-/// list get `cache_control` markers: they are the stable prefix, and the
-/// conversation tail is what varies turn to turn.
+/// Our seam types → the Messages API body. Three `cache_control` markers:
+/// the system prompt, the last tool, and the tail of the message list.
+/// The first two cover the stable prefix; the third is re-planted on every
+/// request because *within* an exchange the tail is append-only — each of
+/// up to MAX_TOOL_ROUNDS re-sends every prior turn and tool result, which
+/// is exactly what is worth caching.
 fn request_body(model: &str, req: &TurnRequest) -> Value {
     let mut tools: Vec<Value> = req
         .tools
@@ -184,6 +187,14 @@ fn request_body(model: &str, req: &TurnRequest) -> Value {
     if let Some(last) = tools.last_mut() {
         last["cache_control"] = json!({"type": "ephemeral"});
     }
+    let mut messages: Vec<Value> = req.messages.iter().map(message_json).collect();
+    if let Some(block) = messages
+        .last_mut()
+        .and_then(|m| m["content"].as_array_mut())
+        .and_then(|blocks| blocks.last_mut())
+    {
+        block["cache_control"] = json!({"type": "ephemeral"});
+    }
     json!({
         "model": model,
         "max_tokens": MAX_TOKENS,
@@ -194,7 +205,7 @@ fn request_body(model: &str, req: &TurnRequest) -> Value {
             "cache_control": {"type": "ephemeral"},
         }],
         "tools": tools,
-        "messages": req.messages.iter().map(message_json).collect::<Vec<_>>(),
+        "messages": messages,
     })
 }
 
@@ -338,6 +349,11 @@ enum Partial {
     ToolUse { id: String, name: String, input_json: String },
     Thinking { thinking: String, signature: String },
     Redacted { data: String },
+    /// A block type this build doesn't know. Kept as a placeholder so block
+    /// indices stay aligned, dropped at finish. One policy for all unknowns:
+    /// skip and warn, like unknown SSE events — API drift must not take down
+    /// live exchanges. Hard errors are reserved for structurally broken data.
+    Unknown,
 }
 
 impl Assembler {
@@ -372,7 +388,8 @@ impl Assembler {
                         data: block["data"].as_str().unwrap_or_default().to_string(),
                     }),
                     other => {
-                        return Err(bad(&format!("unsupported content block {other:?}")));
+                        eprintln!("mise: skipping unknown content block {other:?} from the model API");
+                        self.blocks.push(Partial::Unknown);
                     }
                 }
                 Ok(None)
@@ -401,7 +418,24 @@ impl Assembler {
                             .push_str(data["delta"]["signature"].as_str().unwrap_or_default());
                         Ok(None)
                     }
-                    (_, other) => Err(bad(&format!("delta {other:?} for current block"))),
+                    // Deltas addressed to a block we're skipping are skipped
+                    // with it, whatever their type.
+                    (Partial::Unknown, _) => Ok(None),
+                    // A *known* delta kind on the wrong block is structurally
+                    // broken data — the stream is lying about its own shape.
+                    (
+                        _,
+                        other @ Some(
+                            "text_delta" | "input_json_delta" | "thinking_delta"
+                            | "signature_delta",
+                        ),
+                    ) => Err(bad(&format!("delta {other:?} for current block"))),
+                    // An unknown delta kind (a future citations_delta, say)
+                    // degrades like an unknown SSE event: skip and warn.
+                    (_, other) => {
+                        eprintln!("mise: ignoring unknown delta {other:?} from the model API");
+                        Ok(None)
+                    }
                 }
             }
             "message_delta" => {
@@ -456,6 +490,7 @@ impl Assembler {
                     ContentBlock::Thinking { thinking, signature }
                 }
                 Partial::Redacted { data } => ContentBlock::RedactedThinking { data },
+                Partial::Unknown => continue,
             });
         }
         Ok(ModelTurn { content, stop })
@@ -777,5 +812,67 @@ mod tests {
         assert_eq!(body["messages"][2]["content"][0]["type"], "tool_result");
         assert_eq!(body["messages"][2]["content"][0]["is_error"], false);
         assert_eq!(body["messages"][2]["content"][1]["source"]["media_type"], "image/jpeg");
+
+        // Within an exchange the tail is append-only — every tool round
+        // re-sends the whole conversation — so the last block of the last
+        // message is the third breakpoint. Only that one: earlier blocks
+        // ride inside the prefix it closes.
+        assert_eq!(body["messages"][2]["content"][1]["cache_control"]["type"], "ephemeral");
+        assert!(body["messages"][2]["content"][0].get("cache_control").is_none());
+        assert!(body["messages"][0]["content"][0].get("cache_control").is_none());
+    }
+
+    /// A future block type (say, a citations container) must degrade like an
+    /// unknown SSE event does — skipped, indices aligned — not take down a
+    /// live user exchange. Hard errors stay reserved for structurally broken
+    /// data, tested below.
+    #[test]
+    fn an_unknown_block_type_is_skipped_not_fatal() {
+        let mut a = Assembler::default();
+        feed(&mut a, "content_block_start", r#"{"content_block":{"type":"citations_box"}}"#);
+        // Deltas addressed to the skipped block are skipped with it,
+        // whatever their type.
+        feed(&mut a, "content_block_delta", r#"{"delta":{"type":"citations_delta","c":"x"}}"#);
+        feed(&mut a, "content_block_delta", r#"{"delta":{"type":"text_delta","text":"lost"}}"#);
+        feed(&mut a, "content_block_stop", "{}");
+        feed(&mut a, "content_block_start", r#"{"content_block":{"type":"text","text":""}}"#);
+        feed(&mut a, "content_block_delta", r#"{"delta":{"type":"text_delta","text":"Dal."}}"#);
+        feed(&mut a, "message_delta", r#"{"delta":{"stop_reason":"end_turn"}}"#);
+
+        let turn = a.finish().unwrap();
+        assert_eq!(turn.content, vec![ContentBlock::Text { text: "Dal.".into() }]);
+    }
+
+    #[test]
+    fn an_unknown_delta_kind_on_a_known_block_is_ignored() {
+        let mut a = Assembler::default();
+        feed(&mut a, "content_block_start", r#"{"content_block":{"type":"text","text":""}}"#);
+        assert_eq!(
+            feed(&mut a, "content_block_delta", r#"{"delta":{"type":"citations_delta","c":"x"}}"#),
+            None,
+        );
+        assert_eq!(
+            feed(&mut a, "content_block_delta", r#"{"delta":{"type":"text_delta","text":"Dal."}}"#),
+            Some("Dal.".into()),
+            "the block keeps accumulating after the ignored delta",
+        );
+        feed(&mut a, "message_delta", r#"{"delta":{"stop_reason":"end_turn"}}"#);
+        let turn = a.finish().unwrap();
+        assert_eq!(turn.content, vec![ContentBlock::Text { text: "Dal.".into() }]);
+    }
+
+    /// The other half of the policy: a *known* delta kind addressed to the
+    /// wrong block is structurally broken data, and stays fatal.
+    #[test]
+    fn a_known_delta_on_the_wrong_block_is_still_fatal() {
+        let mut a = Assembler::default();
+        feed(&mut a, "content_block_start", r#"{"content_block":{"type":"text","text":""}}"#);
+        let e = a
+            .handle(&Frame {
+                event: "content_block_delta".into(),
+                data: r#"{"delta":{"type":"input_json_delta","partial_json":"{"}}"#.into(),
+            })
+            .unwrap_err();
+        assert!(e.to_string().contains("delta"), "{e}");
     }
 }

@@ -1,6 +1,6 @@
 # Implementation plan
 
-*Last updated: 2026-08-02 (model-path hardening: framer, deadlines, retries). Companion to [design.md](design.md); this document
+*Last updated: 2026-08-02 (client caching and unknown-block policy). Companion to [design.md](design.md); this document
 covers the technical shape and build order. Decisions here resolve the "Open
 questions" section of the design doc.*
 
@@ -170,8 +170,15 @@ Settled 2026-07-29, at M3 build start:
   `anthropic-version: 2023-06-01`; streaming SSE with an incremental
   framer (byte-oriented, line-ending-agnostic, bounded buffer) and turn
   assembler (both pure, unit-tested); `cache_control` markers on the
-  system block and last tool; image content blocks mapped and ready for
-  M5. Connect and between-chunk read timeouts, so a blackholed
+  system block, the last tool, and the message tail — the tail marker is
+  re-planted every request because within an exchange the conversation
+  is append-only and each tool round re-sends all of it; image content
+  blocks mapped and ready for M5. Unknown SSE events, block types, and
+  delta kinds all degrade the same way: skipped with a stderr warning
+  (a placeholder keeps block indices aligned), so API drift cannot take
+  down a live exchange — hard errors are reserved for structurally
+  broken data, like a `tool_use` without an id or a known delta kind on
+  the wrong block. Connect and between-chunk read timeouts, so a blackholed
   connection fails instead of hanging the stream; 429/5xx and transport
   failures retry with bounded backoff honouring `retry-after`, only
   before the first delta — the retry decision is a pure function, the
