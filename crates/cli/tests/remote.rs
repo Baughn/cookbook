@@ -221,6 +221,35 @@ fn a_push_only_sync_says_pushed_not_already_in_sync() {
     assert!(out.contains("already in sync"), "{out}");
 }
 
+/// #52: the WebSocket stack must have TLS compiled in, because `wss://` is the
+/// documented production topology (`normalize_url` maps `https://` → `wss://`;
+/// Caddy terminates TLS). Without a TLS feature, `connect_async` on a `wss://`
+/// URL fails immediately with `TlsFeatureNotEnabled` — never reaching the wire,
+/// and tempting a user to save a cleartext `ws://` URL that leaks the token.
+/// A plain server can't complete a TLS handshake, so the connect fails either
+/// way; the point is *how* — a real handshake/IO error, not "TLS not compiled".
+#[test]
+fn wss_attempts_a_real_tls_handshake_not_a_missing_feature() {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+
+    let dir = tempfile::tempdir().unwrap();
+    let url = spawn_server(dir.path()); // ws://<addr>
+    let wss = url.replacen("ws://", "wss://", 1);
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let err = rt.block_on(async {
+        let request = format!("{wss}/sync").into_client_request().unwrap();
+        tokio_tungstenite::connect_async(request)
+            .await
+            .expect_err("a plain server cannot complete a TLS handshake")
+    });
+    // The regression is the specific failure the bug produced.
+    assert!(
+        !err.to_string().contains("TLS support"),
+        "TLS is not compiled into the CLI WebSocket stack: {err}"
+    );
+}
+
 /// #31, at the surface it actually regressed: two devices each add a fridge
 /// portion while offline, and both survive the merge. Before the CLI routed
 /// through the tool, `mise fridge add` scanned for the lowest free `p<n>` in

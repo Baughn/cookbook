@@ -30,7 +30,10 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "str
 tower-http = { version = "0.6", features = ["fs", "set-header"] }
 axum = { version = "0.8", features = ["ws"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "signal", "time"] }
-tokio-tungstenite = "0.27"
+# rustls (not native-tls) to match reqwest above: wss:// is the documented
+# production topology (Caddy terminates TLS), and the default features carry no
+# TLS backend, so connect_async on a wss:// URL fails with TlsFeatureNotEnabled.
+tokio-tungstenite = { version = "0.27", features = ["rustls-tls-webpki-roots"] }
 futures-util = "0.3"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
