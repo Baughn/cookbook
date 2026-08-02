@@ -41,11 +41,13 @@ const textTurn = (text) =>
 	]);
 
 const fake = createServer((req, res) => {
-	let body = '';
-	req.on('data', (chunk) => (body += chunk));
+	// Accumulate bytes, decode once: `body += chunk` stringifies each chunk
+	// separately and tears any multi-byte character split across chunks.
+	const chunks = [];
+	req.on('data', (chunk) => chunks.push(chunk));
 	req.on('end', () => {
 		res.setHeader('content-type', 'text/event-stream');
-		const request = JSON.parse(body);
+		const request = JSON.parse(Buffer.concat(chunks).toString('utf8'));
 		const last = request.messages.at(-1);
 		const blocks = Array.isArray(last.content) ? last.content : [];
 		const afterTools = blocks.some((b) => b.type === 'tool_result');

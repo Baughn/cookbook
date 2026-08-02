@@ -81,10 +81,15 @@ impl Model for AnthropicClient {
         while let Some(chunk) = stream.next().await {
             let chunk =
                 chunk.map_err(|e| AssistantError::Api(format!("stream broke: {e}")))?;
-            for frame in frames.push(&chunk) {
+            for frame in frames.push(&chunk)? {
                 if let Some(delta) = assembler.handle(&frame)? {
                     on_delta(&delta);
                 }
+            }
+        }
+        for frame in frames.finish() {
+            if let Some(delta) = assembler.handle(&frame)? {
+                on_delta(&delta);
             }
         }
         assembler.finish()
@@ -168,36 +173,84 @@ struct Frame {
     data: String,
 }
 
-/// Incremental SSE framing: bytes in, complete events out. Handles events
-/// split anywhere across chunk boundaries.
+/// A stream that never yields a complete line cannot grow the buffer
+/// forever; well past any real event, the stream is declared broken.
+const MAX_SSE_BUF: usize = 16 * 1024 * 1024;
+
+/// Incremental SSE framing: bytes in, complete events out. Byte-oriented —
+/// chunks split mid-character stay bytes until a full line arrives, so
+/// multi-byte text survives any chunk boundary — and line-ending-agnostic
+/// (LF, CRLF, lone CR), since the client is explicitly designed to be
+/// pointed at proxies and fakes.
 #[derive(Default)]
 struct SseFrames {
-    buf: String,
+    buf: Vec<u8>,
+    event: String,
+    data: String,
 }
 
 impl SseFrames {
-    fn push(&mut self, chunk: &[u8]) -> Vec<Frame> {
-        self.buf.push_str(&String::from_utf8_lossy(chunk));
+    fn push(&mut self, chunk: &[u8]) -> Result<Vec<Frame>> {
+        self.buf.extend_from_slice(chunk);
         let mut frames = Vec::new();
-        while let Some(end) = self.buf.find("\n\n") {
-            let raw: String = self.buf.drain(..end + 2).collect();
-            let mut event = String::new();
-            let mut data = String::new();
-            for line in raw.lines() {
-                if let Some(v) = line.strip_prefix("event:") {
-                    event = v.trim().to_string();
-                } else if let Some(v) = line.strip_prefix("data:") {
-                    if !data.is_empty() {
-                        data.push('\n');
-                    }
-                    data.push_str(v.trim_start());
+        while let Some(line) = self.next_line() {
+            if line.is_empty() {
+                // Blank line: the event is complete.
+                if !self.event.is_empty() || !self.data.is_empty() {
+                    frames.push(Frame {
+                        event: std::mem::take(&mut self.event),
+                        data: std::mem::take(&mut self.data),
+                    });
                 }
+            } else if let Some(v) = line.strip_prefix("event:") {
+                self.event = v.trim().to_string();
+            } else if let Some(v) = line.strip_prefix("data:") {
+                if !self.data.is_empty() {
+                    self.data.push('\n');
+                }
+                self.data.push_str(v.trim_start());
             }
-            if !event.is_empty() || !data.is_empty() {
-                frames.push(Frame { event, data });
+        }
+        if self.buf.len() > MAX_SSE_BUF {
+            return Err(AssistantError::Api("SSE line overran the buffer cap".into()));
+        }
+        Ok(frames)
+    }
+
+    /// The stream is over: a held trailing `\r` was a lone terminator
+    /// after all, so resolve it and drain what completes. Anything still
+    /// unterminated — a partial line, an event with no closing blank
+    /// line — is discarded, as the SSE spec says it must be.
+    fn finish(&mut self) -> Vec<Frame> {
+        if self.buf.last() == Some(&b'\r') {
+            *self.buf.last_mut().expect("just checked") = b'\n';
+        }
+        let mut frames = Vec::new();
+        while let Some(line) = self.next_line() {
+            if line.is_empty() && (!self.event.is_empty() || !self.data.is_empty()) {
+                frames.push(Frame {
+                    event: std::mem::take(&mut self.event),
+                    data: std::mem::take(&mut self.data),
+                });
             }
         }
         frames
+    }
+
+    /// Pop one complete line off the buffer, if one has fully arrived.
+    /// Line terminators are ASCII, so a complete line is always complete
+    /// UTF-8. A `\r` as the final buffered byte is ambiguous — the `\n`
+    /// of a CRLF may still be in flight — so it waits for the next chunk.
+    fn next_line(&mut self) -> Option<String> {
+        let end = self.buf.iter().position(|b| matches!(b, b'\n' | b'\r'))?;
+        let skip = match self.buf[end] {
+            b'\r' if end + 1 == self.buf.len() => return None,
+            b'\r' if self.buf[end + 1] == b'\n' => 2,
+            _ => 1,
+        };
+        let line = String::from_utf8_lossy(&self.buf[..end]).into_owned();
+        self.buf.drain(..end + skip);
+        Some(line)
     }
 }
 
@@ -347,7 +400,7 @@ mod tests {
         let mut frames = SseFrames::default();
         let mut got = Vec::new();
         for b in raw.as_bytes() {
-            got.extend(frames.push(&[*b]));
+            got.extend(frames.push(&[*b]).unwrap());
         }
         assert_eq!(
             got,
@@ -357,6 +410,58 @@ mod tests {
                 Frame { event: "done".into(), data: "{\"b\":\n2}".into() },
             ],
         );
+    }
+
+    #[test]
+    fn sse_frames_refuse_a_stream_with_no_line_endings() {
+        let mut frames = SseFrames::default();
+        let chunk = vec![b'x'; 1024 * 1024];
+        let e = (0..17)
+            .find_map(|_| frames.push(&chunk).err())
+            .expect("an endless line must not grow the buffer forever");
+        assert!(e.to_string().contains("buffer cap"), "{e}");
+    }
+
+    #[test]
+    fn sse_frames_never_tear_multibyte_characters() {
+        // Real corpus text: accents, the project's own em dashes, CJK.
+        let payload = r#"{"text":"sauté — crème fraîche, æøå, 麻婆豆腐"}"#;
+        let raw = format!("event: content_block_delta\ndata: {payload}\n\n");
+        let mut frames = SseFrames::default();
+        let mut got = Vec::new();
+        // One byte at a time guarantees every multi-byte character is
+        // split across a chunk boundary somewhere.
+        for b in raw.as_bytes() {
+            got.extend(frames.push(&[*b]).unwrap());
+        }
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].data, payload, "no replacement characters, no dropped bytes");
+    }
+
+    #[test]
+    fn sse_frames_accept_any_line_ending() {
+        // The client is explicitly designed to be pointed at proxies and
+        // fakes; SSE permits CRLF, LF, and lone-CR line endings.
+        for ending in ["\n", "\r\n", "\r"] {
+            let raw = format!(
+                "event: message_start{ending}data: {{\"a\":1}}{ending}{ending}\
+                 event: done{ending}data: {{\"b\":{ending}data: 2}}{ending}{ending}"
+            );
+            let mut frames = SseFrames::default();
+            let mut got = Vec::new();
+            for chunk in raw.as_bytes().chunks(3) {
+                got.extend(frames.push(chunk).unwrap());
+            }
+            got.extend(frames.finish());
+            assert_eq!(
+                got,
+                vec![
+                    Frame { event: "message_start".into(), data: "{\"a\":1}".into() },
+                    Frame { event: "done".into(), data: "{\"b\":\n2}".into() },
+                ],
+                "with line ending {ending:?}",
+            );
+        }
     }
 
     fn feed(assembler: &mut Assembler, event: &str, data: &str) -> Option<String> {
