@@ -21,6 +21,34 @@ fn mise(root: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
+/// Removing an id that never existed must be an error naming the miss —
+/// not a success message that contradicts the git history (`modify`
+/// no-ops and commits nothing when the closure changed nothing).
+#[test]
+fn removing_what_was_never_there_is_an_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("corpus");
+    let root = root.as_path();
+    mise(root, &["init", "--location", "home", "--headcount", "2"]);
+
+    for args in [
+        &["queue", "remove", "not-there"][..],
+        &["pantry", "remove", "nope"],
+        &["equipment", "remove", "nothing"],
+        &["fridge", "remove", "p9"],
+    ] {
+        let out = Command::new(env!("CARGO_BIN_EXE_mise"))
+            .arg("--root")
+            .arg(root)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(!out.status.success(), "mise {args:?} claimed success");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(stderr.contains("no such"), "mise {args:?}: {stderr}");
+    }
+}
+
 #[test]
 fn init_populate_queue_export() {
     let dir = tempfile::tempdir().unwrap();

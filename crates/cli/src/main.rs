@@ -442,11 +442,14 @@ fn run(store: &mut Store, command: Cmd, root: &Path, now: Zoned) -> Result<()> {
         Cmd::Queue { cmd: Some(QueueCmd::Remove { id, someday }) } => {
             let doc_id = if someday { DocId::Someday } else { DocId::Queue };
             let msg = format!("cli: queue remove {id}");
-            let q = store.modify::<QueueDoc>(&doc_id, &msg, at, |q| {
-                q.entries.remove(&id);
+            // Presence is captured inside the closure: `modify` returns the
+            // post-mutation doc, where the entry is absent either way.
+            let mut found = false;
+            store.modify::<QueueDoc>(&doc_id, &msg, at, |q| {
+                found = q.entries.remove(&id).is_some();
             })?;
-            if q.entries.contains_key(&id) {
-                bail!("failed to remove {id}");
+            if !found {
+                bail!("no such queue entry {id}");
             }
             store.export(&msg)?;
             println!("removed {id}");
@@ -675,14 +678,18 @@ fn run_equipment(store: &mut Store, cmd: EquipmentCmd, at: jiff::Timestamp) -> R
         EquipmentCmd::Remove { item, location } => {
             let loc = resolve_location(store, location)?;
             let msg = format!("cli: equipment {loc}: remove {item}");
+            let mut found = false;
             store.modify::<mise_store::pages::EquipmentDoc>(
                 &DocId::Equipment(loc.clone()),
                 &msg,
                 at,
                 |e| {
-                    e.items.remove(&item);
+                    found = e.items.remove(&item).is_some();
                 },
             )?;
+            if !found {
+                bail!("no such equipment {item} at {loc}");
+            }
             store.export(&msg)?;
             println!("equipment {loc}: removed {item}");
             Ok(())
@@ -732,9 +739,13 @@ fn run_pantry(store: &mut Store, cmd: PantryCmd, today: Date, at: jiff::Timestam
         PantryCmd::Remove { item, location } => {
             let loc = resolve_location(store, location)?;
             let msg = format!("cli: pantry {loc}: remove {item}");
+            let mut found = false;
             store.modify::<mise_store::pages::PantryDoc>(&DocId::Pantry(loc.clone()), &msg, at, |p| {
-                p.items.remove(&item);
+                found = p.items.remove(&item).is_some();
             })?;
+            if !found {
+                bail!("no such pantry item {item} at {loc}");
+            }
             store.export(&msg)?;
             println!("pantry {loc}: {item} removed");
             Ok(())
@@ -772,27 +783,27 @@ fn run_fridge(store: &mut Store, cmd: FridgeCmd, today: Date, at: jiff::Timestam
         FridgeCmd::Remove { id, freezer, location } => {
             let loc = resolve_location(store, location)?;
             let msg = format!("cli: fridge {loc}: remove {id}");
-            let doc = store.modify::<FridgeDoc>(&DocId::Fridge(loc.clone()), &msg, at, |f| {
+            let mut found = false;
+            store.modify::<FridgeDoc>(&DocId::Fridge(loc.clone()), &msg, at, |f| {
                 match &freezer {
                     Some(name) => {
                         if let Some(portions) = f.freezers.get_mut(name.trim()) {
-                            portions.remove(&id);
+                            found = portions.remove(&id).is_some();
                             if portions.is_empty() {
                                 f.freezers.remove(name.trim());
                             }
                         }
                     }
                     None => {
-                        f.fridge.remove(&id);
+                        found = f.fridge.remove(&id).is_some();
                     }
                 }
             })?;
-            let still_there = match &freezer {
-                Some(name) => doc.freezers.get(name.trim()).is_some_and(|p| p.contains_key(&id)),
-                None => doc.fridge.contains_key(&id),
-            };
-            if still_there {
-                bail!("failed to remove {id}");
+            if !found {
+                match &freezer {
+                    Some(name) => bail!("no such portion {id} in freezer {}", name.trim()),
+                    None => bail!("no such portion {id} in the fridge"),
+                }
             }
             store.export(&msg)?;
             println!("fridge {loc}: removed {id}");
