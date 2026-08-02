@@ -1,6 +1,6 @@
 # Remediation campaign — audit findings before M7
 
-*Last updated: 2026-08-01.*
+*Last updated: 2026-08-02.*
 
 Working sequence for the 94 findings in
 [the 2026-07-31 review](reviews/2026-07-31-codebase-review.md). That document
@@ -82,12 +82,13 @@ Five findings are deliberately out of scope and scheduled after M7 (recorded in
 - [x] The queue survives a dangling recipe reference — #40 *(after #4)*
 
 ### Phase 6 — Model path & assistant loop
-- [ ] Byte boundaries survive chunk splits — #25, #28, #81
-- [ ] A truncated turn reports truncation — #26, #32, #33
-- [ ] The model client has deadlines and retries — #27
-- [ ] Photos attach to the message they belong to — #31, #91
-- [ ] An aborted exchange leaves the export honest — #34 *(after #13)*
-- [ ] Extraction runs under a deadline, off the runtime — #47
+- [x] Byte boundaries survive chunk splits — #25, #28, #81
+- [x] A truncated turn reports truncation — #26, #32, #33
+- [x] The model client has deadlines and retries — #27
+- [x] Photos attach to the message they belong to — #31, #91
+- [x] An aborted exchange leaves the export honest — #34 *(after #13; the round cap now yields narration + a note)*
+- [x] Extraction runs under a deadline, off the runtime — #47
+- [x] The loop's remaining edges: `provide` with no round outstanding is a protocol error; the user turn's stamp clamps against the thread *(the two turn/exchange findings with no other scheduled home)*
 
 ### Phase 7 — Edges & operations
 - [x] The CLI renders the queue from `views`, not a copy — #4 *(pulled forward from Phase 7: #40 wanted it first)*
