@@ -79,6 +79,48 @@ proptest! {
         prop_assert_eq!(&c2, &c1);
         prop_assert_eq!(render(&c2), files1);
     }
+
+    /// The single-page renderer the assistant's context assembly uses
+    /// agrees byte-for-byte with the full export: same doc, same bytes.
+    /// Without this, what the model reads could drift from what the
+    /// export (and the user) sees.
+    #[test]
+    fn a_page_rendered_alone_matches_its_export(c in support::arb_corpus()) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("corpus");
+        let store = store_with(&c, &root);
+        let corpus = store.corpus().unwrap();
+        let files = render(&corpus);
+
+        let mut ids = vec![
+            DocId::State,
+            DocId::Queue,
+            DocId::Someday,
+            DocId::Shopping,
+            DocId::Steering,
+            DocId::Facts,
+        ];
+        for name in corpus.locations.keys() {
+            let loc = Slug::new(name.as_str()).unwrap();
+            ids.push(DocId::Pantry(loc.clone()));
+            ids.push(DocId::Equipment(loc.clone()));
+            ids.push(DocId::Shops(loc.clone()));
+            ids.push(DocId::Fridge(loc));
+        }
+        for slug in corpus.recipes.keys() {
+            ids.push(DocId::Recipe(Slug::new(slug.as_str()).unwrap()));
+        }
+        for slug in corpus.techniques.keys() {
+            ids.push(DocId::Technique(Slug::new(slug.as_str()).unwrap()));
+        }
+        for id in ids {
+            prop_assert_eq!(
+                &store.render_page(&id).unwrap(),
+                files.get(&id.export_path()).unwrap_or_else(|| panic!("no export for {id:?}")),
+                "render_page disagrees with the export for {:?}", id
+            );
+        }
+    }
 }
 
 /// "The export is derived — deletable and regenerable at any time." Deleting

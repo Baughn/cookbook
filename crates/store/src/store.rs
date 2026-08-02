@@ -863,6 +863,54 @@ impl Store {
         })
     }
 
+    /// Render the one page a doc exports to, from just that doc — the
+    /// assistant's context assembly needs three or four pages, and rendering
+    /// the whole corpus for them rendered every thread transcript in full
+    /// while holding the store mutex. Agreement with the full export is a
+    /// property test: same doc, same bytes as `render(&corpus())`.
+    ///
+    /// The four location kinds hydrate empty when the doc is missing, like
+    /// `corpus()` — partial sibling sets are reachable and render as empty
+    /// pages there too. Any other missing doc renders as an empty string (a
+    /// page thread can outlive its deleted page).
+    pub fn render_page(&self, id: &DocId) -> Result<String> {
+        use crate::render as r;
+        let page = match id {
+            DocId::Pantry(l) => r::pantry_page(l.as_str(), &self.get_or(id, PantryDoc::empty)?),
+            DocId::Equipment(l) => {
+                r::equipment_page(l.as_str(), &self.get_or(id, EquipmentDoc::empty)?)
+            }
+            DocId::Shops(l) => r::shops_page(l.as_str(), &self.get_or(id, || ShopsDoc::new(&[]))?),
+            DocId::Fridge(l) => r::fridge_page(l.as_str(), &self.get_or(id, FridgeDoc::empty)?),
+            _ => {
+                if !self.exists(id)? {
+                    return Ok(String::new());
+                }
+                match id {
+                    DocId::State => r::state_page(&self.get(id)?),
+                    DocId::Queue => r::queue_page("Queue", &self.get(id)?),
+                    DocId::Someday => r::queue_page("Someday", &self.get(id)?),
+                    DocId::Shopping => r::shopping_page(&self.get(id)?),
+                    DocId::Steering => {
+                        let doc: SteeringDoc = self.get(id)?;
+                        r::kv_page("Steering", "note", &doc.schema_version, &doc.entries)
+                    }
+                    DocId::Facts => {
+                        let doc: FactsDoc = self.get(id)?;
+                        r::kv_page("Facts", "fact", &doc.schema_version, &doc.facts)
+                    }
+                    DocId::Recipe(_) => r::recipe_page(&self.get(id)?),
+                    DocId::Technique(_) => r::technique_page(&self.get(id)?),
+                    DocId::Pantry(_)
+                    | DocId::Equipment(_)
+                    | DocId::Shops(_)
+                    | DocId::Fridge(_) => unreachable!("handled above"),
+                }
+            }
+        };
+        Ok(page)
+    }
+
     /// The plain view of one location, for readiness and coverage.
     pub fn location_view(&self, location: &Slug) -> Result<LocationView> {
         let state: StateDoc = self.get(&DocId::State)?;

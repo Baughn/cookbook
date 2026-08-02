@@ -86,9 +86,9 @@ pub fn assemble(
     thread: &ThreadId,
     now: DateTime,
 ) -> Result<(String, Vec<ChatMessage>)> {
-    let files = mise_store::render::render(&store.corpus()?);
-    let page = |id: &DocId| files.get(&id.export_path()).cloned().unwrap_or_default();
-
+    // Only the pages the prompt needs — never render(corpus()), which
+    // renders every recipe, log month, and full thread transcript to use
+    // at most four entries, inside the server's store mutex.
     let mut system = String::new();
     system.push_str(BASE);
     system.push_str("\n\n");
@@ -99,10 +99,11 @@ pub fn assemble(
     });
     system.push_str("\n\n## The corpus now\n");
     for id in [DocId::State, DocId::Steering, DocId::Facts] {
-        system.push_str(&format!("\n### {}\n\n{}", id.export_path(), page(&id)));
+        system.push_str(&format!("\n### {}\n\n{}", id.export_path(), store.render_page(&id)?));
     }
     if let ThreadId::Page(id) = thread {
-        system.push_str(&format!("\n## This page — {}\n\n{}", id.export_path(), page(id)));
+        system
+            .push_str(&format!("\n## This page — {}\n\n{}", id.export_path(), store.render_page(id)?));
     }
     system.push_str(&format!(
         "\nThe current date and time: {} {:02}:{:02}.",

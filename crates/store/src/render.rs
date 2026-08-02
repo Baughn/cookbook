@@ -107,7 +107,7 @@ pub fn render(c: &CorpusState) -> BTreeMap<String, String> {
     files
 }
 
-fn state_page(s: &StateDoc) -> String {
+pub(crate) fn state_page(s: &StateDoc) -> String {
     let mut out = String::new();
     frontmatter(
         &mut out,
@@ -126,7 +126,7 @@ fn state_page(s: &StateDoc) -> String {
     out
 }
 
-fn queue_page(title: &str, doc: &QueueDoc) -> String {
+pub(crate) fn queue_page(title: &str, doc: &QueueDoc) -> String {
     let mut out = String::new();
     frontmatter(&mut out, &[("schema-version", doc.schema_version.to_string())]);
     let _ = write!(out, "\n# {title}\n\n");
@@ -154,7 +154,7 @@ fn queue_page(title: &str, doc: &QueueDoc) -> String {
     out
 }
 
-fn shopping_page(doc: &ShoppingDoc) -> String {
+pub(crate) fn shopping_page(doc: &ShoppingDoc) -> String {
     let mut out = String::new();
     frontmatter(&mut out, &[("schema-version", doc.schema_version.to_string())]);
     out.push_str("\n# Shopping list\n\n");
@@ -174,7 +174,7 @@ fn shopping_page(doc: &ShoppingDoc) -> String {
     out
 }
 
-fn kv_page(
+pub(crate) fn kv_page(
     title: &str,
     value_header: &str,
     schema_version: &u32,
@@ -210,7 +210,7 @@ fn location_pages(files: &mut BTreeMap<String, String>, name: &str, docs: &Locat
     );
 }
 
-fn pantry_page(name: &str, doc: &PantryDoc) -> String {
+pub(crate) fn pantry_page(name: &str, doc: &PantryDoc) -> String {
     let mut out = String::new();
     frontmatter(&mut out, &[("schema-version", doc.schema_version.to_string())]);
     let _ = write!(out, "\n# Pantry — {name}\n\n");
@@ -236,7 +236,7 @@ fn pantry_page(name: &str, doc: &PantryDoc) -> String {
     out
 }
 
-fn equipment_page(name: &str, doc: &EquipmentDoc) -> String {
+pub(crate) fn equipment_page(name: &str, doc: &EquipmentDoc) -> String {
     let mut out = String::new();
     frontmatter(&mut out, &[("schema-version", doc.schema_version.to_string())]);
     let _ = write!(out, "\n# Equipment — {name}\n\n");
@@ -249,7 +249,7 @@ fn equipment_page(name: &str, doc: &EquipmentDoc) -> String {
     out
 }
 
-fn shops_page(name: &str, doc: &ShopsDoc) -> String {
+pub(crate) fn shops_page(name: &str, doc: &ShopsDoc) -> String {
     let mut out = String::new();
     frontmatter(&mut out, &[("schema-version", doc.schema_version.to_string())]);
     let _ = write!(out, "\n# Shops — {name}\n\n");
@@ -262,7 +262,7 @@ fn shops_page(name: &str, doc: &ShopsDoc) -> String {
     out
 }
 
-fn fridge_page(name: &str, doc: &FridgeDoc) -> String {
+pub(crate) fn fridge_page(name: &str, doc: &FridgeDoc) -> String {
     let mut out = String::new();
     frontmatter(&mut out, &[("schema-version", doc.schema_version.to_string())]);
     let _ = write!(out, "\n# Fridge — {name}\n\n");
@@ -301,7 +301,7 @@ fn ingredient_line(i: &crate::pages::IngredientDoc) -> String {
     }
 }
 
-fn recipe_page(r: &RecipeDoc) -> String {
+pub(crate) fn recipe_page(r: &RecipeDoc) -> String {
     let mut pairs = vec![
         ("schema-version", r.schema_version.to_string()),
         ("title", esc(&r.title)),
@@ -343,7 +343,7 @@ fn recipe_page(r: &RecipeDoc) -> String {
     out
 }
 
-fn technique_page(t: &TechniqueDoc) -> String {
+pub(crate) fn technique_page(t: &TechniqueDoc) -> String {
     let mut pairs = vec![
         ("schema-version", t.schema_version.to_string()),
         ("title", esc(&t.title)),
