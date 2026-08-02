@@ -79,6 +79,14 @@ async fn history_and_revert_round_trip() {
         .post_json("/api/revert", serde_json::json!({"doc": "queue", "hash": "zz"}))
         .await;
     assert_eq!(status, 400);
+
+    // A hash whose 8th *byte* falls mid-character used to panic the
+    // handler slicing it for the commit message — dropping the connection
+    // where a 400 belonged.
+    let (status, _) = server
+        .post_json("/api/revert", serde_json::json!({"doc": "queue", "hash": "€€€"}))
+        .await;
+    assert_eq!(status, 400, "a multi-byte hash is the caller's error, not a panic");
 }
 
 // Auth coverage lives in tests/auth.rs as a route table; nothing here

@@ -197,7 +197,10 @@ pub(crate) async fn revert(
 ) -> Response {
     let mut store = state.store.lock().await;
     let result = DocId::parse(&request.doc).and_then(|id| {
-        let short = &request.hash[..request.hash.len().min(8)];
+        // chars, not a byte slice: the hash arrives off the wire and a
+        // multi-byte character at the cut would panic before revert gets
+        // to reject the value properly.
+        let short: String = request.hash.chars().take(8).collect();
         let message = format!("ui: revert {} to {short}", request.doc);
         store.revert(&id, &request.hash, &message, Zoned::now().timestamp())?;
         store.export(&message)
