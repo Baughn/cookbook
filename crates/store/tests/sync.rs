@@ -11,8 +11,8 @@ use std::path::Path;
 use jiff::civil::{Date, DateTime};
 use mise_core::types::{CookKind, LogEntry, RecipeStatus, Slug};
 use mise_store::pages::{
-    DishRefDoc, PantryDoc, PantryItemDoc, QueueDoc, QueueEntryDoc, RecipeDoc, ShoppingDoc,
-    ShoppingItemDoc, StateDoc,
+    DishRefDoc, FridgeDoc, PantryDoc, PantryItemDoc, PortionDoc, QueueDoc, QueueEntryDoc, RecipeDoc,
+    ShoppingDoc, ShoppingItemDoc, StateDoc,
 };
 use mise_store::render::render;
 use mise_store::sync::{Peer, SyncOutcome};
@@ -349,6 +349,7 @@ enum Op {
     Log { day: u8, title: String },
     Thread { k: u8, text: String },
     Shopping { text: String },
+    Fridge { dish: String },
 }
 
 fn arb_op() -> impl Strategy<Value = Op> {
@@ -359,6 +360,7 @@ fn arb_op() -> impl Strategy<Value = Op> {
         (any::<u8>(), word()).prop_map(|(day, title)| Op::Log { day, title }),
         (any::<u8>(), word()).prop_map(|(k, text)| Op::Thread { k, text }),
         word().prop_map(|text| Op::Shopping { text }),
+        word().prop_map(|dish| Op::Fridge { dish }),
     ]
 }
 
@@ -438,6 +440,22 @@ fn apply(store: &mut Store, op: &Op) {
                 })
                 .unwrap();
         }
+        // Fridge portions are the other CRDT-map id space, and #31 was a
+        // caller allocating them positionally (`p1`) rather than through the
+        // mint — two offline adds collided and one portion was lost. Minted
+        // exactly as the tool now does, the property counts them so a
+        // regression to positional keys fails on the count, not the state.
+        Op::Fridge { dish } => {
+            let id = store.mint_id("p").unwrap();
+            store
+                .modify::<FridgeDoc>(&DocId::Fridge(slug("home")), "prop", t0(), |f| {
+                    f.fridge.insert(
+                        id.clone(),
+                        PortionDoc { dish: dish.clone(), servings: 2, date: "2026-07-29".into() },
+                    );
+                })
+                .unwrap();
+        }
     }
 }
 
@@ -469,10 +487,10 @@ proptest! {
         prop_assert!(exports_equal(&a, &b));
         // Convergence alone would pass a merge that swallowed items; every
         // add must actually survive it.
-        let added = ops_a.iter().chain(&ops_b)
-            .filter(|op| matches!(op, Op::Shopping { .. }))
-            .count();
-        prop_assert_eq!(corpus.shopping.items.len(), added);
+        let count = |f: fn(&Op) -> bool| ops_a.iter().chain(&ops_b).filter(|o| f(o)).count();
+        prop_assert_eq!(corpus.shopping.items.len(), count(|o| matches!(o, Op::Shopping { .. })));
+        let portions: usize = corpus.locations.values().map(|d| d.fridge.fridge.len()).sum();
+        prop_assert_eq!(portions, count(|o| matches!(o, Op::Fridge { .. })));
 
         let (out_a, out_b) = run_sync(&mut a, &mut b);
         prop_assert!(out_a.is_empty(), "{:?}", out_a);
@@ -921,6 +939,8 @@ proptest! {
         let count = |f: fn(&Op) -> bool| ops_a.iter().chain(&ops_b).filter(|o| f(o)).count();
         prop_assert_eq!(a.log_entries().unwrap().len(), count(|o| matches!(o, Op::Log { .. })));
         prop_assert_eq!(corpus.shopping.items.len(), count(|o| matches!(o, Op::Shopping { .. })));
+        let portions: usize = corpus.locations.values().map(|d| d.fridge.fridge.len()).sum();
+        prop_assert_eq!(portions, count(|o| matches!(o, Op::Fridge { .. })));
         let messages: usize = corpus.threads.values().map(Vec::len).sum();
         prop_assert_eq!(messages, count(|o| matches!(o, Op::Thread { .. })));
     }
