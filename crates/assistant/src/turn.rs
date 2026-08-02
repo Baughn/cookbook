@@ -152,6 +152,15 @@ impl Turn {
     /// Hand back the outcomes for the calls the last [`Step::Execute`]
     /// requested, in order.
     pub fn provide(&mut self, outcomes: Vec<ToolOutcome>) -> Result<()> {
+        // `Execute` never carries zero calls (absorb returns `Done` for a
+        // call-less turn), so an empty pending list means no round is
+        // outstanding — and pushing an empty user message would surface as
+        // an opaque API 400 one call later, far from the misuse.
+        if self.pending.is_empty() {
+            return Err(AssistantError::Protocol(
+                "provide called with no tool round outstanding".into(),
+            ));
+        }
         let expected: Vec<&str> = self.pending.iter().map(|c| c.id.as_str()).collect();
         let got: Vec<&str> = outcomes.iter().map(|o| o.tool_use_id.as_str()).collect();
         if expected != got {

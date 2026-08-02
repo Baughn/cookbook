@@ -93,6 +93,19 @@ fn outcomes_must_match_pending_calls() {
     assert!(matches!(e, AssistantError::Protocol(_)), "{e}");
 }
 
+/// `Turn` is the crate's public sans-IO surface: misuse must fail at the
+/// point of misuse, not as an opaque API 400 one call later when the
+/// empty user message it pushed reaches the wire.
+#[test]
+fn provide_without_an_outstanding_round_is_a_protocol_error() {
+    let mut turn = turn_with("x");
+    let messages_before = turn.request().messages.len();
+    let e = turn.provide(vec![]).unwrap_err();
+    assert!(matches!(e, AssistantError::Protocol(_)), "{e}");
+    assert!(e.to_string().contains("no tool round outstanding"), "{e}");
+    assert_eq!(turn.request().messages.len(), messages_before, "nothing was pushed");
+}
+
 #[test]
 fn absorbing_while_results_are_owed_is_a_protocol_error() {
     let mut turn = turn_with("x");
