@@ -31,11 +31,13 @@ fn removing_what_was_never_there_is_an_error() {
     let root = root.as_path();
     mise(root, &["init", "--location", "home", "--headcount", "2"]);
 
-    for args in [
-        &["queue", "remove", "not-there"][..],
-        &["pantry", "remove", "nope"],
-        &["equipment", "remove", "nothing"],
-        &["fridge", "remove", "p9"],
+    // The CLI now surfaces the shared tool layer's not-found messages, each
+    // naming the kind and the miss.
+    for (args, expected) in [
+        (&["queue", "remove", "not-there"][..], "no queue entry"),
+        (&["pantry", "remove", "nope"], "no pantry item"),
+        (&["equipment", "remove", "nothing"], "no equipment"),
+        (&["fridge", "remove", "p9"], "no portion"),
     ] {
         let out = Command::new(env!("CARGO_BIN_EXE_mise"))
             .arg("--root")
@@ -45,7 +47,7 @@ fn removing_what_was_never_there_is_an_error() {
             .unwrap();
         assert!(!out.status.success(), "mise {args:?} claimed success");
         let stderr = String::from_utf8_lossy(&out.stderr);
-        assert!(stderr.contains("no such"), "mise {args:?}: {stderr}");
+        assert!(stderr.contains(expected), "mise {args:?}: {stderr}");
     }
 }
 
@@ -121,7 +123,8 @@ fn init_populate_queue_export() {
         .output()
         .unwrap();
     let log = String::from_utf8_lossy(&git_log.stdout).into_owned();
-    assert!(log.contains("cli: queue add mapo-tofu"), "{log}");
+    // Export commit provenance now mirrors the HTTP consumer: "cli: <outcome>".
+    assert!(log.contains("cli: queued mapo-tofu"), "{log}");
     assert!(log.contains("init: empty corpus"), "{log}");
     let recipe_md = std::fs::read_to_string(export.join("recipes/mapo-tofu.md")).unwrap();
     assert!(recipe_md.contains("lead-minutes: 720"), "{recipe_md}");
