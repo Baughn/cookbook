@@ -24,6 +24,12 @@ test('cookbook: drafts land on the shelf, first tap promotes', async ({ page }) 
 	await page.goto('/page/threads/drafting');
 	await expect(page.getByText('tonkatsu, from that video')).toBeVisible();
 	await page.goto('/');
+	// Anchor the absence on a completed planning exchange: right after
+	// goto the thread is still empty, where "not visible" is vacuously
+	// true and reverting the thread separation would stay green.
+	await page.getByPlaceholder('Plan the week', { exact: false }).fill('thanks');
+	await page.getByRole('button', { name: 'Send' }).click();
+	await expect(page.getByText('Anytime.')).toBeVisible();
 	await expect(page.getByText('tonkatsu, from that video')).not.toBeVisible();
 
 	// The draft's page carries status taps; promoting moves it up.
@@ -36,8 +42,10 @@ test('cookbook: drafts land on the shelf, first tap promotes', async ({ page }) 
 	await expect(page.locator('.frontmatter')).toContainText('status active');
 
 	await page.goto('/cookbook');
-	await expect(page.getByRole('heading', { name: 'Drafts' })).not.toBeVisible();
+	// The positive first: Tonkatsu on the active shelf proves the page
+	// data arrived before the Drafts heading's absence means anything.
 	await expect(page.getByRole('link', { name: 'Tonkatsu' })).toBeVisible();
+	await expect(page.getByRole('heading', { name: 'Drafts' })).not.toBeVisible();
 });
 
 test('pantry and equipment edit in place, with ui provenance', async ({ page }) => {
@@ -47,7 +55,10 @@ test('pantry and equipment edit in place, with ui provenance', async ({ page }) 
 	await expect(page).toHaveURL(/\/page\/locations\/home\/pantry/);
 
 	// One representation at a time: the page opens on the rendered export,
-	// and the editor replaces it behind the Edit toggle.
+	// and the editor replaces it behind the Edit toggle. The rendered
+	// heading anchors the load — count(0) against a page still saying
+	// "Loading…" would pass even if the editor rendered by default.
+	await expect(page.getByRole('heading', { name: /Pantry/ })).toBeVisible();
 	await expect(page.getByPlaceholder('New item', { exact: false })).toHaveCount(0);
 	await page.getByRole('button', { name: 'Edit', exact: true }).click();
 	await page.getByPlaceholder('New item', { exact: false }).fill('silken tofu');

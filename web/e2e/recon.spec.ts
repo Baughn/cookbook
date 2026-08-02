@@ -49,16 +49,23 @@ test('photo → proposal → tap → correction → revised proposal', async ({ 
 	// The proposal card, Apply buttons and all, fits a phone.
 	await expectNoSidewaysScroll(page);
 
-	// One tap applies one line, as an ordinary ui: edit — and the line the
-	// finger is on stays put: the page refreshes in place, no remount, no
-	// scroll jump. (Tolerance covers the pantry editor above growing by
-	// the applied row.)
+	// One tap applies one line, as an ordinary ui: edit — and the page
+	// refreshes in place, no remount. The load-bearing check is the
+	// editor's mount identity: a remount ({#key} as a refresh mechanism)
+	// mints a new instance even though everything settles at the same y,
+	// which is why a position-only assertion could not catch it. The y
+	// check stays as a bounded visual sanity check (tolerance covers the
+	// editor above growing by the applied row).
 	const applyMiso = card.getByLabel('apply miso out');
 	await applyMiso.scrollIntoViewIfNeeded();
+	const editor = page.locator('ul.items');
+	const instanceBefore = await editor.getAttribute('data-instance');
+	expect(instanceBefore).toBeTruthy();
 	const before = (await applyMiso.boundingBox())!;
 	await applyMiso.click();
 	await expect(card.getByLabel('applied miso')).toBeVisible();
 	await expect(page.getByLabel('presence of miso')).toHaveValue('out');
+	await expect(editor).toHaveAttribute('data-instance', instanceBefore!);
 	const after = (await card.getByLabel('applied miso').boundingBox())!;
 	expect(Math.abs(after.y - before.y)).toBeLessThanOrEqual(50);
 	// The un-tapped line stayed un-applied.
@@ -92,9 +99,12 @@ test('photo → proposal → tap → correction → revised proposal', async ({ 
 	await page.getByRole('button', { name: 'Edit', exact: true }).click();
 	await expect(page.getByLabel('presence of dashi')).toHaveValue('have');
 
-	// Completed proposals are done for good: a reload shows a clean thread.
+	// Completed proposals are done for good: a reload shows a clean
+	// thread. The transcript's last reply anchors the load — right after
+	// reload the proposal is still null, where count(0) is vacuously
+	// true and reverting the server's omit-completed rule stays green.
 	await page.reload();
-	await expect(page.getByRole('heading', { name: 'Thread' })).toBeVisible();
+	await expect(page.getByText('Proposed pantry updates').last()).toBeVisible();
 	await expect(page.getByLabel('recon proposal')).toHaveCount(0);
 });
 

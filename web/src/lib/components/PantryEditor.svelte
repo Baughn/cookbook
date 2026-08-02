@@ -1,6 +1,17 @@
+<script lang="ts" module>
+	// Mount identity, stamped on the editor's root as data-instance. The
+	// recon spec asserts it is unchanged across an Apply tap: "taps change
+	// data, never structure" bans remounting ({#key}) as a refresh
+	// mechanism, and a remount is otherwise invisible once the DOM has
+	// re-settled. Test-facing only — nothing in the app reads it.
+	let instances = 0;
+</script>
+
 <script lang="ts">
 	import { api } from '$lib/api';
 	import type { LocationView } from '$lib/types';
+
+	const instance = ++instances;
 
 	let {
 		location,
@@ -56,7 +67,7 @@
 	<p>⚠ {error}</p>
 {/if}
 {#if view && editable}
-	<ul class="items">
+	<ul class="items" data-instance={instance}>
 		{#each items as item (item.slug)}
 			<li>
 				<span>{item.name}</span>
