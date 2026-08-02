@@ -290,14 +290,18 @@ fn shopping_flow() {
 
     let msg = ok(&mut store, "shopping_add", json!({"text": "duck legs", "tier": "butcher"}));
     let s_duck = id_from(&msg);
-    ok(&mut store, "shopping_add", json!({"text": "wakame", "id": "wakame"}));
+    let s_wakame = id_from(&ok(&mut store, "shopping_add", json!({"text": "wakame"})));
 
     ok(&mut store, "shopping_update", json!({"id": s_duck, "done": true}));
     let doc: ShoppingDoc = store.get(&DocId::Shopping).unwrap();
     assert!(doc.items[&s_duck].done);
 
-    ok(&mut store, "shopping_update", json!({"id": "wakame", "remove": true}));
-    err(&mut store, "shopping_update", json!({"id": "wakame", "done": true}));
+    ok(&mut store, "shopping_update", json!({"id": s_wakame, "remove": true}));
+    err(&mut store, "shopping_update", json!({"id": s_wakame, "done": true}));
+
+    // A caller id is not an accepted field — addressing an existing item is
+    // shopping_update's job, and a content-derived key was the #81 collision.
+    err(&mut store, "shopping_add", json!({"text": "miso", "id": "miso"}));
 }
 
 #[test]
@@ -459,10 +463,13 @@ fn concurrent_adds_on_two_devices_both_survive_the_merge() {
     let mut b = Store::create_bare(&dir.path().join("b")).unwrap();
     sync(&mut a, &mut b);
 
+    // The same text on both replicas is the sharp case (#81): a
+    // content-derivable id would reproduce identically on each side and merge
+    // to one survivor. Minted, replica-scoped ids keep the two distinct.
     ok(&mut a, "shopping_add", json!({"text": "milk"}));
-    ok(&mut b, "shopping_add", json!({"text": "eggs"}));
+    ok(&mut b, "shopping_add", json!({"text": "milk"}));
     ok(&mut a, "fridge_add", json!({"dish": "Dal", "servings": 2}));
-    ok(&mut b, "fridge_add", json!({"dish": "Stock", "servings": 3}));
+    ok(&mut b, "fridge_add", json!({"dish": "Dal", "servings": 2}));
 
     sync(&mut a, &mut b);
     let shopping: ShoppingDoc = a.get(&DocId::Shopping).unwrap();

@@ -465,7 +465,6 @@ pub fn tool_defs() -> Vec<ToolDef> {
                 json!({
                     "text": s("What to buy."),
                     "tier": s("Source tier slug (walkable shop, butcher, town…)."),
-                    "id": s("Item id; generated if omitted."),
                 }),
                 &["text"],
             ),
@@ -1204,7 +1203,6 @@ fn shopping_add(store: &mut Store, ctx: &ToolCtx, input: &Value) -> ToolResult {
     struct In {
         text: String,
         tier: Option<String>,
-        id: Option<String>,
     }
     let a: In = parse(input)?;
     let text = must_trim(&a.text, "text")?;
@@ -1212,12 +1210,11 @@ fn shopping_add(store: &mut Store, ctx: &ToolCtx, input: &Value) -> ToolResult {
     // location's shops page.
     let loc = resolve_location(store, &None)?;
     let tier = resolve_tier(store, &loc, a.tier.as_deref())?;
-    let requested = a.id.as_deref().map(slug).transpose()?;
-    // Minted, never positional — see fridge_add.
-    let assigned = match &requested {
-        Some(id) => id.to_string(),
-        None => store.mint_id("s").map_err(Fail::from)?,
-    };
+    // Minted, never positional — see fridge_add. A caller-supplied id was an
+    // affordance for a content-derivable key (`milk`), which two replicas
+    // reproduce independently and then merge to one surviving item; adding is
+    // always a fresh item, and addressing an existing one is shopping_update.
+    let assigned = store.mint_id("s").map_err(Fail::from)?;
     store
         .modify::<ShoppingDoc>(&DocId::Shopping, &ctx.msg(&format!("shopping add {text}")), ctx.at(), |d| {
             d.items.insert(
