@@ -89,13 +89,13 @@ async fn exchange(
     let mut turn = Turn::new(system, history);
     let mut fetcher = mise_assistant::fetch::HttpFetch::new();
     let mut tools_used: Vec<String> = Vec::new();
-    let reply = loop {
+    let result: Result<String> = async { loop {
         let deltas = tx.clone();
         let mut on_delta =
             move |d: &str| send(&deltas, "delta", json!({"text": d}));
         let model_turn = client.next_turn(turn.request(), &mut on_delta).await?;
         match turn.absorb(model_turn)? {
-            Step::Done(reply) => break reply,
+            Step::Done(reply) => break Ok(reply),
             Step::Execute(calls) => {
                 let mut outcomes = Vec::with_capacity(calls.len());
                 for call in &calls {
@@ -150,18 +150,16 @@ async fn exchange(
                 turn.provide(outcomes)?;
             }
         }
-    };
+    } }
+    .await;
 
-    {
+    let reply = {
         let mut store = state.store.lock().await;
-        if !reply.is_empty() {
-            // Same monotonicity clamp as run_exchange: the reply must sort
-            // after its question.
-            let mut replied = Zoned::now().datetime();
-            if replied <= now {
-                replied = now.saturating_add(jiff::SignedDuration::from_nanos(1));
-            }
-            store.append_thread_message(&thread, Role::Assistant, &reply, replied)?;
+        // Same monotonicity clamp as run_exchange: whatever answers the
+        // question — the reply, or a failure marker — must sort after it.
+        let mut replied = Zoned::now().datetime();
+        if replied <= now {
+            replied = now.saturating_add(jiff::SignedDuration::from_nanos(1));
         }
         let mut summary: String = if message.is_empty() && !photos.is_empty() {
             "[photo]".to_string()
@@ -171,8 +169,28 @@ async fn exchange(
         if summary.len() < message.len() {
             summary.push('…');
         }
-        store.export(&format!("{}: {summary}", provenance(&thread)))?;
-    }
+        match result {
+            Ok(reply) => {
+                store.append_thread_message(&thread, Role::Assistant, &reply, replied)?;
+                store.export(&format!("{}: {summary}", provenance(&thread)))?;
+                reply
+            }
+            Err(e) => {
+                // The question is persisted and earlier rounds may have
+                // mutated the store: mark the thread and export anyway,
+                // best-effort, so the readable backup never sits behind
+                // the store. The original error still reaches the client.
+                let _ = store.append_thread_message(
+                    &thread,
+                    Role::Assistant,
+                    &format!("(no reply — the exchange failed: {e})"),
+                    replied,
+                );
+                let _ = store.export(&format!("{} (failed): {summary}", provenance(&thread)));
+                return Err(e);
+            }
+        }
+    };
     info!("chat exchange done ({} tool calls)", tools_used.len());
     send(tx, "done", json!({"reply": reply, "tools_used": tools_used}));
     Ok(())

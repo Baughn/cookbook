@@ -177,6 +177,26 @@ fn runaway_tool_loop_is_cut_off() {
     assert!(matches!(e, AssistantError::Protocol(_)), "{e}");
 }
 
+/// The round cap is a backstop, not a shredder: when the loop has been
+/// narrating along the way, cutting it off yields what was said plus a
+/// note, not a protocol error that throws the narration away.
+#[test]
+fn a_runaway_loop_ends_with_what_was_said_and_a_note() {
+    let mut turn = turn_with("x");
+    let reply = loop {
+        match turn.absorb(ModelTurn {
+            content: vec![text("still looking…"), tool_use("c", "queue_status", json!({}))],
+            stop: StopReason::ToolUse,
+        }) {
+            Ok(Step::Execute(_)) => turn.provide(vec![outcome("c", "…")]).unwrap(),
+            Ok(Step::Done(reply)) => break reply,
+            Err(e) => panic!("a narrated loop ends with a reply, not {e}"),
+        }
+    };
+    assert!(reply.contains("still looking…"), "{reply}");
+    assert!(reply.contains("stopped"), "the cut-off is visible: {reply}");
+}
+
 /// The composed picture: scripted model turns whose tool calls actually
 /// execute against a real store — a mini planning exchange, no model.
 #[test]

@@ -150,6 +150,10 @@ Settled 2026-07-29, at M3 build start:
   exchange, provenance `planning thread: …` / `thread recipe/x: …`.
   Model-recoverable problems (bad input, unknown slug, duplicate) return
   as `is_error` tool results; real store failures abort the exchange.
+  An aborted exchange still exports (provenance `… (failed)`) — earlier
+  rounds may have mutated the store, and the readable backup never sits
+  behind it — and leaves a `(no reply — the exchange failed: …)` marker
+  so the thread never ends on a dangling question.
 - **Context assembly.** System prompt layered for prompt caching:
   instructions, then slow-moving corpus context (state/steering/facts,
   plus the page for page threads), the clock dead last — a test pins that

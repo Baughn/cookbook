@@ -83,6 +83,43 @@ fn text_reply(text: &str) -> String {
     ])
 }
 
+/// An exchange that dies *after* a tool round mutated the store must not
+/// leave the readable backup behind the store: the mutation and a failure
+/// marker both reach the export, and the error event still streams.
+#[tokio::test]
+async fn a_failed_exchange_exports_the_mutations_and_marks_the_thread() {
+    let dir = tempfile::tempdir().unwrap();
+    // Round two: the model ends its turn having said nothing — an error.
+    let empty_turn = sse(&[
+        ("message_start", "{}"),
+        ("message_delta", r#"{"delta":{"stop_reason":"end_turn"}}"#),
+        ("message_stop", "{}"),
+    ]);
+    let chat = spawn_fake_anthropic(vec![
+        tool_use("queue_add", &serde_json::json!({"title": "Dal", "reason": "cheap"})),
+        empty_turn,
+    ])
+    .await;
+    let server = Server::spawn_with_chat(empty(dir.path()), chat).await;
+
+    let body = server.post_text("/chat", serde_json::json!({"message": "plan something"})).await;
+    assert!(body.contains("event: error"), "{body}");
+
+    let store = server.state.store.lock().await;
+    let queue: QueueDoc = store.get(&DocId::Queue).unwrap();
+    assert!(queue.entries.contains_key("dal"), "round one's mutation stands");
+    let msgs = store.thread_messages(&ThreadId::Planning).unwrap();
+    let last = msgs.last().unwrap();
+    assert_eq!(last.role, Role::Assistant);
+    assert!(last.content.contains("exchange failed"), "{}", last.content);
+
+    let queue_md = std::fs::read_to_string(dir.path().join("server/export/queue.md")).unwrap();
+    assert!(queue_md.contains("Dal"), "the export is not behind the store: {queue_md}");
+    let transcript =
+        std::fs::read_to_string(dir.path().join("server/export/threads/planning.md")).unwrap();
+    assert!(transcript.contains("exchange failed"), "{transcript}");
+}
+
 #[tokio::test]
 async fn chat_streams_tools_and_reply_and_persists() {
     let dir = tempfile::tempdir().unwrap();

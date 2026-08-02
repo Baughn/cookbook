@@ -543,7 +543,7 @@ fn run_chat(
     let mut first = Some(now);
     let mut clock = move || first.take().unwrap_or_else(jiff::Zoned::now);
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(run_exchange(
+    let result = rt.block_on(run_exchange(
         &mut client,
         &mut mise_assistant::fetch::HttpFetch::new(),
         store,
@@ -564,12 +564,18 @@ fn run_chat(
                 eprintln!("  (proposal only — apply with `mise pantry`, nothing was changed)");
             }
         },
-    ))?;
+    ));
     println!();
 
     let mut summary: String = message.chars().take(60).collect();
     if summary.len() < message.len() {
         summary.push('…');
+    }
+    if let Err(e) = result {
+        // Earlier tool rounds may have mutated the store; the readable
+        // backup must not sit behind it just because the exchange died.
+        let _ = store.export(&format!("{} (failed): {summary}", provenance(&thread)));
+        return Err(e.into());
     }
     store.export(&format!("{}: {summary}", provenance(&thread)))?;
     Ok(())

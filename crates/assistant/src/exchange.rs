@@ -22,6 +22,7 @@ pub enum ExchangeEvent<'a> {
     Proposal(&'a recon::Proposal),
 }
 
+#[derive(Debug)]
 pub struct Exchange {
     pub reply: String,
     /// Tool names in execution order — handy for provenance summaries.
@@ -63,41 +64,60 @@ pub async fn run_exchange<M: Model, F: Fetch>(
 
     let mut turn = Turn::new(system, history);
     let mut tools_used = Vec::new();
-    let reply = loop {
-        let mut forward = |delta: &str| on_event(ExchangeEvent::TextDelta(delta));
-        let model_turn = model.next_turn(turn.request(), &mut forward).await?;
-        match turn.absorb(model_turn)? {
-            Step::Done(reply) => break reply,
-            Step::Execute(calls) => {
-                let mut outcomes = Vec::with_capacity(calls.len());
-                for call in &calls {
-                    on_event(ExchangeEvent::ToolCall { name: &call.name });
-                    tools_used.push(call.name.clone());
-                    if call.name == fetch::FETCH_URL {
-                        outcomes.push(fetch::execute_fetch(fetcher, call).await);
-                    } else if call.name == recon::PROPOSE_PANTRY_DIFF {
-                        let (outcome, proposal) = recon::execute_propose(call);
-                        if let Some(p) = &proposal {
-                            on_event(ExchangeEvent::Proposal(p));
+    let result: Result<String> = async {
+        loop {
+            let mut forward = |delta: &str| on_event(ExchangeEvent::TextDelta(delta));
+            let model_turn = model.next_turn(turn.request(), &mut forward).await?;
+            match turn.absorb(model_turn)? {
+                Step::Done(reply) => break Ok(reply),
+                Step::Execute(calls) => {
+                    let mut outcomes = Vec::with_capacity(calls.len());
+                    for call in &calls {
+                        on_event(ExchangeEvent::ToolCall { name: &call.name });
+                        tools_used.push(call.name.clone());
+                        if call.name == fetch::FETCH_URL {
+                            outcomes.push(fetch::execute_fetch(fetcher, call).await);
+                        } else if call.name == recon::PROPOSE_PANTRY_DIFF {
+                            let (outcome, proposal) = recon::execute_propose(call);
+                            if let Some(p) = &proposal {
+                                on_event(ExchangeEvent::Proposal(p));
+                            }
+                            outcomes.push(outcome);
+                        } else {
+                            outcomes.push(tools::execute(store, &ctx, call)?);
                         }
-                        outcomes.push(outcome);
-                    } else {
-                        outcomes.push(tools::execute(store, &ctx, call)?);
                     }
+                    turn.provide(outcomes)?;
                 }
-                turn.provide(outcomes)?;
             }
         }
-    };
-
-    if !reply.is_empty() {
-        // Clamp against a stalled or backwards clock: the reply must sort
-        // after the message it answers.
-        let mut replied = clock().datetime();
-        if replied <= now {
-            replied = now.saturating_add(jiff::SignedDuration::from_nanos(1));
-        }
-        store.append_thread_message(thread, Role::Assistant, &reply, replied)?;
     }
-    Ok(Exchange { reply, tools_used })
+    .await;
+
+    // Clamp against a stalled or backwards clock: whatever answers the
+    // question — the reply, or a failure marker — must sort after it.
+    let mut replied = clock().datetime();
+    if replied <= now {
+        replied = now.saturating_add(jiff::SignedDuration::from_nanos(1));
+    }
+    match result {
+        Ok(reply) => {
+            store.append_thread_message(thread, Role::Assistant, &reply, replied)?;
+            Ok(Exchange { reply, tools_used })
+        }
+        Err(e) => {
+            // The question is already persisted and earlier rounds may
+            // have mutated the store. A marker keeps the thread from
+            // dangling; best-effort, since the original error is the one
+            // worth reporting. The caller owns the export and must run
+            // it on this path too.
+            let _ = store.append_thread_message(
+                thread,
+                Role::Assistant,
+                &format!("(no reply — the exchange failed: {e})"),
+                replied,
+            );
+            Err(e)
+        }
+    }
 }

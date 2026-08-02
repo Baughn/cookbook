@@ -133,9 +133,17 @@ impl Turn {
         }
         self.rounds += 1;
         if self.rounds > MAX_TOOL_ROUNDS {
-            return Err(AssistantError::Protocol(format!(
-                "tool loop exceeded {MAX_TOOL_ROUNDS} rounds"
-            )));
+            // A backstop, not a shredder: keep the narration accumulated
+            // so far and say why it stops. Only a loop that never said
+            // anything is a hard error.
+            if self.reply.is_empty() {
+                return Err(AssistantError::Protocol(format!(
+                    "tool loop exceeded {MAX_TOOL_ROUNDS} rounds"
+                )));
+            }
+            self.reply
+                .push_str("\n\n(stopped here — the tool budget for one exchange ran out)");
+            return Ok(Step::Done(self.reply.clone()));
         }
         self.pending = calls.clone();
         Ok(Step::Execute(calls))

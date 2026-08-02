@@ -354,6 +354,53 @@ async fn photo_recon_proposes_without_touching_the_store() {
     assert_eq!(images, 0, "the photo is transient; only its placeholder persists");
 }
 
+/// An exchange that dies after a tool round has already mutated the store
+/// must not leave the thread as a dangling question: a failure marker
+/// lands as the answer, and the mutation stands for the caller to export.
+#[tokio::test]
+async fn a_failed_exchange_marks_the_thread_instead_of_dangling() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store =
+        Store::create(&dir.path().join("corpus"), &Slug::new("home").unwrap(), 2, jiff::Timestamp::UNIX_EPOCH).unwrap();
+    let mut model = Scripted {
+        turns: vec![
+            ModelTurn {
+                content: vec![ContentBlock::ToolUse {
+                    id: "c1".into(),
+                    name: "queue_add".into(),
+                    input: json!({"title": "Dal", "reason": "cheap"}),
+                }],
+                stop: StopReason::ToolUse,
+            },
+            // The model then ends its turn having said nothing — an error.
+            ModelTurn { content: vec![], stop: StopReason::EndTurn },
+        ],
+        seen: vec![],
+    };
+
+    let err = run_exchange(
+        &mut model,
+        &mut no_fetch(),
+        &mut store,
+        &ThreadId::Planning,
+        "plan something cheap",
+        &[],
+        &mut ticking(),
+        &mut |_| {},
+    )
+    .await
+    .unwrap_err();
+    assert!(err.to_string().contains("without a reply"), "{err}");
+
+    let queue: QueueDoc = store.get(&DocId::Queue).unwrap();
+    assert!(queue.entries.contains_key("dal"), "round one's mutation stands");
+    let msgs = store.thread_messages(&ThreadId::Planning).unwrap();
+    let last = msgs.last().unwrap();
+    assert_eq!(last.role, Role::Assistant, "the question is answered, if only by a marker");
+    assert!(last.content.contains("exchange failed"), "{}", last.content);
+    assert!(last.created > msgs[0].created, "the marker sorts after its question");
+}
+
 /// Thread rows merge across replicas by uid union with caller-supplied
 /// civil stamps, so a message stamped *later* than this exchange's user
 /// turn can already exist — a phone in a timezone ahead, a fast clock.
