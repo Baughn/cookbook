@@ -45,6 +45,42 @@ fn spawn_server(dir: &Path) -> String {
     format!("ws://{addr}")
 }
 
+/// A minimal in-test replica: drive one sync session for `store` against
+/// the server, straight through the sans-IO `Peer` over a WebSocket —
+/// the same protocol the CLI speaks, without needing a second binary.
+fn sync_store(store: &mut Store, url: &str) {
+    use futures_util::{SinkExt, StreamExt};
+    use mise_store::sync::{Peer, WireMsg};
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    use tokio_tungstenite::tungstenite::protocol::Message;
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        let mut request = format!("{url}/sync").into_client_request().unwrap();
+        request
+            .headers_mut()
+            .insert("authorization", format!("Bearer {TOKEN}").parse().unwrap());
+        let (mut ws, _) = tokio_tungstenite::connect_async(request).await.unwrap();
+        let mut peer = Peer::start(store, true).unwrap();
+        let first = peer.initial_round(store).unwrap();
+        ws.send(Message::text(first.to_json())).await.unwrap();
+        while let Some(incoming) = ws.next().await {
+            match incoming.unwrap() {
+                Message::Text(text) => {
+                    let msg = WireMsg::from_json(&text).unwrap();
+                    match peer.handle(store, &msg).unwrap() {
+                        Some(reply) => ws.send(Message::text(reply.to_json())).await.unwrap(),
+                        None => break,
+                    }
+                }
+                Message::Close(_) => break,
+                _ => {}
+            }
+        }
+        let _ = ws.close(None).await;
+    });
+}
+
 /// Export trees (path → bytes), .git excluded.
 fn export_tree(root: &Path) -> std::collections::BTreeMap<String, Vec<u8>> {
     fn walk(base: &Path, dir: &Path, out: &mut std::collections::BTreeMap<String, Vec<u8>>) {
@@ -105,6 +141,37 @@ fn devices_join_edit_offline_and_converge() {
     // A third sync is a no-op.
     let out = mise(&a, &["sync"]);
     assert!(out.contains("already in sync"), "{out}");
+}
+
+/// The one state the charter forbids is state that exists only in
+/// SQLite. Thread messages travel as their own exchange — a session whose
+/// only cargo is a transcript line leaves docs_updated empty — and the
+/// export guard used to skip exactly that session, so synced transcripts
+/// lived in mise.db and nowhere readable, permanently.
+#[test]
+fn a_thread_only_sync_exports_the_transcript() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = spawn_server(dir.path());
+    let a = dir.path().join("a");
+    mise(&a, &["init", "--from", &url, "--token", TOKEN]);
+
+    // A third replica contributes one planning-thread message, nothing else.
+    let mut c = Store::create_bare(&dir.path().join("c")).unwrap();
+    sync_store(&mut c, &url);
+    c.append_thread_message(
+        &mise_store::threads::ThreadId::Planning,
+        mise_store::threads::Role::User,
+        "note from the basement",
+        jiff::civil::DateTime::constant(2026, 7, 30, 9, 0, 0, 0),
+    )
+    .unwrap();
+    sync_store(&mut c, &url);
+
+    let out = mise(&a, &["sync"]);
+    assert!(out.contains("thread messages in"), "{out}");
+    let transcript = std::fs::read_to_string(a.join("export/threads/planning.md"))
+        .expect("the transcript is exported, not stranded in SQLite");
+    assert!(transcript.contains("note from the basement"), "{transcript}");
 }
 
 /// A join whose first sync fails (bad token, server down) leaves a bare

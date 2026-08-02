@@ -27,3 +27,6 @@ base64.workspace = true
 tempfile.workspace = true
 mise-server.workspace = true
 axum.workspace = true
+tokio.workspace = true
+tokio-tungstenite.workspace = true
+futures-util.workspace = true

@@ -339,13 +339,17 @@ fn main() -> Result<()> {
                 },
             };
             remote::save(&root, &remote::Remote { url: url.clone(), token: token.clone() })?;
-            let outcome = remote::sync(&mut store, &url, &token).with_context(|| {
+            let (outcome, result) = remote::sync(&mut store, &url, &token);
+            // Rounds persist as they go: export whatever landed (a no-op
+            // when nothing did) before deciding whether the join failed.
+            let export = store.export("sync: joined corpus");
+            result.with_context(|| {
                 format!(
                     "joined, but the first sync failed — fix the URL or token and run \
                      `mise init --from {url}` again"
                 )
             })?;
-            store.export("sync: joined corpus")?;
+            export?;
             println!(
                 "joined corpus at {} from {url}: {}",
                 root.display(),
@@ -409,10 +413,14 @@ fn run(store: &mut Store, command: Cmd, root: &Path, now: Zoned) -> Result<()> {
                 (None, Some(r)) => r.token,
                 (None, None) => bail!("no token: pass --token or `mise remote set`"),
             };
-            let outcome = remote::sync(store, &url, &token)?;
-            if !outcome.docs_updated.is_empty() || outcome.log_added > 0 {
-                store.export(&format!("sync: {}", remote::describe(&outcome)))?;
-            }
+            let (outcome, result) = remote::sync(store, &url, &token);
+            // Always export, failure or not: rounds persist as they go,
+            // the export self-heals and no-ops when nothing changed, and
+            // any guard here is another way for the readable backup to
+            // fall behind the store (thread-only sessions already did).
+            let export = store.export(&format!("sync: {}", remote::describe(&outcome)));
+            result?;
+            export?;
             println!("sync: {}", remote::describe(&outcome));
             Ok(())
         }

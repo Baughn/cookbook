@@ -83,13 +83,27 @@ pub fn normalize_url(url: &str) -> Result<String> {
     })
 }
 
-/// One full sync session against the server.
-pub fn sync(store: &mut Store, url: &str, token: &str) -> Result<SyncOutcome> {
-    let runtime = tokio::runtime::Runtime::new()?;
-    runtime.block_on(sync_async(store, url, token))
+/// One full sync session against the server. The outcome comes back even
+/// when the session fails: every round is persisted before the reply, so
+/// an interrupted sync has already landed data the caller must still
+/// export — discarding the outcome with the error was how the export fell
+/// permanently behind the store.
+pub fn sync(store: &mut Store, url: &str, token: &str) -> (SyncOutcome, Result<()>) {
+    let runtime = match tokio::runtime::Runtime::new() {
+        Ok(rt) => rt,
+        Err(e) => return (SyncOutcome::default(), Err(e.into())),
+    };
+    runtime.block_on(async {
+        let mut peer = match Peer::start(store, true) {
+            Ok(peer) => peer,
+            Err(e) => return (SyncOutcome::default(), Err(e.into())),
+        };
+        let result = session(store, &mut peer, url, token).await;
+        (peer.outcome().clone(), result)
+    })
 }
 
-async fn sync_async(store: &mut Store, url: &str, token: &str) -> Result<SyncOutcome> {
+async fn session(store: &mut Store, peer: &mut Peer, url: &str, token: &str) -> Result<()> {
     let mut request = url
         .into_client_request()
         .with_context(|| format!("bad server URL {url:?}"))?;
@@ -100,7 +114,6 @@ async fn sync_async(store: &mut Store, url: &str, token: &str) -> Result<SyncOut
         .await
         .with_context(|| format!("connecting to {url}"))?;
 
-    let mut peer = Peer::start(store, true)?;
     let first = peer.initial_round(store)?;
     ws.send(Message::text(first.to_json())).await?;
     while let Some(incoming) = ws.next().await {
@@ -117,7 +130,7 @@ async fn sync_async(store: &mut Store, url: &str, token: &str) -> Result<SyncOut
         }
     }
     let _ = ws.close(None).await;
-    Ok(peer.outcome().clone())
+    Ok(())
 }
 
 pub fn describe(outcome: &SyncOutcome) -> String {
