@@ -56,9 +56,14 @@ in
     };
 
     model = lib.mkOption {
-      type = lib.types.str;
-      default = "claude-opus-5";
-      description = "Model the assistant uses.";
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      description = ''
+        Model the assistant uses. Null (the default) omits --model, so
+        the binary's own default stays authoritative — duplicating the
+        constant here meant a bumped default never reached deployed
+        servers.
+      '';
     };
 
     webApp = lib.mkOption {
@@ -86,7 +91,7 @@ in
       serviceConfig = {
         ExecStart =
           "${lib.getExe cfg.package} --root ${cfg.root} --listen ${cfg.listen}"
-          + " --model ${cfg.model}"
+          + lib.optionalString (cfg.model != null) " --model ${cfg.model}"
           + lib.optionalString (cfg.webApp != null) " --static-dir ${cfg.webApp}"
           + lib.optionalString cfg.init " --init";
         User = "mise";
@@ -101,12 +106,15 @@ in
         LoadCredential =
           [ "token:${cfg.tokenFile}" ]
           ++ lib.optional (cfg.anthropicKeyFile != null) "anthropic:${cfg.anthropicKeyFile}";
-        # UMask only governs files created from here on, so tighten what an
-        # earlier, looser run already wrote. Owner bits are untouched.
-        ExecStartPre = pkgs.writeShellScript "mise-tighten-corpus" ''
-          if [ -e ${lib.escapeShellArg cfg.root} ]; then
-            chmod -R go-rwx ${lib.escapeShellArg cfg.root}
-          fi
+        # Runs with full privileges (the "+" prefix), outside the sandbox:
+        # it creates the corpus root wherever cfg.root points — so the
+        # ReadWritePaths grant below always names an existing directory —
+        # and tightens what an earlier, looser run already wrote (UMask
+        # only governs files created from here on).
+        ExecStartPre = "+" + pkgs.writeShellScript "mise-prepare-corpus" ''
+          mkdir -p ${lib.escapeShellArg cfg.root}
+          chown mise:mise ${lib.escapeShellArg cfg.root}
+          chmod -R go-rwx ${lib.escapeShellArg cfg.root}
         '';
         Restart = "on-failure";
         RestartSec = 5;
@@ -118,7 +126,10 @@ in
         PrivateTmp = true;
         ProtectSystem = "strict";
         ProtectHome = true;
-        ReadWritePaths = [ "/var/lib/mise" ];
+        # The sandbox follows the option: a root outside /var/lib/mise
+        # (say /srv/cookbook) must be writable too, not a runtime EROFS
+        # restart loop. StateDirectory already covers the default.
+        ReadWritePaths = [ cfg.root ];
         CapabilityBoundingSet = [ ];
         RestrictSUIDSGID = true;
         ProtectKernelTunables = true;

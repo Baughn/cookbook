@@ -117,7 +117,13 @@ Settled 2026-07-29, at M2 build start:
   service path, token via LoadCredential). The corpus is private to the
   service user — `StateDirectoryMode=0700` and `UMask=0077`, with an
   `ExecStartPre` that tightens what an earlier, looser run wrote, since a
-  umask governs only new files. Stopping is graceful on **SIGTERM**, not
+  umask governs only new files. The sandbox follows `services.mise.root`:
+  that same `ExecStartPre` runs privileged and creates the root wherever
+  it points, and `ReadWritePaths` grants it — so a root outside
+  `/var/lib/mise` serves instead of hitting a read-only filesystem. The
+  flake wraps the installed binaries with git on `PATH`, so the CLI from
+  `nix run` can export without a module putting git anywhere. Stopping is
+  graceful on **SIGTERM**, not
   just SIGINT: SIGTERM is what systemd sends, and the case worth draining
   for is a stop landing inside the export's rewrite-then-commit sequence.
 

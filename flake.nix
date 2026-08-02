@@ -18,6 +18,15 @@
           cargoLock.lockFile = ./Cargo.lock;
           # The export shells out to git; tests exercise it.
           nativeCheckInputs = [ pkgs.git ];
+          nativeBuildInputs = [ pkgs.makeWrapper ];
+          # The installed binaries need git at runtime too — `nix run` and
+          # `nix profile install` deliver the CLI with no NixOS module to
+          # put git on a service path.
+          postInstall = ''
+            for bin in $out/bin/*; do
+              wrapProgram "$bin" --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.git ]}
+            done
+          '';
           meta = {
             description = "A living cookbook & meal planner";
             license = pkgs.lib.licenses.mit;
