@@ -116,13 +116,20 @@ async fn session(store: &mut Store, peer: &mut Peer, url: &str, token: &str) -> 
 
     let first = peer.initial_round(store)?;
     ws.send(Message::text(first.to_json())).await?;
+    // Completion is the peer's `done` handshake (`handle` returning None)
+    // — never a close frame or the stream just ending, which is a server
+    // shutting down or a proxy timing out mid-session.
+    let mut completed = false;
     while let Some(incoming) = ws.next().await {
         match incoming.context("connection lost mid-sync (already-received data is saved)")? {
             Message::Text(text) => {
                 let msg = WireMsg::from_json(&text)?;
                 match peer.handle(store, &msg)? {
                     Some(reply) => ws.send(Message::text(reply.to_json())).await?,
-                    None => break,
+                    None => {
+                        completed = true;
+                        break;
+                    }
                 }
             }
             Message::Close(_) => break,
@@ -130,6 +137,9 @@ async fn session(store: &mut Store, peer: &mut Peer, url: &str, token: &str) -> 
         }
     }
     let _ = ws.close(None).await;
+    if !completed {
+        bail!("sync ended early — already-received data is saved; run `mise sync` again");
+    }
     Ok(())
 }
 
@@ -156,6 +166,12 @@ pub fn describe(outcome: &SyncOutcome) -> String {
             outcome.docs_updated.iter().cloned().collect::<Vec<_>>().join(", ")
         ));
     }
+    if !outcome.docs_sent.is_empty() {
+        parts.push(format!(
+            "pushed {}",
+            outcome.docs_sent.iter().cloned().collect::<Vec<_>>().join(", ")
+        ));
+    }
     if outcome.log_added > 0 {
         parts.push(format!("{} log entries in", outcome.log_added));
     }
@@ -168,9 +184,8 @@ pub fn describe(outcome: &SyncOutcome) -> String {
     if outcome.threads_sent > 0 {
         parts.push(format!("{} thread messages out", outcome.threads_sent));
     }
-    if parts.is_empty() {
-        parts.push("pushed local changes".to_string());
-    }
+    // Every non-empty outcome sets at least one field above, so there is
+    // no fallback: a message here always says what moved.
     format!("{}{stale}", parts.join("; "))
 }
 

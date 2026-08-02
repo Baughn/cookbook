@@ -126,6 +126,10 @@ impl WireMsg {
 pub struct SyncOutcome {
     /// Local docs that received new changes (created or updated).
     pub docs_updated: BTreeSet<String>,
+    /// Docs whose changes were sent to the peer — without this, a
+    /// push-only session equals the default outcome and reads as
+    /// "already in sync".
+    pub docs_sent: BTreeSet<String>,
     /// Log entries added locally.
     pub log_added: usize,
     /// Log entries sent to the peer.
@@ -149,6 +153,7 @@ impl SyncOutcome {
     pub fn is_empty(&self) -> bool {
         let SyncOutcome {
             docs_updated,
+            docs_sent,
             log_added,
             log_sent,
             threads_added,
@@ -156,6 +161,7 @@ impl SyncOutcome {
             peer_schema: _,
         } = self;
         docs_updated.is_empty()
+            && docs_sent.is_empty()
             && *log_added == 0
             && *log_sent == 0
             && *threads_added == 0
@@ -222,13 +228,18 @@ impl Peer {
     }
 
     fn generate_all(&mut self) -> Vec<DocMsg> {
+        let outcome = &mut self.outcome;
         self.docs
             .iter_mut()
             .filter_map(|(id, dp)| {
-                dp.doc
-                    .sync()
-                    .generate_sync_message(&mut dp.state)
-                    .map(|m| DocMsg { doc: id.clone(), data: B64.encode(m.encode()) })
+                dp.doc.sync().generate_sync_message(&mut dp.state).map(|m| {
+                    // Only messages actually carrying changes count as a
+                    // push — the handshake rounds exchange heads and needs.
+                    if !m.changes.is_empty() {
+                        outcome.docs_sent.insert(id.clone());
+                    }
+                    DocMsg { doc: id.clone(), data: B64.encode(m.encode()) }
+                })
             })
             .collect()
     }

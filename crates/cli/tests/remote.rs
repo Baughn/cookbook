@@ -201,6 +201,66 @@ fn a_failed_join_can_be_retried() {
     mise(&root, &["queue"]);
 }
 
+/// SyncOutcome used to count only what arrived, so a push-only session
+/// equalled the default outcome and reported "already in sync" — while
+/// the server plainly had the new edits.
+#[test]
+fn a_push_only_sync_says_pushed_not_already_in_sync() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = spawn_server(dir.path());
+    let a = dir.path().join("a");
+    mise(&a, &["init", "--from", &url, "--token", TOKEN]);
+
+    mise(&a, &["pantry", "set", "miso", "--presence", "have"]);
+    let out = mise(&a, &["sync"]);
+    assert!(!out.contains("already in sync"), "{out}");
+    assert!(out.contains("pushed"), "{out}");
+
+    // And once everything has travelled, "already in sync" is true again.
+    let out = mise(&a, &["sync"]);
+    assert!(out.contains("already in sync"), "{out}");
+}
+
+/// A server hanging up mid-session — graceful shutdown, proxy idle
+/// timeout — used to produce exit 0 and "already in sync". Received data
+/// is persisted either way; only the reporting and exit status lie.
+#[test]
+fn a_sync_cut_off_early_fails_instead_of_reporting_success() {
+    use futures_util::StreamExt;
+
+    // A "server" that accepts the handshake, reads one round, hangs up.
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async move {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            tx.send(listener.local_addr().unwrap()).unwrap();
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let _ = ws.next().await;
+            let _ = ws.close(None).await;
+        });
+    });
+    let addr = rx.recv().unwrap();
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("solo");
+    mise(&root, &["init"]);
+    let out = Command::new(env!("CARGO_BIN_EXE_mise"))
+        .arg("--root")
+        .arg(&root)
+        .args(["sync", "--server", &format!("ws://{addr}/sync"), "--token", TOKEN])
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "a session cut off early is not a success: {}",
+        String::from_utf8_lossy(&out.stdout),
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("ended early"), "{stderr}");
+}
+
 #[test]
 fn sync_without_remote_fails_helpfully() {
     let dir = tempfile::tempdir().unwrap();
