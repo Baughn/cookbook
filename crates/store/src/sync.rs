@@ -177,6 +177,18 @@ impl SyncOutcome {
     }
 }
 
+/// What one round's transaction wrote. Accumulated inside the transaction
+/// closure and folded into the `Peer` only after the transaction commits,
+/// so a rolled-back round leaves no trace in the reported outcome or the
+/// per-doc baselines.
+#[derive(Default)]
+struct RoundDelta {
+    log_added: usize,
+    threads_added: usize,
+    docs_updated: BTreeSet<String>,
+    baselines: Vec<(String, Vec<ChangeHash>)>,
+}
+
 struct DocPeer {
     doc: AutoCommit,
     state: SyncState,
@@ -246,7 +258,14 @@ impl Peer {
 
     /// Persist every doc change received so far (hash-deduped, doc rows
     /// created for docs sync introduced), inside the round's transaction.
-    fn commit(&mut self, tx: &StoreTx<'_>) -> Result<()> {
+    ///
+    /// Returns what it wrote — the updated doc ids and each doc's new
+    /// baseline — instead of recording it on `self`: this runs inside a
+    /// transaction closure, and effects mutated on `Peer` would survive a
+    /// rollback. The caller folds the delta in only after the transaction
+    /// commits.
+    fn commit(&mut self, tx: &StoreTx<'_>) -> Result<RoundDelta> {
+        let mut delta = RoundDelta::default();
         for (id, dp) in self.docs.iter_mut() {
             let changes: Vec<Change> =
                 dp.doc.get_changes(&dp.baseline).into_iter().cloned().collect();
@@ -255,11 +274,11 @@ impl Peer {
             }
             tx.ensure_doc_row(&DocId::parse(id)?)?;
             if tx.append_changes(id, &changes)? > 0 {
-                self.outcome.docs_updated.insert(id.clone());
+                delta.docs_updated.insert(id.clone());
             }
-            dp.baseline = dp.doc.get_heads();
+            delta.baselines.push((id.clone(), dp.doc.get_heads()));
         }
-        Ok(())
+        Ok(delta)
     }
 
     pub fn handle(&mut self, store: &mut Store, msg: &WireMsg) -> Result<Option<WireMsg>> {
@@ -304,19 +323,37 @@ impl Peer {
                 // writes must not persist half a location's sibling docs:
                 // corpus() cannot read a pantry whose siblings are missing,
                 // so a partial round would take down every read.
-                store.transaction(|tx| {
+                //
+                // The round's effects are *returned* from the closure and
+                // folded into `self` only after it commits. Mutating the
+                // outcome (or a doc's baseline) inside the closure let a
+                // rolled-back round report — and git-commit — data that
+                // never landed.
+                let mut delta = store.transaction(|tx| {
+                    let mut delta = RoundDelta::default();
                     for row in &round.log_entries {
                         if tx.ingest_log_row(&row.uid, &row.entry)? {
-                            self.outcome.log_added += 1;
+                            delta.log_added += 1;
                         }
                     }
                     for row in &round.thread_entries {
                         if tx.ingest_thread_row(&row.uid, &row.message)? {
-                            self.outcome.threads_added += 1;
+                            delta.threads_added += 1;
                         }
                     }
-                    self.commit(tx)
+                    let docs = self.commit(tx)?;
+                    delta.docs_updated = docs.docs_updated;
+                    delta.baselines = docs.baselines;
+                    Ok(delta)
                 })?;
+                self.outcome.log_added += delta.log_added;
+                self.outcome.threads_added += delta.threads_added;
+                self.outcome.docs_updated.append(&mut delta.docs_updated);
+                for (id, heads) in delta.baselines {
+                    if let Some(dp) = self.docs.get_mut(&id) {
+                        dp.baseline = heads;
+                    }
+                }
 
                 // What they are missing, answered in this same round — these
                 // are locals, not protocol state: they are built and shipped

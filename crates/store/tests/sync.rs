@@ -257,6 +257,16 @@ fn a_log_row_whose_uid_does_not_match_its_content_poisons_the_round() {
     let mut pb = Peer::start(&b, false).unwrap();
     pb.handle(&mut b, &WireMsg::Round(round)).expect_err("a forged uid rejects the round");
     assert_eq!(b.log_entries().unwrap().len(), 0, "nothing from the poisoned round persisted");
+    // Audit #20: the honest row was ingested before the forged one poisoned
+    // the round, and its counter used to be incremented on `Peer` inside the
+    // transaction closure — surviving the rollback, so a failed round was
+    // reported (and git-committed) as data that landed. The outcome must
+    // describe what persisted: nothing.
+    assert!(
+        pb.outcome().is_empty(),
+        "a rolled-back round leaked into the outcome: {:?}",
+        pb.outcome()
+    );
 }
 
 /// Thread content is normalized on append (LF, trimmed, non-empty) and the
