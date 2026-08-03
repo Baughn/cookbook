@@ -59,6 +59,33 @@ impl DocId {
         }
     }
 
+    /// The inverse of [`DocId::export_path`]: which doc renders at this
+    /// export path, or `None` for paths no doc owns (log months and thread
+    /// transcripts render from the append-only tables, not docs). Kept
+    /// honest by the same render-map property as `export_path`.
+    pub fn from_export_path(path: &str) -> Option<DocId> {
+        let stem = path.strip_suffix(".md")?;
+        match stem {
+            "state" => return Some(DocId::State),
+            "queue" => return Some(DocId::Queue),
+            "someday" => return Some(DocId::Someday),
+            "shopping" => return Some(DocId::Shopping),
+            "steering" => return Some(DocId::Steering),
+            "facts" => return Some(DocId::Facts),
+            _ => {}
+        }
+        let slug = |raw: &str| Slug::new(raw).ok();
+        match stem.split('/').collect::<Vec<_>>().as_slice() {
+            ["locations", l, "pantry"] => Some(DocId::Pantry(slug(l)?)),
+            ["locations", l, "equipment"] => Some(DocId::Equipment(slug(l)?)),
+            ["locations", l, "shops"] => Some(DocId::Shops(slug(l)?)),
+            ["locations", l, "fridge"] => Some(DocId::Fridge(slug(l)?)),
+            ["recipes", r] => Some(DocId::Recipe(slug(r)?)),
+            ["techniques", t] => Some(DocId::Technique(slug(t)?)),
+            _ => None,
+        }
+    }
+
     pub fn parse(s: &str) -> Result<DocId, StoreError> {
         let bad = || StoreError::BadDocId(s.to_string());
         match s {

@@ -336,6 +336,42 @@ fn reads_and_search() {
     assert!(page.contains("# Mapo tofu"), "{page}");
     err(&mut store, "read_page", json!({"path": "recipes/duck-curry"}));
 
+    // The two page families no doc owns — log months and thread
+    // transcripts — reach read_page and list_pages through the same
+    // path-addressed narrow read (audit #34), not a whole-corpus render.
+    store
+        .append_thread_message(
+            &mise_store::threads::ThreadId::Planning,
+            mise_store::threads::Role::User,
+            "plan the week",
+            jiff::civil::DateTime::constant(2026, 7, 30, 9, 0, 0, 0),
+        )
+        .unwrap();
+    store
+        .append_log(
+            &mise_core::types::LogEntry {
+                date: jiff::civil::Date::constant(2026, 7, 30),
+                kind: mise_core::types::CookKind::Meal,
+                recipe: None,
+                title: "Toast".into(),
+                location: "home".into(),
+                servings: 1,
+                verdict: "fine".into(),
+                tags: Default::default(),
+            },
+            "test: cook",
+            jiff::Timestamp::UNIX_EPOCH,
+        )
+        .unwrap();
+    let pages = ok(&mut store, "list_pages", json!({}));
+    assert!(pages.contains("log/2026-07.md"), "{pages}");
+    assert!(pages.contains("threads/planning.md"), "{pages}");
+    let log = ok(&mut store, "read_page", json!({"path": "log/2026-07"}));
+    assert!(log.contains("Toast"), "{log}");
+    let thread = ok(&mut store, "read_page", json!({"path": "threads/planning"}));
+    assert!(thread.contains("plan the week"), "{thread}");
+    err(&mut store, "read_page", json!({"path": "log/1999-01"}));
+
     let hits = ok(&mut store, "search", json!({"query": "DOUBANJIANG"}));
     assert!(hits.contains("recipes/mapo-tofu.md:"), "case-insensitive: {hits}");
     let none = ok(&mut store, "search", json!({"query": "zzznothing"}));

@@ -552,14 +552,46 @@ fn run(store: &mut Store, ctx: &ToolCtx, name: &str, input: &Value) -> ToolResul
 // ---------------------------------------------------------------- reads --
 
 fn list_pages(store: &Store) -> ToolResult {
-    let corpus = store.corpus().map_err(Fail::from)?;
-    let files = mise_store::render::render(&corpus);
+    use mise_store::DocId;
+    // Enumerate the export tree without rendering it: doc ids per kind plus
+    // the log months and thread keys, in the export map's lexicographic
+    // order. Only annotated recipe docs are hydrated — the whole-corpus
+    // render this used to lean on materialized every thread transcript to
+    // produce a list of paths.
+    let mut paths = std::collections::BTreeSet::new();
+    for kind in [
+        "state", "queue", "someday", "shopping", "steering", "facts", "pantry", "equipment",
+        "shops", "fridge", "recipe", "technique",
+    ] {
+        for id in store.list(kind).map_err(Fail::from)? {
+            paths.insert(id.export_path());
+        }
+    }
+    // The export emits all four location pages per known location, even
+    // when a sibling doc is missing (partial sets are reachable).
+    let locations: std::collections::BTreeSet<String> = paths
+        .iter()
+        .filter_map(|p| p.strip_prefix("locations/"))
+        .filter_map(|p| p.split('/').next())
+        .map(String::from)
+        .collect();
+    for l in &locations {
+        for page in ["pantry", "equipment", "shops", "fridge"] {
+            paths.insert(format!("locations/{l}/{page}.md"));
+        }
+    }
+    for month in store.log_months().map_err(Fail::from)? {
+        paths.insert(format!("log/{month}.md"));
+    }
+    for key in store.thread_keys().map_err(Fail::from)? {
+        paths.insert(format!("threads/{key}.md"));
+    }
     let mut out = String::new();
-    for path in files.keys() {
+    for path in &paths {
         let annotation = path
             .strip_prefix("recipes/")
-            .and_then(|p| p.strip_suffix(".md"))
-            .and_then(|slug| corpus.recipes.get(slug))
+            .and_then(|_| DocId::from_export_path(path))
+            .and_then(|id| store.get::<mise_store::pages::RecipeDoc>(&id).ok())
             .map(|r| {
                 let tags = r
                     .tags
@@ -590,13 +622,13 @@ fn read_page(store: &Store, input: &Value) -> ToolResult {
         path: String,
     }
     let In { path } = parse(input)?;
-    let corpus = store.corpus().map_err(Fail::from)?;
-    let files = mise_store::render::render(&corpus);
     let key = path.trim().trim_matches('/');
     let key = key.strip_suffix(".md").unwrap_or(key);
-    files
-        .get(&format!("{key}.md"))
-        .cloned()
+    // One page, rendered alone — never the whole corpus. Byte agreement
+    // with the full export is the store's property test.
+    store
+        .render_export_page(&format!("{key}.md"))
+        .map_err(Fail::from)?
         .ok_or_else(|| user(format!("no page {key:?}; list_pages shows what exists")))
 }
 

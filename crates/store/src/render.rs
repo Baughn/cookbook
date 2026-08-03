@@ -377,7 +377,7 @@ fn log_by_month(log: &[LogEntry]) -> BTreeMap<String, Vec<LogEntry>> {
 /// transcript round-trips exactly. Content is normalized on append (LF,
 /// trimmed, non-empty); thread keys and roles need no escaping by
 /// construction.
-fn thread_page(key: &str, messages: &[crate::threads::ThreadMessage]) -> String {
+pub(crate) fn thread_page(key: &str, messages: &[crate::threads::ThreadMessage]) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "# Thread — {key}");
     for m in messages {
@@ -393,7 +393,7 @@ fn thread_page(key: &str, messages: &[crate::threads::ThreadMessage]) -> String 
     out
 }
 
-fn log_page(month: &str, entries: &[LogEntry]) -> String {
+pub(crate) fn log_page(month: &str, entries: &[LogEntry]) -> String {
     let mut out = String::new();
     let _ = write!(out, "# Log — {month}\n\n");
     let rows: Vec<Vec<String>> = entries

@@ -120,6 +120,24 @@ proptest! {
                 "render_page disagrees with the export for {:?}", id
             );
         }
+
+        // Audit #34: the path-addressed narrow read must cover *every* page
+        // in the export — docs, log months and thread transcripts — byte
+        // for byte, so `read_page` never needs the whole-corpus render. And
+        // a path the export does not contain is a miss, not an empty page.
+        for (path, content) in &files {
+            let got = store.render_export_page(path).unwrap();
+            prop_assert_eq!(
+                got.as_ref(),
+                Some(content),
+                "render_export_page disagrees with the export for {:?}", path
+            );
+        }
+        prop_assert_eq!(store.render_export_page("recipes/no-such-dish.md").unwrap(), None);
+        prop_assert_eq!(store.render_export_page("log/1900-01.md").unwrap(), None);
+        prop_assert_eq!(store.render_export_page("threads/planning.md").unwrap().is_none(),
+            !files.contains_key("threads/planning.md"));
+        prop_assert_eq!(store.render_export_page("not-a-page.md").unwrap(), None);
     }
 }
 

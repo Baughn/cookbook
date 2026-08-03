@@ -986,6 +986,82 @@ impl Store {
         Ok(page)
     }
 
+    /// Render one export page by its path — the path-addressed complement
+    /// of [`Store::render_page`] that also covers the two page families no
+    /// doc owns: log months and thread transcripts, which render from the
+    /// append-only tables. `None` is a genuine miss: the export contains no
+    /// such page. Agreement with the full export — every path, byte for
+    /// byte — is a property test.
+    ///
+    /// This exists so a single-page read never hydrates and renders the
+    /// whole corpus (every recipe, log month and full thread transcript)
+    /// while the caller holds the store.
+    pub fn render_export_page(&self, path: &str) -> Result<Option<String>> {
+        use crate::render as r;
+        if let Some(month) = path.strip_prefix("log/").and_then(|p| p.strip_suffix(".md")) {
+            let entries: Vec<LogEntry> = self
+                .log_entries()?
+                .into_iter()
+                .filter(|e| format!("{:04}-{:02}", e.date.year(), e.date.month()) == month)
+                .collect();
+            if entries.is_empty() {
+                return Ok(None);
+            }
+            return Ok(Some(r::log_page(month, &entries)));
+        }
+        if let Some(key) = path.strip_prefix("threads/").and_then(|p| p.strip_suffix(".md")) {
+            let Ok(thread) = ThreadId::parse(key) else { return Ok(None) };
+            let messages = self.thread_messages(&thread)?;
+            if messages.is_empty() {
+                return Ok(None);
+            }
+            return Ok(Some(r::thread_page(key, &messages)));
+        }
+        let Some(id) = DocId::from_export_path(path) else { return Ok(None) };
+        // The four location kinds render (empty) whenever *any* sibling doc
+        // exists — the export emits all four pages per known location, and
+        // partial sibling sets are reachable. Other docs must exist
+        // themselves: render_page's empty string for a missing doc is not
+        // an export page.
+        let present = match &id {
+            DocId::Pantry(l) | DocId::Equipment(l) | DocId::Shops(l) | DocId::Fridge(l) => {
+                self.exists(&DocId::Pantry(l.clone()))?
+                    || self.exists(&DocId::Equipment(l.clone()))?
+                    || self.exists(&DocId::Shops(l.clone()))?
+                    || self.exists(&DocId::Fridge(l.clone()))?
+            }
+            _ => self.exists(&id)?,
+        };
+        if !present {
+            return Ok(None);
+        }
+        Ok(Some(self.render_page(&id)?))
+    }
+
+    /// The distinct months (`YYYY-MM`) the cook log spans — the log pages
+    /// of the export tree, without materializing the entries.
+    pub fn log_months(&self) -> Result<Vec<String>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT DISTINCT substr(date, 1, 7) FROM cook_log ORDER BY 1")?;
+        let months = stmt
+            .query_map([], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(months)
+    }
+
+    /// The distinct thread keys with at least one message — the thread
+    /// pages of the export tree, without materializing the transcripts.
+    pub fn thread_keys(&self) -> Result<Vec<String>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT DISTINCT thread FROM thread_messages ORDER BY thread")?;
+        let keys = stmt
+            .query_map([], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(keys)
+    }
+
     /// The plain view of one location, for readiness and coverage.
     pub fn location_view(&self, location: &Slug) -> Result<LocationView> {
         let state: StateDoc = self.get(&DocId::State)?;
