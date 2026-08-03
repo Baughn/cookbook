@@ -157,9 +157,23 @@ type level. `SCHEMA_VERSION` did not move; the frozen fixtures and export
 byte-identity property are unchanged. Fixes span jj commits `rpmmuwyx` (#19),
 `rqmwvqul` (#9), `nosymtvo`→`rqmwvqul` (#11), `totzuvrp` (#13/#85).
 
-Not yet addressed: the remaining findings below (the canonicalize-then-validate
-security cluster #38/#57/#71/#76, the web error-state cluster #60/#62/#66/#67,
-the narrow-path/atomicity cluster #3/#4/#5/#20/#28/#34, and the local one-offs).
+_2026-08-03 — canonicalize at the funnel, then validate (security cluster)._
+Two textual checks were validating a non-canonical form while the effective form
+differed. **#38**: `validate_url` now strips a trailing root dot before the
+local-host suffix checks, so `localhost.` can't resolve past them. **#57**: the
+markdown sanitizer decodes numeric character references before the scheme check
+and escapes every `&` on output, so an entity-encoded `javascript:` can't re-form
+in the `href` `{@html}` injects — no entity table to keep complete. Two
+defense-in-depth gaps closed alongside: **#76** added `IPAddressDeny` for the
+private/link-local/metadata ranges to the systemd unit (the second line the SSRF
+deferral leans on), and **#71** added a Playwright assertion on the build's CSP
+meta. Fixes span jj commits `sqmnzvpy` (#38), `vpszrysp` (#57), `oxmtxsqw` (#76),
+`rzoqopol` (#71).
+
+Not yet addressed: the web error-state cluster #60/#62/#66/#67, the
+narrow-path/atomicity cluster #3/#4/#5/#20/#28/#34, and the local one-offs.
+Still deferred by decision: SSRF resolve-and-pin (#45) — a public hostname
+resolving to loopback remains reachable until it lands.
 
 ---
 

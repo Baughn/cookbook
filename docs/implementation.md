@@ -1,7 +1,8 @@
 # Implementation plan
 
-*Last updated: 2026-08-03 (total reads by construction: typed doc fields, the
-write-path version stamp, frozen row identity). Companion to [design.md](design.md); this document
+*Last updated: 2026-08-03 (total reads by construction; canonicalize-then-validate
+security cluster: trailing-dot host, entity-safe markdown, egress deny, CSP test).
+Companion to [design.md](design.md); this document
 covers the technical shape and build order. Decisions here resolve the "Open
 questions" section of the design doc.*
 
@@ -230,10 +231,14 @@ Settled 2026-07-30, at M4 build start:
   and the gate verifies a candidate token against the server before
   storing it. Chat streams over fetch with a TS SSE framer mirroring the
   Rust one, vitest-covered.
-  CSP: the build carries its own policy as a meta tag (SvelteKit hashes
-  the inline bootstrap; `script-src 'self'` otherwise), and the server
-  adds the header-only parts on static responses — `frame-ancestors
-  'none'`, `Referrer-Policy: no-referrer`, nosniff.
+  `marked` renders with no raw HTML (it becomes visible text) and a URL
+  sanitizer that validates the *decoded* href — numeric character references
+  resolved before the scheme allowlist, every `&` escaped on output — so an
+  entity-encoded `javascript:` can't re-form in the attribute `{@html}`
+  injects. CSP: the build carries its own policy as a meta tag (SvelteKit
+  hashes the inline bootstrap; `script-src 'self'` otherwise, asserted by an
+  e2e spec), and the server adds the header-only parts on static responses —
+  `frame-ancestors 'none'`, `Referrer-Policy: no-referrer`, nosniff.
 - **E2E.** Playwright (`npm run e2e` in `web/`) drives the planning-
   session flow against the real server binary and a scripted fake
   Anthropic endpoint (`mise-server --anthropic-base-url`); deterministic,
@@ -311,14 +316,19 @@ Settled 2026-07-30, at M5 build:
   run it outside the store lock; tests and evals script the network
   (the eval fixture is a life-story page with no JSON-LD). `HttpFetch`
   re-validates every redirect hop: http(s) only, 20 s budget, 2 MB cap,
-  and IP literals in loopback or private ranges refused. The host check
-  is **textual, not resolved** — a public hostname whose record points
-  into a private range is fetched, and validation runs before connect, so
-  a rebinding answer wins. Resolve-and-pin (validating every resolved
-  address against the same predicate) is scheduled after M7, as is
-  enforcing in code that a fetched URL came from a user turn rather than
-  from the model. Until then the systemd sandbox is the second line, and
-  the module's hardening is sized for that job.
+  and IP literals in loopback or private ranges refused. The host check is
+  **textual, not resolved**, and canonicalizes before matching — lowercased,
+  trailing root dot stripped, so `localhost.` cannot walk past the suffixes.
+  A public hostname whose record points into a private range is still fetched,
+  and validation runs before connect, so a rebinding answer wins.
+  Resolve-and-pin (validating every resolved address against the same
+  predicate) is scheduled after M7, as is enforcing in code that a fetched URL
+  came from a user turn rather than from the model. Until then the systemd
+  sandbox is the second line, and it now includes a real egress filter:
+  `IPAddressDeny` refuses the private/link-local/CGNAT/metadata ranges the
+  textual check refuses. Loopback stays permitted (the Caddy ingress needs it),
+  so a hostname resolving to loopback is the one residual — the textual check
+  still blocks loopback literals, and resolve-and-pin closes the rest.
 - **Drafted-from-somewhere is structural.** `RecipeDoc.source` holds
   the URL a page was drafted from; the export renders it in
   frontmatter, the web app links it. And when a fetch returns a
