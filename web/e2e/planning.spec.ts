@@ -1,7 +1,7 @@
 // The M4 deliverable: the planning-session flow from the design doc, end
 // to end in a browser — against the real server and a scripted model.
 
-import { enter, expect, test } from './helpers';
+import { enter, expect, test, TOKEN } from './helpers';
 
 test('planning session: token, queue, chat, edits land', async ({ page }) => {
 	// One kitchen, one token.
@@ -74,4 +74,28 @@ test('a failed status fetch costs the status row, not the page', async ({ page }
 	await expect(page.getByPlaceholder('Ask about this page…')).toBeVisible();
 	await expect(page.getByRole('group', { name: 'recipe status' })).toHaveCount(0);
 	await page.unroute('**/api/pages');
+});
+
+// Audit #66: the gate's own comment promises it "stores nothing
+// unverified", but the code treated any non-401 answer — a 500, a proxy
+// 403, an SPA-fallback 200 — as verification, storing the candidate and
+// mounting the app against a server that never confirmed it.
+test('the gate stores nothing a broken server could not verify', async ({ page }) => {
+	await page.route('**/api/location', (route) =>
+		route.fulfill({ status: 500, body: '{"error":"boom"}' })
+	);
+	await page.goto('/');
+	const gate = page.getByPlaceholder('Bearer token', { exact: false });
+	await gate.fill(TOKEN);
+	await page.getByRole('button', { name: 'Enter' }).click();
+
+	// The prompt stays, says why, and nothing landed in storage.
+	await expect(gate).toBeVisible();
+	await expect(page.getByText('not answering', { exact: false })).toBeVisible();
+	expect(await page.evaluate(() => localStorage.getItem('mise-token'))).toBeNull();
+
+	// The server recovers; the same token now verifies and the gate opens.
+	await page.unroute('**/api/location');
+	await page.getByRole('button', { name: 'Enter' }).click();
+	await expect(gate).toBeHidden();
 });

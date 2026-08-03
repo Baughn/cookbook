@@ -26,6 +26,15 @@
 				gateError = 'The server refused that token.';
 				return;
 			}
+			// Only a genuine 2xx verifies. A 500, a proxy 403 or a
+			// fallback 200 from something that is not the API proves
+			// nothing about the token — storing it here dismissed the
+			// prompt with an unverified credential and mounted an app
+			// whose every call then failed unexplained.
+			if (!r.ok) {
+				gateError = `The server is not answering right now (${r.status}).`;
+				return;
+			}
 			setToken(candidate);
 			token = candidate;
 		} catch {
