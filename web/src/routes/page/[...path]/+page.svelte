@@ -60,7 +60,11 @@
 				if (recipeSlug !== slug) return;
 				status = r.pages.find((p) => p.path === wanted)?.status ?? null;
 			})
-			.catch((e) => (error = String(e)));
+			// The status row is a decoration, already hidden when null —
+			// losing it costs the row, never the page. Routing this into
+			// `error` replaced the rendered recipe, editors and thread
+			// with a bare banner (the template branches exclusively).
+			.catch(() => (status = null));
 	});
 
 	// The Edit toggle only appears where editing works: the editors

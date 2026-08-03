@@ -44,3 +44,34 @@ test('recipe page: rendered markdown, history, thread', async ({ page }) => {
 	await expect(page.getByText('cli: recipe add mapo-tofu')).toBeVisible();
 	await expect(page.getByPlaceholder('Ask about this page…')).toBeVisible();
 });
+
+// Audit #62: the recipe-status side fetch (/api/pages, the slower of the
+// page's two fetches) used to route its failure into the page-level
+// `error`, an exclusive template branch — so a failed decoration replaced
+// the already-rendered recipe, its editors and its thread with a bare ⚠
+// banner. Losing the status must cost the status row, nothing else.
+test('a failed status fetch costs the status row, not the page', async ({ page }) => {
+	await enter(page, '/');
+	// /api/pages walks the whole corpus and is the slower of the page's two
+	// fetches, so the ordinary ordering is content first, then the status
+	// answer. Hold the 500 until the page has painted to pin that order —
+	// an immediate rejection loses the race and hides the bug.
+	let releasePages!: () => void;
+	const gate = new Promise<void>((r) => (releasePages = r));
+	await page.route('**/api/pages', async (route) => {
+		await gate;
+		await route.fulfill({ status: 500, body: '{"error":"transient store lock"}' });
+	});
+	await page.goto('/page/recipes/mapo-tofu');
+
+	const heading = page.getByRole('heading', { name: 'Mapo tofu', exact: true });
+	await expect(heading).toBeVisible();
+	releasePages();
+
+	// The page stays in full; only the decoration is missing.
+	await expect(page.getByText('transient store lock')).toHaveCount(0);
+	await expect(heading).toBeVisible();
+	await expect(page.getByPlaceholder('Ask about this page…')).toBeVisible();
+	await expect(page.getByRole('group', { name: 'recipe status' })).toHaveCount(0);
+	await page.unroute('**/api/pages');
+});
