@@ -949,11 +949,16 @@ impl Store {
             .locations
             .get(location.as_str())
             .ok_or_else(|| StoreError::NotFound(format!("location {location}")))?;
+        // A partial sibling set is reachable — a kill between the four
+        // per-doc creates in `add_location`, an interrupted first sync — so a
+        // missing sibling degrades to empty exactly as `corpus()` and
+        // `render_page` do, rather than 500ing readiness, `/api/queue` and
+        // every chat turn while the export renders the same location fine.
         let docs = LocationDocs {
-            pantry: self.get(&DocId::Pantry(location.clone()))?,
-            equipment: self.get(&DocId::Equipment(location.clone()))?,
-            shops: self.get(&DocId::Shops(location.clone()))?,
-            fridge: self.get(&DocId::Fridge(location.clone()))?,
+            pantry: self.get_or(&DocId::Pantry(location.clone()), PantryDoc::empty)?,
+            equipment: self.get_or(&DocId::Equipment(location.clone()), EquipmentDoc::empty)?,
+            shops: self.get_or(&DocId::Shops(location.clone()), || ShopsDoc::new(&[]))?,
+            fridge: self.get_or(&DocId::Fridge(location.clone()), FridgeDoc::empty)?,
         };
         docs.to_view(location.as_str(), meta)
     }
@@ -1623,6 +1628,16 @@ mod tests {
         let corpus = store.corpus().expect("a missing sibling degrades, not erases");
         assert!(corpus.locations["cabin"].pantry.items.contains_key("miso"));
         assert!(corpus.locations["cabin"].shops.tiers.is_empty());
+
+        // #11: location_view feeds readiness, /api/queue, queue_status and
+        // every chat turn, and used to 500 on the same missing sibling that
+        // corpus() and render_page degrade. It must degrade too.
+        let view = store
+            .location_view(&slug("cabin"))
+            .expect("location_view degrades a missing sibling instead of erroring");
+        assert_eq!(view.name, "cabin");
+        assert!(view.tiers.is_empty());
+        assert!(view.pantry.contains_key(&slug("miso")));
 
         // Missing pantry: the location is still enumerated (union of the
         // four kinds), so its equipment stays legible in the export instead
