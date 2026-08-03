@@ -59,7 +59,7 @@ pub fn seeded(dir: &Path) -> Store {
                 schema_version: 1,
                 title: "Mapo tofu".into(),
                 servings: 4,
-                effort: "weekday".into(),
+                effort: mise_core::types::EffortClass::Weekday,
                 lead: None,
                 tags: [("cuisine".to_string(), "sichuan".to_string())].into(),
                 equipment: vec![slug("wok")],

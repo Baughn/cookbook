@@ -67,9 +67,9 @@ async fn two_clients_converge_through_the_server() {
             "miso".into(),
             PantryItemDoc {
                 name: "miso".into(),
-                presence: "out".into(),
+                presence: mise_core::types::Presence::Out,
                 bought: None,
-                tier: Some("town".into()),
+                tier: Some(mise_core::types::Slug::new("town").unwrap()),
                 note: None,
             },
         );
@@ -106,7 +106,7 @@ async fn two_clients_converge_through_the_server() {
     let ca = a.corpus().unwrap();
     let cb = b.corpus().unwrap();
     assert_eq!(ca, cb);
-    assert_eq!(ca.locations["home"].pantry.items["miso"].presence, "out");
+    assert_eq!(ca.locations["home"].pantry.items["miso"].presence, mise_core::types::Presence::Out);
     assert!(ca.queue.entries.contains_key("duck-curry"));
     assert_eq!(ca.log.len(), 1);
     assert_eq!(render(&ca), render(&cb), "two devices, same files");

@@ -9,7 +9,7 @@
 
 use std::collections::BTreeMap;
 
-use mise_core::types::{CookKind, LogEntry, RecipeStatus, Slug};
+use mise_core::types::{CookKind, EffortClass, LogEntry, Presence, RecipeStatus, Slug};
 use mise_store::pages::{
     CorpusState, DishRefDoc, EquipmentDoc, FactsDoc, FridgeDoc, IngredientDoc, LeadTimeDoc,
     LocationDocs, LocationMeta, PantryDoc, PantryItemDoc, PortionDoc, QueueDoc, QueueEntryDoc,
@@ -213,9 +213,11 @@ fn parse_pantry(content: &str) -> PantryDoc {
                 unesc(&row[0]),
                 PantryItemDoc {
                     name: unesc(&row[1]),
-                    presence: unesc(&row[2]),
-                    bought: opt_cell(&row[3]),
-                    tier: opt_cell(&row[4]),
+                    // Parsing our own byte-identical export back to the typed
+                    // fields — the round-trip the completeness property checks.
+                    presence: unesc(&row[2]).parse::<Presence>().expect("presence from our export"),
+                    bought: opt_cell(&row[3]).map(|s| s.parse().expect("date from our export")),
+                    tier: opt_cell(&row[4]).map(|s| Slug::new(s).expect("slug from our export")),
                     note: opt_cell(&row[5]),
                 },
             )
@@ -316,7 +318,7 @@ fn parse_recipe(content: &str) -> RecipeDoc {
         schema_version: fm_u32(&fm, "schema-version"),
         title: unesc(&fm["title"]),
         servings: fm_u32(&fm, "servings"),
-        effort: unesc(&fm["effort"]),
+        effort: unesc(&fm["effort"]).parse::<EffortClass>().expect("effort from our export"),
         lead,
         tags,
         equipment,
@@ -503,7 +505,14 @@ fn arb_pantry_doc() -> impl Strategy<Value = PantryDoc> {
         items: items
             .into_iter()
             .map(|(slug, (name, presence, bought, tier, note))| {
-                (slug, PantryItemDoc { name, presence, bought, tier, note })
+                let item = PantryItemDoc {
+                    name,
+                    presence: presence.parse().unwrap(),
+                    bought: bought.map(|s: String| s.parse().unwrap()),
+                    tier: tier.map(|s: String| Slug::new(s).unwrap()),
+                    note,
+                };
+                (slug, item)
             })
             .collect(),
     })
@@ -640,7 +649,7 @@ fn arb_recipe_doc() -> impl Strategy<Value = RecipeDoc> {
                     schema_version: 1,
                     title,
                     servings,
-                    effort,
+                    effort: effort.parse().unwrap(),
                     lead: lead.map(|(minutes, act_now_step)| LeadTimeDoc { minutes, act_now_step }),
                     tags,
                     equipment,

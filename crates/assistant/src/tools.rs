@@ -758,8 +758,8 @@ fn clean_equipment(raw: Vec<String>) -> std::result::Result<Vec<Slug>, Fail> {
     raw.iter().map(|e| slug(e)).collect()
 }
 
-fn parse_effort(s: &str) -> std::result::Result<String, Fail> {
-    s.parse::<EffortClass>().map(|e| e.to_string()).map_err(user)
+fn parse_effort(s: &str) -> std::result::Result<EffortClass, Fail> {
+    s.parse::<EffortClass>().map_err(user)
 }
 
 fn parse_status(s: &str) -> std::result::Result<mise_core::types::RecipeStatus, Fail> {
@@ -927,9 +927,7 @@ fn pantry_set(store: &mut Store, ctx: &ToolCtx, input: &Value) -> ToolResult {
     let a: In = parse(input)?;
     let item = slug(&a.item)?;
     let loc = resolve_location(store, &a.location)?;
-    if let Some(p) = &a.presence {
-        p.parse::<Presence>().map_err(user)?;
-    }
+    let presence = a.presence.as_deref().map(|p| p.parse::<Presence>()).transpose().map_err(user)?;
     let tier = resolve_tier(store, &loc, a.tier.as_deref())?;
     let bought = a.bought.as_deref().map(|b| parse_date(b, ctx.today())).transpose()?;
     store
@@ -940,7 +938,7 @@ fn pantry_set(store: &mut Store, ctx: &ToolCtx, input: &Value) -> ToolResult {
             |p| {
                 let entry = p.items.entry(item.to_string()).or_insert_with(|| PantryItemDoc {
                     name: item.as_str().replace('-', " "),
-                    presence: "have".to_string(),
+                    presence: Presence::Have,
                     bought: None,
                     tier: None,
                     note: None,
@@ -948,14 +946,14 @@ fn pantry_set(store: &mut Store, ctx: &ToolCtx, input: &Value) -> ToolResult {
                 if let Some(n) = a.name.as_deref().and_then(opt_trim) {
                     entry.name = n;
                 }
-                if let Some(p) = &a.presence {
-                    entry.presence = p.clone();
+                if let Some(p) = presence {
+                    entry.presence = p;
                 }
                 if let Some(t) = &tier {
-                    entry.tier = Some(t.to_string());
+                    entry.tier = Some(t.clone());
                 }
                 if let Some(b) = &bought {
-                    entry.bought = Some(b.to_string());
+                    entry.bought = Some(*b);
                 }
                 if let Some(n) = &a.note {
                     entry.note = opt_trim(n);

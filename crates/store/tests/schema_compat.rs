@@ -246,7 +246,7 @@ fn every_write_stamps_the_current_schema_version() {
         schema_version: 99,
         title: "Stale".into(),
         servings: 3,
-        effort: "weekday".into(),
+        effort: mise_core::types::EffortClass::Weekday,
         lead: None,
         tags: Default::default(),
         equipment: vec![],
@@ -409,9 +409,9 @@ fn v1_values() -> Vec<(DocId, Vec<u8>)> {
                         "miso".to_string(),
                         PantryItemDoc {
                             name: "Fixture miso".into(),
-                            presence: "have".into(),
-                            bought: Some("2026-01-02".into()),
-                            tier: Some("shop".into()),
+                            presence: mise_core::types::Presence::Have,
+                            bought: Some("2026-01-02".parse().unwrap()),
+                            tier: Some(mise_core::types::Slug::new("shop").unwrap()),
                             note: Some("back of the fridge".into()),
                         },
                     )]),
@@ -474,7 +474,7 @@ fn v1_values() -> Vec<(DocId, Vec<u8>)> {
                     schema_version: 1,
                     title: "Fixture recipe".into(),
                     servings: 4,
-                    effort: "weekday".into(),
+                    effort: mise_core::types::EffortClass::Weekday,
                     lead: None,
                     tags: kv("cuisine", "fixture"),
                     equipment: vec![slug("wok")],
@@ -539,7 +539,7 @@ fn out_of_vocabulary_recipe_values_degrade_instead_of_poisoning_reads() {
         schema_version: 1,
         title: "Loose ends".into(),
         servings: 4,
-        effort: "weekday".into(),
+        effort: "no-such-effort".into(),
         lead: None,
         tags: Default::default(),
         equipment: vec!["wok".into(), "not a slug!".into()],
@@ -561,12 +561,90 @@ fn out_of_vocabulary_recipe_values_degrade_instead_of_poisoning_reads() {
 
     let doc: RecipeDoc = store.get(&DocId::Recipe(slug("loose-ends"))).unwrap();
     assert_eq!(doc.status, RecipeStatus::Draft, "an unknown status reads as draft");
+    assert_eq!(
+        doc.effort,
+        mise_core::types::EffortClass::Weekday,
+        "an unknown effort reads as weekday",
+    );
     assert_eq!(doc.equipment, vec![slug("wok")], "a non-slug equipment entry is dropped");
     assert_eq!(doc.ingredients[0].pantry, None, "a non-slug pantry link is dropped");
+    // to_core is total: it can't be handed an invalid value now.
+    let _ = doc.to_core(&slug("loose-ends"));
 
     store.export("test: hostile recipe").unwrap();
     let page =
         std::fs::read_to_string(store.export_dir().join("recipes/loose-ends.md")).unwrap();
     assert!(!page.contains("forged"), "injected frontmatter reached the export:\n{page}");
     assert!(page.contains("status: draft"), "{page}");
+}
+
+/// #13/#85: the location side is total too. A peer can put any bytes in a
+/// pantry item or portion, and `location_view` — the input to readiness,
+/// `/api/queue`, `queue_status` and every chat turn — must degrade rather than
+/// 500 while the export renders the same location fine.
+#[test]
+fn out_of_vocabulary_location_values_degrade_instead_of_failing_the_view() {
+    #[derive(Reconcile)]
+    struct LoosePantryItem {
+        name: String,
+        presence: String,
+        bought: Option<String>,
+        tier: Option<String>,
+        note: Option<String>,
+    }
+    #[derive(Reconcile)]
+    struct LoosePantry {
+        schema_version: u32,
+        items: std::collections::BTreeMap<String, LoosePantryItem>,
+    }
+
+    let loose = LoosePantry {
+        schema_version: 1,
+        items: std::collections::BTreeMap::from([
+            (
+                "miso".to_string(),
+                LoosePantryItem {
+                    name: "miso".into(),
+                    presence: "maybe".into(), // out of vocabulary
+                    bought: Some("not-a-date".into()),
+                    tier: Some("a] b".into()), // not a slug
+                    note: None,
+                },
+            ),
+            (
+                "not a slug!".to_string(), // an unusable map key
+                LoosePantryItem {
+                    name: "junk".into(),
+                    presence: "have".into(),
+                    bought: None,
+                    tier: None,
+                    note: None,
+                },
+            ),
+        ]),
+    };
+    let bytes = encode(50, &loose);
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("corpus");
+    drop(Store::create(&root, &slug("home"), 2, jiff::Timestamp::UNIX_EPOCH).unwrap());
+    // `create` already wrote home's pantry doc; drop it so the loose bytes are
+    // the pantry this build reads — a peer on another build delivering garbage.
+    {
+        let conn = rusqlite::Connection::open(root.join("mise.db")).unwrap();
+        let key = "location/home/pantry";
+        conn.execute("DELETE FROM doc_changes WHERE doc_id = ?1", [key]).unwrap();
+        conn.execute("DELETE FROM doc_snapshots WHERE doc_id = ?1", [key]).unwrap();
+        conn.execute("DELETE FROM docs WHERE id = ?1", [key]).unwrap();
+    }
+    inject(&root, &DocId::Pantry(slug("home")), &bytes);
+    let store = Store::open(&root).unwrap();
+
+    // The whole point: this used to 500. Now it renders.
+    let view = store.location_view(&slug("home")).expect("a bad value must not fail the view");
+    let miso = view.pantry.get(&slug("miso")).expect("miso still present");
+    assert_eq!(miso.presence, mise_core::types::Presence::Out, "unknown presence → out");
+    assert_eq!(miso.bought, None, "an unparseable date → absent");
+    assert_eq!(miso.tier, None, "a non-slug tier → absent");
+    assert!(!view.pantry.contains_key(&slug("junk")), "a non-slug map key is skipped");
 }

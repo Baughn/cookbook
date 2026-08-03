@@ -38,7 +38,7 @@ fn changes_survive_reopen_across_snapshot_cadence() {
                     format!("item{}", i % 7),
                     PantryItemDoc {
                         name: format!("item {i}"),
-                        presence: "have".to_string(),
+                        presence: mise_core::types::Presence::Have,
                         bought: None,
                         tier: None,
                         note: None,
@@ -131,7 +131,7 @@ fn every_doc_id_export_path_exists_in_the_render() {
                 schema_version: 1,
                 title: "Mapo tofu".into(),
                 servings: 4,
-                effort: "weekday".into(),
+                effort: mise_core::types::EffortClass::Weekday,
                 lead: None,
                 tags: Default::default(),
                 equipment: vec![],
@@ -193,7 +193,7 @@ fn recipe_with_body(root: &std::path::Path, body: &str) -> Store {
                 schema_version: 1,
                 title: "Dish".into(),
                 servings: 2,
-                effort: "weekday".into(),
+                effort: mise_core::types::EffortClass::Weekday,
                 lead: None,
                 tags: Default::default(),
                 equipment: vec![],
@@ -263,7 +263,7 @@ fn set_item(store: &mut Store, item: &str, presence: &str, at: jiff::Timestamp) 
                 item.to_string(),
                 PantryItemDoc {
                     name: item.to_string(),
-                    presence: presence.to_string(),
+                    presence: presence.parse().unwrap(),
                     bought: None,
                     tier: None,
                     note: None,
@@ -302,7 +302,7 @@ fn revert_restores_a_structured_page_as_a_forward_change() {
 
     let pantry: PantryDoc = store.get(&id).unwrap();
     assert_eq!(pantry.items.len(), 1);
-    assert_eq!(pantry.items["miso"].presence, "have");
+    assert_eq!(pantry.items["miso"].presence, mise_core::types::Presence::Have);
     let after = store.history(&id).unwrap();
     assert_eq!(after.len(), history.len() + 1, "revert is a new change, not erasure");
     assert_eq!(after.last().unwrap().message, "ui: revert");
@@ -477,7 +477,12 @@ fn apply_recipe_edit(
         .modify::<RecipeDoc>(id, "prop: edit", at, |r| match edit {
             RecipeEdit::Title(t) => r.title = t.clone(),
             RecipeEdit::Servings(n) => r.servings = *n,
-            RecipeEdit::Effort(i) => r.effort = ["weekday", "project"][*i].into(),
+            RecipeEdit::Effort(i) => {
+                r.effort = [
+                    mise_core::types::EffortClass::Weekday,
+                    mise_core::types::EffortClass::Project,
+                ][*i]
+            }
             RecipeEdit::Lead(m) => {
                 r.lead = m.map(|minutes| LeadTimeDoc {
                     minutes,
@@ -520,7 +525,7 @@ fn first_cook_promotes_a_draft_and_only_a_draft() {
         schema_version: 1,
         title: "Dish".into(),
         servings: 2,
-        effort: "weekday".into(),
+        effort: mise_core::types::EffortClass::Weekday,
         lead: None,
         tags: BTreeMap::new(),
         equipment: vec![],

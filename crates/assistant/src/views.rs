@@ -170,7 +170,7 @@ fn dish_view(
         Err(mise_store::StoreError::NotFound(_)) => return Ok(missing()),
         Err(e) => return Err(e),
     };
-    let meta = doc.to_core(&s)?;
+    let meta = doc.to_core(&s);
     let assessment = readiness::assess(&meta, view);
     let verdict = match assessment.verdict(&view.tiers) {
         Verdict::Ready => VerdictView::Ready,

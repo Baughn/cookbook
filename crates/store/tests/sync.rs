@@ -76,9 +76,9 @@ fn fresh_replica_pulls_everything() {
             "miso".into(),
             PantryItemDoc {
                 name: "miso".into(),
-                presence: "have".into(),
+                presence: mise_core::types::Presence::Have,
                 bought: None,
-                tier: Some("town".into()),
+                tier: Some(mise_core::types::Slug::new("town").unwrap()),
                 note: None,
             },
         );
@@ -122,7 +122,7 @@ fn offline_edits_converge_and_resync_is_idempotent() {
             schema_version: 1,
             title: "Duck curry".into(),
             servings: 4,
-            effort: "project".into(),
+            effort: mise_core::types::EffortClass::Project,
             lead: None,
             tags: BTreeMap::from([("protein".to_string(), "duck".to_string())]),
             equipment: vec![],
@@ -151,9 +151,9 @@ fn offline_edits_converge_and_resync_is_idempotent() {
             "duck-legs".into(),
             PantryItemDoc {
                 name: "duck legs".into(),
-                presence: "have".into(),
-                bought: Some("2026-07-29".into()),
-                tier: Some("butcher".into()),
+                presence: mise_core::types::Presence::Have,
+                bought: Some("2026-07-29".parse().unwrap()),
+                tier: Some(mise_core::types::Slug::new("butcher").unwrap()),
                 note: None,
             },
         );
@@ -374,7 +374,7 @@ fn apply(store: &mut Store, op: &Op) {
                         key.clone(),
                         PantryItemDoc {
                             name: key,
-                            presence: ["have", "low", "out"][(*presence % 3) as usize].into(),
+                            presence: [mise_core::types::Presence::Have, mise_core::types::Presence::Low, mise_core::types::Presence::Out][(*presence % 3) as usize],
                             bought: None,
                             tier: None,
                             note: None,
@@ -739,7 +739,7 @@ fn basement_checkoff_merges_with_desktop_pantry_edit() {
                 "miso".into(),
                 PantryItemDoc {
                     name: "miso".into(),
-                    presence: "have".into(),
+                    presence: mise_core::types::Presence::Have,
                     bought: None,
                     tier: None,
                     note: None,
@@ -763,14 +763,14 @@ fn basement_checkoff_merges_with_desktop_pantry_edit() {
     // Meanwhile the desktop planning thread edits the pantry.
     desktop
         .modify::<PantryDoc>(&DocId::Pantry(slug("home")), "planning thread", t0(), |p| {
-            p.items.get_mut("miso").unwrap().presence = "out".into();
+            p.items.get_mut("miso").unwrap().presence = mise_core::types::Presence::Out;
             p.items.insert(
                 "duck-legs".into(),
                 PantryItemDoc {
                     name: "duck legs".into(),
-                    presence: "have".into(),
-                    bought: Some("2026-07-28".into()),
-                    tier: Some("butcher".into()),
+                    presence: mise_core::types::Presence::Have,
+                    bought: Some("2026-07-28".parse().unwrap()),
+                    tier: Some(mise_core::types::Slug::new("butcher").unwrap()),
                     note: None,
                 },
             );
@@ -784,8 +784,11 @@ fn basement_checkoff_merges_with_desktop_pantry_edit() {
     assert!(exports_equal(&desktop, &phone));
     assert!(corpus.shopping.items[&eggs].done, "the checkoff survived");
     assert_eq!(corpus.shopping.items[&dashi].text, "instant dashi");
-    assert_eq!(corpus.locations["home"].pantry.items["miso"].presence, "out");
-    assert_eq!(corpus.locations["home"].pantry.items["duck-legs"].presence, "have");
+    assert_eq!(corpus.locations["home"].pantry.items["miso"].presence, mise_core::types::Presence::Out);
+    assert_eq!(
+        corpus.locations["home"].pantry.items["duck-legs"].presence,
+        mise_core::types::Presence::Have
+    );
 }
 
 /// The motivating disaster for stale snapshots: a sync session is open (a
@@ -804,7 +807,7 @@ fn a_mid_session_edit_survives_the_snapshot_cadence() {
 
     let item = |name: &str| PantryItemDoc {
         name: name.into(),
-        presence: "have".into(),
+        presence: mise_core::types::Presence::Have,
         bought: None,
         tier: None,
         note: None,

@@ -221,9 +221,9 @@ pub(crate) fn pantry_page(name: &str, doc: &PantryDoc) -> String {
             vec![
                 esc(slug),
                 esc(&i.name),
-                esc(&i.presence),
-                opt(&i.bought),
-                opt(&i.tier),
+                esc(&i.presence.to_string()),
+                opt(&i.bought.map(|d| d.to_string())),
+                opt(&i.tier.as_ref().map(|s| s.to_string())),
                 opt(&i.note),
             ]
         })
@@ -306,7 +306,7 @@ pub(crate) fn recipe_page(r: &RecipeDoc) -> String {
         ("schema-version", r.schema_version.to_string()),
         ("title", esc(&r.title)),
         ("servings", r.servings.to_string()),
-        ("effort", esc(&r.effort)),
+        ("effort", esc(&r.effort.to_string())),
     ];
     if let Some(lead) = &r.lead {
         pairs.push(("lead-minutes", lead.minutes.to_string()));

@@ -47,9 +47,9 @@ fn base_replica() -> Replica {
             slug.to_string(),
             PantryItemDoc {
                 name: slug.to_string(),
-                presence: presence.to_string(),
+                presence: presence.parse().unwrap(),
                 bought: None,
-                tier: Some("shop".to_string()),
+                tier: Some(mise_core::types::Slug::new("shop").unwrap()),
                 note: None,
             },
         );
@@ -67,7 +67,7 @@ fn base_replica() -> Replica {
         schema_version: 1,
         title: "Wok thing".to_string(),
         servings: 4,
-        effort: "weekday".to_string(),
+        effort: mise_core::types::EffortClass::Weekday,
         lead: None,
         tags: BTreeMap::from([("format".to_string(), "stir-fry".to_string())]),
         equipment: vec![mise_core::types::Slug::new("wok").unwrap()],
@@ -175,9 +175,9 @@ fn apply(r: &mut Replica, op: &Op) {
                 key.clone(),
                 PantryItemDoc {
                     name: key,
-                    presence: ["have", "low", "out"][(*presence % 3) as usize].to_string(),
-                    bought: day.map(|d| format!("2026-07-{:02}", 1 + d % 28)),
-                    tier: tier.map(|t| ["staples", "shop", "butcher", "town"][(t % 4) as usize].to_string()),
+                    presence: [mise_core::types::Presence::Have, mise_core::types::Presence::Low, mise_core::types::Presence::Out][(*presence % 3) as usize],
+                    bought: day.map(|d| format!("2026-07-{:02}", 1 + d % 28).parse().unwrap()),
+                    tier: tier.map(|t| mise_core::types::Slug::new(["staples", "shop", "butcher", "town"][(t % 4) as usize]).unwrap()),
                     note: None,
                 },
             );

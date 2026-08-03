@@ -84,7 +84,7 @@ fn seed(root: &std::path::Path) -> Result<Store> {
                 schema_version: 1,
                 title: title.into(),
                 servings: 4,
-                effort: "weekday".into(),
+                effort: mise_core::types::EffortClass::Weekday,
                 lead,
                 tags,
                 equipment: vec![],
@@ -105,9 +105,9 @@ fn seed(root: &std::path::Path) -> Result<Store> {
                 item.into(),
                 PantryItemDoc {
                     name: item.replace('-', " "),
-                    presence: presence.into(),
+                    presence: presence.parse().unwrap(),
                     bought: None,
-                    tier: Some("shop".into()),
+                    tier: Some(mise_core::types::Slug::new("shop").unwrap()),
                     note: None,
                 },
             );
@@ -222,11 +222,11 @@ async fn pantry_in_passing(report: &mut Report) -> Result<()> {
         store.get(&DocId::Pantry(slug("home")))?;
     report.check(
         "eggs are now out",
-        pantry.items.get("eggs").is_some_and(|i| i.presence == "out"),
+        pantry.items.get("eggs").is_some_and(|i| i.presence == mise_core::types::Presence::Out),
     );
     report.check(
         "duck legs recorded as present",
-        pantry.items.values().any(|i| i.name.contains("duck") && i.presence == "have"),
+        pantry.items.values().any(|i| i.name.contains("duck") && i.presence == mise_core::types::Presence::Have),
     );
     Ok(())
 }

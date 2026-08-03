@@ -960,7 +960,7 @@ impl Store {
             shops: self.get_or(&DocId::Shops(location.clone()), || ShopsDoc::new(&[]))?,
             fridge: self.get_or(&DocId::Fridge(location.clone()), FridgeDoc::empty)?,
         };
-        docs.to_view(location.as_str(), meta)
+        Ok(docs.to_view(location.as_str(), meta))
     }
 
     /// The active location's plain view.
@@ -1454,7 +1454,7 @@ mod tests {
             schema_version: 1,
             title: "Mapo tofu".into(),
             servings: 4,
-            effort: "weekday".into(),
+            effort: mise_core::types::EffortClass::Weekday,
             lead: None,
             tags: Default::default(),
             equipment: vec![],
@@ -1540,7 +1540,7 @@ mod tests {
         let id = DocId::Pantry(slug("home"));
         let item = |name: &str| crate::pages::PantryItemDoc {
             name: name.into(),
-            presence: "have".into(),
+            presence: mise_core::types::Presence::Have,
             bought: None,
             tier: None,
             note: None,
@@ -1600,7 +1600,7 @@ mod tests {
                     "miso".into(),
                     crate::pages::PantryItemDoc {
                         name: "miso".into(),
-                        presence: "have".into(),
+                        presence: mise_core::types::Presence::Have,
                         bought: None,
                         tier: None,
                         note: None,

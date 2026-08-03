@@ -16,10 +16,8 @@ use std::num::NonZeroU32;
 use autosurgeon::{Hydrate, Reconcile, Text};
 use jiff::civil::Date;
 use mise_core::types::{
-    LocationView, PantryItem, Portion, Presence, RecipeStatus, Slug, Tier,
+    EffortClass, LocationView, PantryItem, Portion, Presence, RecipeStatus, Slug, Tier,
 };
-
-use crate::error::StoreError;
 
 /// Every doc carries this from day one.
 ///
@@ -75,15 +73,6 @@ pub fn schema_version_at<D: autosurgeon::ReadDoc>(doc: &D, obj: &automerge::ObjI
         },
         _ => 0,
     }
-}
-
-fn parse_date(s: &str, what: &str) -> crate::error::Result<Date> {
-    s.parse()
-        .map_err(|e| StoreError::Corrupt(format!("{what}: bad date {s:?}: {e}")))
-}
-
-fn parse_slug(s: &str, what: &str) -> crate::error::Result<Slug> {
-    Slug::new(s).map_err(|e| StoreError::Corrupt(format!("{what}: {e}")))
 }
 
 // ---------------------------------------------------------------- state --
@@ -196,12 +185,17 @@ impl FactsDoc {
 #[derive(Clone, Debug, PartialEq, Reconcile, Hydrate)]
 pub struct PantryItemDoc {
     pub name: String,
-    /// "have" | "low" | "out".
-    pub presence: String,
-    /// ISO date, rough purchase date for perishables.
-    pub bought: Option<String>,
-    /// Source tier id, as defined by this location's shops page.
-    pub tier: Option<String>,
+    /// have | low | out — stored as the plain string v1 wrote, tolerant on the
+    /// way in (an unreadable value hydrates as `Out`).
+    #[autosurgeon(with = "repr::presence")]
+    pub presence: Presence,
+    /// Rough purchase date for perishables, stored ISO; unparseable → absent.
+    #[autosurgeon(with = "repr::opt_date")]
+    pub bought: Option<Date>,
+    /// Source tier id, as defined by this location's shops page; a non-slug
+    /// reads as no tier.
+    #[autosurgeon(with = "repr::opt_slug")]
+    pub tier: Option<Slug>,
     pub note: Option<String>,
 }
 
@@ -218,19 +212,17 @@ impl PantryDoc {
 }
 
 impl PantryItemDoc {
-    pub fn to_core(&self, slug: &str) -> crate::error::Result<PantryItem> {
-        let what = format!("pantry item {slug}");
-        Ok(PantryItem {
-            slug: parse_slug(slug, &what)?,
+    /// Total: every field is already a valid typed value after hydration, so
+    /// the only thing the caller supplies is the item's slug (its map key).
+    pub fn to_core(&self, slug: Slug) -> PantryItem {
+        PantryItem {
+            slug,
             name: self.name.clone(),
-            presence: self
-                .presence
-                .parse::<Presence>()
-                .map_err(|e| StoreError::Corrupt(format!("{what}: {e}")))?,
-            bought: self.bought.as_deref().map(|d| parse_date(d, &what)).transpose()?,
-            tier: self.tier.as_deref().map(|t| parse_slug(t, &what)).transpose()?,
+            presence: self.presence,
+            bought: self.bought,
+            tier: self.tier.clone(),
             note: self.note.clone(),
-        })
+        }
     }
 }
 
@@ -287,11 +279,13 @@ pub struct PortionDoc {
 }
 
 impl PortionDoc {
-    pub fn to_core(&self, id: &str) -> crate::error::Result<Portion> {
-        Ok(Portion {
+    /// A portion whose date won't parse is dropped from the view (`None`),
+    /// like a non-slug link — the rest of the fridge stays legible.
+    pub fn to_core(&self) -> Option<Portion> {
+        Some(Portion {
             dish: self.dish.clone(),
             servings: self.servings,
-            date: parse_date(&self.date, &format!("portion {id}"))?,
+            date: self.date.parse().ok()?,
         })
     }
 }
@@ -365,6 +359,62 @@ mod repr {
         }
     }
 
+    /// Presence outside the vocabulary reads as `Out` — the least claim, so a
+    /// peer's garbage can never falsely report an ingredient on hand and flip
+    /// a dish to ready.
+    pub mod presence {
+        use super::*;
+        use mise_core::types::Presence;
+        pub fn reconcile<R: Reconciler>(v: &Presence, r: R) -> Result<(), R::Error> {
+            v.to_string().reconcile(r)
+        }
+        pub fn hydrate<D: autosurgeon::ReadDoc>(
+            doc: &D,
+            obj: &automerge::ObjId,
+            prop: Prop<'_>,
+        ) -> Result<Presence, HydrateError> {
+            let raw = String::hydrate(doc, obj, prop)?;
+            Ok(raw.parse().unwrap_or(Presence::Out))
+        }
+    }
+
+    /// An unreadable effort class reads as `Weekday` — the write-path default,
+    /// and the safe "glance answers what can I make tonight" side.
+    pub mod effort {
+        use super::*;
+        use mise_core::types::EffortClass;
+        pub fn reconcile<R: Reconciler>(v: &EffortClass, r: R) -> Result<(), R::Error> {
+            v.to_string().reconcile(r)
+        }
+        pub fn hydrate<D: autosurgeon::ReadDoc>(
+            doc: &D,
+            obj: &automerge::ObjId,
+            prop: Prop<'_>,
+        ) -> Result<EffortClass, HydrateError> {
+            let raw = String::hydrate(doc, obj, prop)?;
+            Ok(raw.parse().unwrap_or(EffortClass::Weekday))
+        }
+    }
+
+    /// An optional ISO date; an unparseable one reads as absent (unknown
+    /// freshness), the item itself unaffected.
+    pub mod opt_date {
+        use super::*;
+        use jiff::civil::Date;
+        pub fn reconcile<R: Reconciler>(v: &Option<Date>, r: R) -> Result<(), R::Error> {
+            let raw: Option<String> = v.map(|d| d.to_string());
+            raw.reconcile(r)
+        }
+        pub fn hydrate<D: autosurgeon::ReadDoc>(
+            doc: &D,
+            obj: &automerge::ObjId,
+            prop: Prop<'_>,
+        ) -> Result<Option<Date>, HydrateError> {
+            let raw = Option::<String>::hydrate(doc, obj, prop)?;
+            Ok(raw.and_then(|s| s.parse().ok()))
+        }
+    }
+
     /// A pantry link that is not a valid slug reads as no link — the
     /// ingredient line itself stays.
     pub mod opt_slug {
@@ -404,8 +454,9 @@ pub struct RecipeDoc {
     pub schema_version: u32,
     pub title: String,
     pub servings: u32,
-    /// "weekday" | "project".
-    pub effort: String,
+    /// weekday | project — stored as the plain string v1 wrote, unreadable → weekday.
+    #[autosurgeon(with = "repr::effort")]
+    pub effort: EffortClass,
     pub lead: Option<LeadTimeDoc>,
     /// Rotation axes: cuisine / protein / format by convention.
     pub tags: BTreeMap<String, String>,
@@ -440,40 +491,35 @@ impl PartialEq for RecipeDoc {
 }
 
 impl RecipeDoc {
-    pub fn to_core(&self, slug: &Slug) -> crate::error::Result<mise_core::types::RecipeMeta> {
-        let what = format!("recipe {slug}");
-        let corrupt = |m: String| StoreError::Corrupt(format!("{what}: {m}"));
-        Ok(mise_core::types::RecipeMeta {
+    /// Total: `effort` is already typed, and the remaining data-value edges
+    /// degrade rather than fail a read — a peer can deliver any bytes, and one
+    /// bad recipe must not take down the queue. Zero servings clamps to one
+    /// (a recipe feeds someone); a zero-minute lead is no lead.
+    pub fn to_core(&self, slug: &Slug) -> mise_core::types::RecipeMeta {
+        let one = NonZeroU32::new(1).expect("1 > 0");
+        mise_core::types::RecipeMeta {
             slug: slug.clone(),
             title: self.title.clone(),
-            servings: NonZeroU32::new(self.servings)
-                .ok_or_else(|| corrupt("zero servings".into()))?,
-            effort: self.effort.parse().map_err(corrupt)?,
-            lead_time: self
-                .lead
-                .as_ref()
-                .map(|l| -> crate::error::Result<mise_core::types::LeadTime> {
-                    Ok(mise_core::types::LeadTime {
-                        minutes: NonZeroU32::new(l.minutes)
-                            .ok_or_else(|| corrupt("zero lead minutes".into()))?,
-                        act_now_step: l.act_now_step.clone(),
-                    })
+            servings: NonZeroU32::new(self.servings).unwrap_or(one),
+            effort: self.effort,
+            lead_time: self.lead.as_ref().and_then(|l| {
+                NonZeroU32::new(l.minutes).map(|minutes| mise_core::types::LeadTime {
+                    minutes,
+                    act_now_step: l.act_now_step.clone(),
                 })
-                .transpose()?,
+            }),
             tags: self.tags.clone(),
             equipment: self.equipment.iter().cloned().collect::<BTreeSet<_>>(),
             ingredients: self
                 .ingredients
                 .iter()
-                .map(|i| -> crate::error::Result<mise_core::types::IngredientLine> {
-                    Ok(mise_core::types::IngredientLine {
-                        text: i.text.clone(),
-                        pantry: i.pantry.clone(),
-                    })
+                .map(|i| mise_core::types::IngredientLine {
+                    text: i.text.clone(),
+                    pantry: i.pantry.clone(),
                 })
-                .collect::<crate::error::Result<Vec<_>>>()?,
+                .collect(),
             status: self.status,
-        })
+        }
     }
 }
 
@@ -517,41 +563,41 @@ impl LocationDocs {
         }
     }
 
-    /// Assemble the plain view the domain math consumes.
-    pub fn to_view(&self, name: &str, meta: &LocationMeta) -> crate::error::Result<LocationView> {
-        let headcount = NonZeroU32::new(meta.headcount)
-            .ok_or_else(|| StoreError::Corrupt(format!("location {name}: zero headcount")))?;
+    /// Assemble the plain view the domain math consumes. Total by
+    /// construction: sync applies peer bytes verbatim, so a value this build
+    /// cannot read must degrade, never fail the whole view. Typed fields are
+    /// already valid; the remaining edges are map keys (which can't be typed)
+    /// and portion dates — a non-slug key or unreadable portion is skipped, a
+    /// zero headcount reads as one (a location feeds someone).
+    pub fn to_view(&self, name: &str, meta: &LocationMeta) -> LocationView {
+        let one = NonZeroU32::new(1).expect("1 > 0");
+        let headcount = NonZeroU32::new(meta.headcount).unwrap_or(one);
         let mut pantry = BTreeMap::new();
-        for (slug, item) in &self.pantry.items {
-            let item = item.to_core(slug)?;
-            pantry.insert(item.slug.clone(), item);
+        for (key, item) in &self.pantry.items {
+            let Ok(slug) = Slug::new(key) else { continue };
+            pantry.insert(slug.clone(), item.to_core(slug));
         }
         let equipment = self
             .equipment
             .items
             .keys()
-            .map(|s| parse_slug(s, "equipment"))
-            .collect::<crate::error::Result<BTreeSet<_>>>()?;
+            .filter_map(|s| Slug::new(s).ok())
+            .collect::<BTreeSet<_>>();
         let tiers = self
             .shops
             .tiers
             .iter()
-            .map(|t| Ok(Tier { id: parse_slug(&t.id, "tier")?, name: t.name.clone() }))
-            .collect::<crate::error::Result<Vec<_>>>()?;
-        let fridge = self
-            .fridge
-            .fridge
-            .iter()
-            .map(|(id, p)| p.to_core(id))
-            .collect::<crate::error::Result<Vec<_>>>()?;
+            .filter_map(|t| Some(Tier { id: Slug::new(&t.id).ok()?, name: t.name.clone() }))
+            .collect::<Vec<_>>();
+        let fridge = self.fridge.fridge.values().filter_map(|p| p.to_core()).collect();
         let freezer = self
             .fridge
             .freezers
             .values()
-            .flat_map(|portions| portions.iter())
-            .map(|(id, p)| p.to_core(id))
-            .collect::<crate::error::Result<Vec<_>>>()?;
-        Ok(LocationView {
+            .flat_map(|portions| portions.values())
+            .filter_map(|p| p.to_core())
+            .collect();
+        LocationView {
             name: name.to_string(),
             headcount,
             tiers,
@@ -559,7 +605,7 @@ impl LocationDocs {
             equipment,
             fridge,
             freezer,
-        })
+        }
     }
 }
 
