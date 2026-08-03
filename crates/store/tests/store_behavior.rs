@@ -422,7 +422,50 @@ proptest::proptest! {
         store.revert(&id, &history[k].hash, "prop: revert", ts(1000)).unwrap();
         let now: RecipeDoc = store.get(&id).unwrap();
         proptest::prop_assert_eq!(&now, &snapshots[k]);
+        // The spec: a revert is recorded as *a* new forward change — one, not
+        // one per restored aspect. (Zero when the target is the current
+        // state, matching modify's "a no-op writes nothing".)
+        let after = store.history(&id).unwrap().len();
+        proptest::prop_assert!(
+            after <= history.len() + 1,
+            "one revert is at most one change: {} -> {after}",
+            history.len(),
+        );
     }
+}
+
+/// Audit #5: a prose revert restoring both a scalar and the body used to
+/// commit two Automerge changes in two SQLite transactions — two identical
+/// `revert` rows in the history feed, and a crash window between them that
+/// left the target's metadata with the current body, a state that never
+/// existed in history. One loaded doc, one commit, one persisted change.
+#[test]
+fn a_prose_revert_is_a_single_forward_change() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = recipe_with_body(&dir.path().join("c"), "Start here.");
+    let id = DocId::Recipe(slug("dish"));
+
+    let original: mise_store::pages::RecipeDoc = store.get(&id).unwrap();
+    // Change a scalar *and* the body, so the revert must restore both.
+    store
+        .modify::<mise_store::pages::RecipeDoc>(&id, "test: retitle", ts(1), |r| {
+            r.title = "Renamed".into();
+        })
+        .unwrap();
+    store.update_body(&id, "Different method.", "test: rewrite", ts(2)).unwrap();
+
+    let history = store.history(&id).unwrap();
+    store.revert(&id, &history[0].hash, "ui: revert", ts(3)).unwrap();
+
+    let restored: mise_store::pages::RecipeDoc = store.get(&id).unwrap();
+    assert_eq!(restored, original);
+    let after = store.history(&id).unwrap();
+    assert_eq!(
+        after.len(),
+        history.len() + 1,
+        "a revert restoring scalar + body must be exactly one forward change"
+    );
+    assert_eq!(after.last().unwrap().message, "ui: revert");
 }
 
 /// One generated edit to a recipe. There is a variant per mutable

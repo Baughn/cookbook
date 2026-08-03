@@ -131,6 +131,38 @@ fn thread_content_hash(m: &ThreadMessage) -> String {
 
 /// Commit options carrying provenance and the caller-supplied clock.
 /// Automerge change timestamps are unix seconds.
+/// Grapheme-diff splice of a prose body onto `doc`'s root `body` Text —
+/// staged, not committed, so a caller can compose it with other staged ops
+/// (a revert's scalar restores) into one change. This is the char-safe path:
+/// autosurgeon 0.8's `Text::update` advances splice positions in *bytes*
+/// while Automerge indexes text by unicode scalars, so any non-ASCII body
+/// walks the indices off the end. Never `Text::update`/`Text::splice`.
+fn splice_body(doc: &mut AutoCommit, id: &DocId, new_body: &str) -> Result<()> {
+    use automerge::transaction::Transactable;
+    use automerge::{ObjType, ReadDoc, Value};
+
+    let Some((Value::Object(ObjType::Text), obj)) = doc.get(automerge::ROOT, "body")? else {
+        return Err(StoreError::Invalid(format!("{id} has no prose body")));
+    };
+    let old = doc.text(&obj)?;
+    let mut idx = 0usize;
+    for change in similar::TextDiff::from_graphemes(old.as_str(), new_body).iter_all_changes() {
+        let chunk = change.value();
+        let chars = chunk.chars().count();
+        match change.tag() {
+            similar::ChangeTag::Delete => {
+                doc.splice_text(&obj, idx, isize::try_from(chars).expect("chunk fits"), "")?;
+            }
+            similar::ChangeTag::Insert => {
+                doc.splice_text(&obj, idx, 0, chunk)?;
+                idx += chars;
+            }
+            similar::ChangeTag::Equal => idx += chars,
+        }
+    }
+    Ok(())
+}
+
 fn stamp(provenance: &str, at: Timestamp) -> CommitOptions {
     CommitOptions::default().with_message(provenance).with_time(at.as_second())
 }
@@ -403,31 +435,8 @@ impl Store {
         provenance: &str,
         at: Timestamp,
     ) -> Result<()> {
-        use automerge::transaction::Transactable;
-        use automerge::{ObjType, ReadDoc, Value};
-
         let mut doc = self.load_doc(id)?;
-        let Some((Value::Object(ObjType::Text), obj)) = doc.get(automerge::ROOT, "body")?
-        else {
-            return Err(StoreError::Invalid(format!("{id} has no prose body")));
-        };
-        let old = doc.text(&obj)?;
-        let mut idx = 0usize;
-        for change in similar::TextDiff::from_graphemes(old.as_str(), new_body).iter_all_changes()
-        {
-            let chunk = change.value();
-            let chars = chunk.chars().count();
-            match change.tag() {
-                similar::ChangeTag::Delete => {
-                    doc.splice_text(&obj, idx, isize::try_from(chars).expect("chunk fits"), "")?;
-                }
-                similar::ChangeTag::Insert => {
-                    doc.splice_text(&obj, idx, 0, chunk)?;
-                    idx += chars;
-                }
-                similar::ChangeTag::Equal => idx += chars,
-            }
-        }
+        splice_body(&mut doc, id, new_body)?;
         let committed = doc.commit_with(stamp(provenance, at));
         if committed.is_some() {
             self.persist_change(&id.to_string(), &mut doc)?;
@@ -656,7 +665,11 @@ impl Store {
             DocId::Fridge(_) => self.revert_plain::<FridgeDoc>(id, &old, provenance, at),
             // Prose pages: scalar fields through reconcile, the body through
             // the char-safe splice path (a hydrated Text from the historical
-            // fork cannot reconcile onto the current doc).
+            // fork cannot reconcile onto the current doc). Both are staged
+            // on the one loaded doc and committed *once* — a revert is a
+            // single forward change in one transaction, never a scalar
+            // change followed by a body change with a crash window between
+            // them whose combined state existed at no point in history.
             //
             // Both arms *destructure* the historical value rather than
             // listing the fields they care about, so a new field on either
@@ -666,8 +679,8 @@ impl Store {
             // undone from the history UI at all.
             DocId::Recipe(_) => {
                 let value: RecipeDoc = hydrate(&old)?;
-                // `schema_version` is bound but not restored — `modify` stamps
-                // the current version, so a revert never carries an old stamp
+                // `schema_version` is bound but not restored — the value is
+                // re-stamped below, so a revert never carries an old stamp
                 // forward. It stays in the destructure so a new field is still
                 // a compile error here (see `source`, which was silently lost).
                 let RecipeDoc {
@@ -684,29 +697,39 @@ impl Store {
                     body,
                 } = value;
                 let old_body = body.as_str().to_string();
-                self.modify::<RecipeDoc>(id, provenance, at, |r| {
-                    r.title = title;
-                    r.servings = servings;
-                    r.effort = effort;
-                    r.lead = lead;
-                    r.tags = tags;
-                    r.equipment = equipment;
-                    r.ingredients = ingredients;
-                    r.source = source;
-                    r.status = status;
-                    // `body` is spliced below, not reconciled.
-                })?;
-                self.update_body(id, &old_body, provenance, at)
+                let mut current: RecipeDoc = hydrate(&doc)?;
+                current.title = title;
+                current.servings = servings;
+                current.effort = effort;
+                current.lead = lead;
+                current.tags = tags;
+                current.equipment = equipment;
+                current.ingredients = ingredients;
+                current.source = source;
+                current.status = status;
+                // `body` is spliced below, not reconciled.
+                crate::pages::Stamped::stamp(&mut current);
+                reconcile(&mut doc, &current)?;
+                splice_body(&mut doc, id, &old_body)?;
+                if doc.commit_with(stamp(provenance, at)).is_some() {
+                    self.persist_change(&id.to_string(), &mut doc)?;
+                }
+                Ok(())
             }
             DocId::Technique(_) => {
                 let value: TechniqueDoc = hydrate(&old)?;
                 let TechniqueDoc { schema_version: _, title, tags, body } = value;
                 let old_body = body.as_str().to_string();
-                self.modify::<TechniqueDoc>(id, provenance, at, |t| {
-                    t.title = title;
-                    t.tags = tags;
-                })?;
-                self.update_body(id, &old_body, provenance, at)
+                let mut current: TechniqueDoc = hydrate(&doc)?;
+                current.title = title;
+                current.tags = tags;
+                crate::pages::Stamped::stamp(&mut current);
+                reconcile(&mut doc, &current)?;
+                splice_body(&mut doc, id, &old_body)?;
+                if doc.commit_with(stamp(provenance, at)).is_some() {
+                    self.persist_change(&id.to_string(), &mut doc)?;
+                }
+                Ok(())
             }
         }
     }
