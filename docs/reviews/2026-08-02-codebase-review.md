@@ -170,10 +170,42 @@ deferral leans on), and **#71** added a Playwright assertion on the build's CSP
 meta. Fixes span jj commits `sqmnzvpy` (#38), `vpszrysp` (#57), `oxmtxsqw` (#76),
 `rzoqopol` (#71).
 
-Not yet addressed: the web error-state cluster #60/#62/#66/#67, the
-narrow-path/atomicity cluster #3/#4/#5/#20/#28/#34, and the local one-offs.
-Still deferred by decision: SSRF resolve-and-pin (#45) — a public hostname
-resolving to loopback remains reachable until it lands.
+_2026-08-03 — one write unit, one source of truth (atomicity cluster)._
+The transaction helper's own invariant — every multi-row write is one atomic
+unit — is now actually held, and the two forked read paths are derived from
+single sources. **#3**: `log_rows` selects uid and entry in one statement and
+`log_entries` is derived from it, so the zip misalignment is unrepresentable.
+**#4**: `append_log` prepares the promotion in memory, then commits count, cook
+row and promotion change in one transaction — a failed promotion leaves no cook
+row and no duplicating retry (also closes the CLI-beside-server occurrence-index
+race). **#5**: prose reverts stage scalars and body splice on one loaded doc and
+commit once — one history row, no half-reverted crash window. **#20**: the sync
+round's transaction closure returns a `RoundDelta` folded into the outcome only
+after commit, so a rolled-back round can no longer report (and git-commit) data
+that never landed. **#34**: `read_page`/`list_pages` go through the new
+path-addressed narrow read (`DocId::from_export_path` +
+`Store::render_export_page`, covering log months and threads); byte agreement
+with the full export is property-tested over every path. Fixes span jj commits
+`kwzsoxsu` (#3), `lwvkrtlz` (#4), `lsytoxxw` (#5), `xoxosxsy` (#20), `qpyonpmo`
+(#34).
+
+_2026-08-03 — error state follows the operation (web error-state cluster)._
+One root cause, two instances: a single page-level `error` with many writers and
+an exclusive template branch. **#60**: `reload()` no longer clears the exchange's
+error, so a server-side failure's banner survives the transcript reload that
+used to erase it in the same tick. **#62**: the recipe-status side fetch degrades
+to a hidden status row instead of replacing the rendered page with a banner.
+**#66**: the token gate stores a candidate only on a genuine 2xx, distinguishing
+"refused that token" from "server not answering". **#67**: the drafting box's
+failed-turn cleanup filters on a structural `pending` marker (Thread.svelte's
+pattern), not text equality, so a failed repeat no longer erases earlier
+confirmed turns. Each carries an e2e regression. Fixes span jj commits
+`wnyxtoky` (#60), `sztqsooy` (#62), `mqrumyvn` (#66), `zqzswowm` (#67).
+
+Not yet addressed: #28 (unbounded thread history — needs a windowing policy
+decision) and the local one-offs. Still deferred by decision: SSRF
+resolve-and-pin (#45) — a public hostname resolving to loopback remains
+reachable until it lands.
 
 ---
 

@@ -1,7 +1,8 @@
 # Implementation plan
 
-*Last updated: 2026-08-03 (total reads by construction; canonicalize-then-validate
-security cluster: trailing-dot host, entity-safe markdown, egress deny, CSP test).
+*Last updated: 2026-08-03 (atomicity cluster: one write unit per cook/revert/
+sync-round outcome, path-addressed narrow page reads; web error state follows
+the operation).
 Companion to [design.md](design.md); this document
 covers the technical shape and build order. Decisions here resolve the "Open
 questions" section of the design doc.*
@@ -81,7 +82,10 @@ Settled 2026-07-29, at M2 build start:
   says `done` after an empty round in both directions; the responder echoes
   it. Every round is persisted before replying — atomically, one SQLite
   transaction per round, so a failure mid-round persists all of it or none
-  of it — and an interrupted sync loses nothing. The peer machinery is sans-IO in `store/` — server, CLI,
+  of it — and an interrupted sync loses nothing. The reported outcome obeys
+  the same atomicity: the round's counters and doc baselines are returned
+  from the transaction closure and folded into the peer only after it
+  commits, so a rolled-back round reports nothing as landed. The peer machinery is sans-IO in `store/` — server, CLI,
   and tests drive the identical code; the transport is dumb pipe.
 - **Log-row identity: content hash + replica + occurrence.** Append-only
   rows have no CRDT, so cross-replica identity keys on content: uid =
@@ -154,7 +158,11 @@ Settled 2026-07-29, at M3 build start:
 - **Tools.** Nineteen deterministic operations mirroring the CLI surface —
   reads (queue_status with readiness/coverage, list_pages, read_page by
   export path, search), queue/recipe/pantry/equipment/fridge/log/shopping
-  edits, steering_set/facts_set. No export inside tools; one export per
+  edits, steering_set/facts_set. Single-page reads go through the store's
+  path-addressed narrow read (`Store::render_export_page`, which also
+  covers log months and thread transcripts); only `search` renders the
+  whole corpus. Byte agreement between the narrow read and the full export
+  is a store property over every export path. No export inside tools; one export per
   exchange, provenance `planning thread: …` / `thread recipe/x: …`.
   Model-recoverable problems (bad input, unknown slug, duplicate) return
   as `is_error` tool results; real store failures abort the exchange.
