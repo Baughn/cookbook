@@ -94,15 +94,37 @@ pub(crate) fn hex(bytes: &[u8]) -> String {
 /// Content-addressed identity prefix for a log row: append-only rows have no
 /// CRDT, so cross-replica dedupe keys on content. The full uid is
 /// `<hash16>-<n>` where `n` disambiguates genuinely repeated identical cooks.
+///
+/// This hash *is* the row's whole cross-replica identity: `ingest_log_row`
+/// recomputes it and rejects the round on a mismatch. So the serialization can
+/// never change silently — a different hash would reject every existing row on
+/// every peer forever. The exhaustive destructure below makes a new field a
+/// compile error (decide then: version the new form into the uid and accept
+/// both prefixes forever), and `frozen_row_identity_never_moves` pins the
+/// current output so any *representation* change (a `#[serde]` attr, field
+/// order, a type) fails loudly rather than desyncing a live corpus.
 fn log_content_hash(e: &LogEntry) -> String {
     use sha2::{Digest, Sha256};
+    let LogEntry {
+        date: _,
+        kind: _,
+        recipe: _,
+        title: _,
+        location: _,
+        servings: _,
+        verdict: _,
+        tags: _,
+    } = e;
     let canonical = serde_json::to_string(e).expect("log entries serialize");
     hex(&Sha256::digest(canonical.as_bytes()))[..16].to_string()
 }
 
 /// Same scheme for thread messages: content-hash prefix, occurrence suffix.
+/// Frozen the same way as [`log_content_hash`] — the destructure and the
+/// frozen-value test together forbid a silent identity change.
 fn thread_content_hash(m: &ThreadMessage) -> String {
     use sha2::{Digest, Sha256};
+    let ThreadMessage { thread: _, role: _, content: _, created: _ } = m;
     let canonical = serde_json::to_string(m).expect("thread messages serialize");
     hex(&Sha256::digest(canonical.as_bytes()))[..16].to_string()
 }
@@ -1443,6 +1465,41 @@ mod tests {
 
     fn allow_all(store: &Store) {
         store.conn.authorizer(None::<fn(AuthContext<'_>) -> Authorization>);
+    }
+
+    /// The content hash *is* an append-only row's cross-replica identity, and
+    /// `ingest_*_row` rejects any row whose recomputed hash doesn't match the
+    /// uid it arrived under. So the serialization is frozen: this pins the
+    /// current 16-hex prefix of a fixed row, and any change to how a
+    /// `LogEntry`/`ThreadMessage` hashes — a field, a `#[serde]` attr, a type,
+    /// field order — moves it and fails here, forcing the deliberate choice to
+    /// version the new form into the uid rather than silently desync every
+    /// existing row on every peer. Frozen values, never refreshed to match a
+    /// new algorithm (that would defeat the test); a real change versions the
+    /// uid and leaves these asserting the old form.
+    #[test]
+    fn frozen_row_identity_never_moves() {
+        use mise_core::types::{CookKind, LogEntry};
+
+        let entry = LogEntry {
+            date: jiff::civil::Date::constant(2026, 7, 29),
+            kind: CookKind::Meal,
+            recipe: Some(slug("mapo-tofu")),
+            title: "Mapo tofu".into(),
+            location: "home".into(),
+            servings: 4,
+            verdict: "great, more numbing".into(),
+            tags: BTreeMap::from([("cuisine".to_string(), "sichuan".to_string())]),
+        };
+        assert_eq!(log_content_hash(&entry), "5aae39fb2cac5c87");
+
+        let message = crate::threads::ThreadMessage {
+            thread: crate::threads::ThreadId::Planning,
+            role: crate::threads::Role::User,
+            content: "can I halve the sugar?".into(),
+            created: jiff::civil::DateTime::constant(2026, 7, 29, 12, 0, 0, 0),
+        };
+        assert_eq!(thread_content_hash(&message), "14ea13202a68d58a");
     }
 
     /// Drive a full sync session; the first store initiates.
