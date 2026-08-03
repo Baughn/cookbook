@@ -13,7 +13,11 @@
 	let busy = $state(false);
 	let streaming = $state('');
 	let toolNotes: string[] = $state([]);
-	let session: { role: 'user' | 'assistant'; content: string }[] = $state([]);
+	// `pending` marks the one turn an in-flight send pushed, the same
+	// structural marker Thread.svelte keeps in `created` — failed-turn
+	// cleanup must remove *that turn*, never every turn with equal text
+	// (short refinements — "spicier", "again" — repeat naturally).
+	let session: { role: 'user' | 'assistant'; content: string; pending?: boolean }[] = $state([]);
 	let newDrafts: PageInfo[] = $state([]);
 
 	async function reload() {
@@ -38,7 +42,7 @@
 		error = null;
 		streaming = '';
 		toolNotes = [];
-		session = [...session, { role: 'user', content: what }];
+		session = [...session, { role: 'user', content: what, pending: true }];
 		const before = new Set(pages.map((p) => p.path));
 		try {
 			await chat(
@@ -55,13 +59,18 @@
 				[],
 				ctl.signal
 			);
+			// The exchange landed server-side; the turn is confirmed.
+			// ($state proxies rule out removal by object identity, so the
+			// flag is cleared in place rather than tracked by reference.)
+			session = session.map((t) => (t.pending ? { ...t, pending: false } : t));
 			await reload();
 			newDrafts = pages.filter((p) => p.path.startsWith('recipes/') && !before.has(p.path));
 		} catch (e) {
 			if (ctl.signal.aborted) return;
 			// The failed turn comes out of the session — the message goes
-			// back to the box instead of showing twice.
-			session = session.filter((t) => !(t.role === 'user' && t.content === what));
+			// back to the box instead of showing twice. Only the pending
+			// turn: an equal-text filter erased earlier confirmed repeats.
+			session = session.filter((t) => !t.pending);
 			error = String(e);
 			throw e;
 		} finally {

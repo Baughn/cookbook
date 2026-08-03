@@ -64,3 +64,31 @@ test('a server-reported exchange failure keeps its banner', async ({ page }) => 
 	await expect(page.getByText('model overloaded', { exact: false })).toBeVisible();
 	await page.unroute('**/chat');
 });
+
+// Audit #67: the drafting box's failed-turn cleanup removed every user turn
+// whose text equalled the failed one — and short refinements repeat
+// naturally ("spicier", "again"), so a failed repeat erased the earlier
+// successful turn too, orphaning the assistant reply between them. Removal
+// must key on a structural marker (the turn this send pushed), not on text.
+test('a failed repeat removes only itself from the drafting session', async ({ page }) => {
+	await enter(page, '/cookbook');
+	const box = page.getByPlaceholder(/Describe a dish|Answer, or refine/);
+	const drafting = page.locator('section[aria-label="drafting"]');
+	const send = page.getByRole('button', { name: 'Draft' });
+
+	// A refinement lands…
+	await box.fill('spicier');
+	await send.click();
+	await expect(drafting.locator('article.assistant').last()).toBeVisible();
+
+	// …and the identical follow-up fails in transit.
+	await page.route('**/chat', (route) => route.abort());
+	await box.fill('spicier');
+	await send.click();
+	await expect(page.getByText('⚠', { exact: false })).toBeVisible();
+
+	// The failed turn is back in the box; the earlier, confirmed one stays.
+	await expect(box).toHaveValue('spicier');
+	await expect(drafting.locator('article.user', { hasText: 'spicier' })).toHaveCount(1);
+	await page.unroute('**/chat');
+});
