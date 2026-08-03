@@ -478,31 +478,52 @@ impl Store {
     /// row itself is clockless. The sync insert path does not promote — the
     /// origin device already did, and its doc change is on the way.
     pub fn append_log(&mut self, e: &LogEntry, provenance: &str, at: Timestamp) -> Result<String> {
-        // The occurrence index counts only this replica's own repeats — the
-        // uid space is partitioned by replica id, so two devices logging the
-        // same dish while apart cannot mint colliding uids and collapse
-        // genuinely distinct cooks on merge.
-        let scope = format!("{}-{}", log_content_hash(e), self.replica);
-        let n: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM cook_log WHERE uid LIKE ?1 || '-%'",
-            [&scope],
-            |r| r.get(0),
-        )?;
-        let uid = format!("{scope}-{n}");
-        if !self.insert_log_row(&uid, e)? {
-            return Err(StoreError::Corrupt(format!("log uid {uid} already taken")));
-        }
+        // Prepare the promotion first, entirely in memory. Hydration can
+        // fail on peer-shaped bytes (`Round.schema` is deliberately not a
+        // gate), and that failure must strike before anything is written:
+        // this used to run after the cook row's own transaction, so a
+        // failed promotion left the cook committed and the natural retry
+        // minted the next occurrence index — a duplicate cook, forever.
+        let mut promotion: Option<(String, Change)> = None;
         if let Some(slug) = &e.recipe {
             let id = DocId::Recipe(slug.clone());
             if self.exists(&id)? {
-                self.modify::<crate::pages::RecipeDoc>(&id, provenance, at, |r| {
-                    if r.status == mise_core::types::RecipeStatus::Draft {
-                        r.status = mise_core::types::RecipeStatus::Active;
-                    }
-                })?;
+                let mut doc = self.load_doc(&id)?;
+                let mut value: crate::pages::RecipeDoc = hydrate(&doc)?;
+                if value.status == mise_core::types::RecipeStatus::Draft {
+                    value.status = mise_core::types::RecipeStatus::Active;
+                }
+                crate::pages::Stamped::stamp(&mut value);
+                reconcile(&mut doc, &value)?;
+                if doc.commit_with(stamp(provenance, at)).is_some() {
+                    let change = doc
+                        .get_last_local_change()
+                        .expect("commit reported a change")
+                        .clone();
+                    promotion = Some((id.to_string(), change));
+                }
             }
         }
-        Ok(uid)
+        // The occurrence index counts only this replica's own repeats — the
+        // uid space is partitioned by replica id, so two devices logging the
+        // same dish while apart cannot mint colliding uids and collapse
+        // genuinely distinct cooks on merge. One transaction for the count,
+        // the cook row and the promotion: nothing half-lands, and counting
+        // under BEGIN IMMEDIATE's write lock means the CLI and the server —
+        // which share this replica id on one file — cannot mint the same
+        // index concurrently.
+        let scope = format!("{}-{}", log_content_hash(e), self.replica);
+        self.transaction(|tx| {
+            let n = tx.count_log_scope(&scope)?;
+            let uid = format!("{scope}-{n}");
+            if !tx.insert_log_row(&uid, e)? {
+                return Err(StoreError::Corrupt(format!("log uid {uid} already taken")));
+            }
+            if let Some((key, change)) = &promotion {
+                tx.append_changes(key, std::slice::from_ref(change))?;
+            }
+            Ok(uid)
+        })
     }
 
     /// A fresh collection-item id — `<prefix>-<replica>-<seq>` — from a
@@ -522,11 +543,6 @@ impl Store {
             |r| r.get(0),
         )?;
         Ok(format!("{prefix}-{}-{seq}", self.replica))
-    }
-
-    /// Idempotent insert of a log row with a known uid.
-    pub(crate) fn insert_log_row(&mut self, uid: &str, e: &LogEntry) -> Result<bool> {
-        self.transaction(|tx| tx.insert_log_row(uid, e))
     }
 
     pub(crate) fn log_uids(&self) -> Result<Vec<String>> {
@@ -1144,6 +1160,18 @@ impl StoreTx<'_> {
             }
         }
         Ok(inserted)
+    }
+
+    /// This replica's repeat count for one content-hash scope — the
+    /// occurrence index `append_log` mints uids from. Lives on the
+    /// transaction so the count and the insert it feeds share one write
+    /// lock.
+    pub(crate) fn count_log_scope(&self, scope: &str) -> Result<i64> {
+        Ok(self.tx.query_row(
+            "SELECT COUNT(*) FROM cook_log WHERE uid LIKE ?1 || '-%'",
+            [scope],
+            |r| r.get(0),
+        )?)
     }
 
     /// Idempotent insert of a log row with a known uid.

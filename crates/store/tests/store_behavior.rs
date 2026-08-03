@@ -566,3 +566,67 @@ fn first_cook_promotes_a_draft_and_only_a_draft() {
     assert_eq!(retired.status, RecipeStatus::Retired);
     assert_eq!(store.history(&DocId::Recipe(slug("old-flame"))).unwrap().len(), 1);
 }
+
+/// Audit #4: `append_log` used to commit the cook row and the draft→active
+/// promotion in two separate transactions. A promotion failure — reachable
+/// through the honest interface, since sync applies peer doc bytes without a
+/// schema gate — returned Err with the cook already committed, and the
+/// natural retry saw the row, minted the next occurrence index, and wrote a
+/// duplicate cook. The whole append is one transaction now: a failed
+/// promotion leaves no cook row, and a retry after the doc is repaired
+/// yields exactly one.
+#[test]
+fn a_failed_promotion_commits_no_cook_and_the_retry_does_not_duplicate() {
+    use std::collections::BTreeMap;
+
+    use mise_core::types::{CookKind, LogEntry};
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("c");
+    drop(Store::create(&root, &slug("home"), 2, ts(0)).unwrap());
+
+    // A recipe doc a peer could ship: valid Automerge, wrong shape — the
+    // title is an integer, so RecipeDoc hydration fails. Injected the way a
+    // sync round lands it: a docs row plus a raw change row.
+    let id = DocId::Recipe(slug("broken"));
+    {
+        use automerge::transaction::Transactable;
+        let mut doc = automerge::AutoCommit::new();
+        doc.put(automerge::ROOT, "title", 42i64).unwrap();
+        doc.commit();
+        let change = doc.get_last_local_change().unwrap().clone();
+        let hash: String = change.hash().0.iter().map(|b| format!("{b:02x}")).collect();
+        let conn = rusqlite::Connection::open(root.join("mise.db")).unwrap();
+        conn.execute(
+            "INSERT INTO docs (id, kind) VALUES (?1, ?2)",
+            rusqlite::params![id.to_string(), id.kind()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO doc_changes (doc_id, seq, hash, change) VALUES (?1, 1, ?2, ?3)",
+            rusqlite::params![id.to_string(), hash, change.raw_bytes().as_ref()],
+        )
+        .unwrap();
+    }
+
+    let mut store = Store::open(&root).unwrap();
+    let cook = LogEntry {
+        date: jiff::civil::Date::constant(2026, 8, 1),
+        kind: CookKind::Meal,
+        recipe: Some(slug("broken")),
+        title: "Dish".into(),
+        location: "home".into(),
+        servings: 2,
+        verdict: "fine".into(),
+        tags: BTreeMap::new(),
+    };
+
+    // Both the attempt and its natural retry fail — and neither leaves a
+    // cook row behind for the occurrence counter to double.
+    assert!(store.append_log(&cook, "test: cook", ts(1)).is_err());
+    assert!(store.append_log(&cook, "test: retry", ts(2)).is_err());
+    assert!(
+        store.log_entries().unwrap().is_empty(),
+        "a failed promotion left a committed cook row"
+    );
+}
