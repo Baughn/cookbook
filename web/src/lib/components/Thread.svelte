@@ -29,6 +29,11 @@
 	let exchange = 0;
 	let controller: AbortController | null = null;
 
+	// Reload owns the transcript, not the error: a failure the server
+	// reported over SSE arrives via onError *during* the exchange, and the
+	// reload that follows must not erase it in the same tick. `error` is
+	// cleared by its owners — the top of send() and the thread-change
+	// effect — never as a side effect of refetching messages.
 	async function reload() {
 		const r = await api.thread(thread);
 		messages = r.messages;
@@ -37,7 +42,6 @@
 		// streamed in: the server omits completed proposals, and the ✓s
 		// of one finished this session should stay on screen.
 		proposal = r.proposal ?? proposal;
-		error = null;
 	}
 
 	$effect(() => {

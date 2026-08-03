@@ -40,3 +40,27 @@ test('the drafting box keeps its message on failure too', async ({ page }) => {
 	await expect(box).toHaveValue('tonkatsu, from that video');
 	await expect(page.locator('section[aria-label="drafting"] article.user')).toHaveCount(0);
 });
+
+// Audit #60: a failure the server reports over SSE ends the stream cleanly,
+// so chat() resolves and send() takes the success path — where reload()
+// used to clear the error banner in the same tick onError set it. `done`
+// and `error` frames are mutually exclusive server-side, so *every*
+// server-side exchange failure took this path: the banner never rendered.
+test('a server-reported exchange failure keeps its banner', async ({ page }) => {
+	await enter(page, '/');
+	const composer = page.getByPlaceholder('Plan the week…');
+
+	await page.route('**/chat', (route) =>
+		route.fulfill({
+			status: 200,
+			headers: { 'content-type': 'text/event-stream' },
+			body: 'event: error\ndata: {"message":"the exchange failed: model overloaded"}\n\n'
+		})
+	);
+	await composer.fill('plan something doomed');
+	await composer.press('Enter');
+
+	// The banner survives the transcript reload that follows the stream.
+	await expect(page.getByText('model overloaded', { exact: false })).toBeVisible();
+	await page.unroute('**/chat');
+});
