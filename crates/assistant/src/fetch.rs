@@ -81,7 +81,12 @@ pub fn validate_url(url: &str) -> std::result::Result<(), String> {
     match parsed.host() {
         None => Err(format!("bad url {url:?}: no host")),
         Some(url::Host::Domain(d)) => {
+            // Canonicalize before matching: lowercase, and drop a single
+            // trailing root dot. `localhost.` is the fully-qualified spelling
+            // of `localhost` — the resolver strips the dot, so the textual
+            // check has to as well or the suffix comparisons all miss.
             let d = d.to_ascii_lowercase();
+            let d = d.strip_suffix('.').unwrap_or(&d);
             if d == "localhost"
                 || d.ends_with(".localhost")
                 || d.ends_with(".local")
@@ -231,6 +236,12 @@ mod tests {
             "http://foo.localhost/x",
             "http://printer.local/x",
             "http://db.internal/x",
+            // A trailing root dot is a fully-qualified spelling the resolver
+            // strips, so it must not walk past the suffix checks.
+            "http://localhost./x",
+            "http://foo.localhost./x",
+            "http://printer.local./x",
+            "http://db.internal./x",
             "http://127.0.0.1/x",
             "http://10.1.2.3/x",
             "http://192.168.1.1/x",
@@ -291,6 +302,7 @@ mod tests {
 
         // A public URL redirecting inward is the whole point of re-validating.
         assert!(redirect_ok("http://127.0.0.1/x", 1).is_err());
+        assert!(redirect_ok("http://localhost./x", 1).is_err());
         assert!(redirect_ok("http://[::ffff:169.254.169.254]/x", 1).is_err());
         assert!(redirect_ok("file:///etc/passwd", 1).is_err());
     }
