@@ -79,6 +79,70 @@ describe('URLs that execute are refused', () => {
 	});
 });
 
+// The href is injected with {@html}, so the browser decodes character
+// references inside it. `safeUrl` validates the raw text, so an entity-encoded
+// scheme used to sail past — CSP was the only thing between it and
+// localStorage['mise-token'], and schemes CSP doesn't govern were uncovered.
+describe('entity-encoded URL schemes cannot execute', () => {
+	// Numeric references are resolved before the check, so a numeric-encoded
+	// colon is caught outright and the link is dropped.
+	it.each([
+		'javascript&#58;alert(1)',
+		'javascript&#x3a;alert(1)',
+		'&#106;avascript:alert(1)',
+		'&#x6a;avascript:alert(1)',
+		'javascript&#0000058;alert(1)'
+	])('refuses the numeric-encoded %j', (href) => {
+		expect(safeUrl(href)).toBe('');
+	});
+
+	// A browser decodes character references in one left-to-right pass and
+	// never re-scans a '&' it just produced. This mirrors that for the refs in
+	// play, so a test can ask the real question: what scheme does the href
+	// resolve to in the DOM?
+	function browserDecode(s: string): string {
+		return s.replace(/&(amp|colon|tab|newline|#x[0-9a-f]+|#\d+);/gi, (m, name: string) => {
+			const n = name.toLowerCase();
+			if (n === 'amp') return '&';
+			if (n === 'colon') return ':';
+			if (n === 'tab') return '\t';
+			if (n === 'newline') return '\n';
+			if (n.startsWith('#x')) return String.fromCodePoint(parseInt(name.slice(2), 16));
+			return String.fromCodePoint(parseInt(name.slice(1), 10));
+		});
+	}
+	// Leading whitespace/controls the URL parser ignores before the scheme.
+	const EXECUTES = /^\s*(?:javascript|data|vbscript):/i;
+
+	// Named references can't be enumerated safely, so they are neutralized on
+	// output instead: every & becomes &amp;, so no reference can re-form in the
+	// attribute the browser decodes. The href resolves to an inert relative URL.
+	it.each([
+		'javascript&colon;alert(1)',
+		'java&Tab;script:alert(1)',
+		'&NewLine;javascript:alert(1)',
+		'&Tab;javascript:alert(1)'
+	])('neutralizes the named-encoded %j', (href) => {
+		const out = safeUrl(href);
+		expect(out).not.toMatch(/&(?!amp;)/); // no reference left unescaped
+		expect(browserDecode(out)).not.toMatch(EXECUTES); // and it can't execute
+	});
+
+	it('holds through the full render — links, images, and reference definitions', () => {
+		const hrefIn = (html: string) => html.match(/href="([^"]*)"/)?.[1] ?? '';
+		for (const md of [
+			`[full method](java&Tab;script:fetch('evil'))`,
+			'![shot](javascript&colon;alert(1))',
+			'[method][x]\n\n[x]: &#106;avascript:alert(1)'
+		]) {
+			expect(browserDecode(hrefIn(renderMarkdown(md)))).not.toMatch(EXECUTES);
+		}
+		// A genuine link is untouched and its query ampersand round-trips.
+		const ok = renderMarkdown('[recipe](https://example.com/r?a=1&b=2)');
+		expect(ok).toContain('href="https://example.com/r?a=1&amp;b=2"');
+	});
+});
+
 describe('ordinary Markdown still renders', () => {
 	it('keeps emphasis, code and safe links intact', () => {
 		const html = renderMarkdown('Use **tamari** and `mirin` — see [the note](https://example.com).');
