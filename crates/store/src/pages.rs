@@ -32,6 +32,29 @@ use crate::error::StoreError;
 /// what fails when a hydrator goes missing.
 pub const SCHEMA_VERSION: u32 = 1;
 
+/// Stamp the current schema version onto a doc. `Store::modify` calls this
+/// after every mutation closure, so `schema_version` records the shape the
+/// *bytes* are in, never the shape a doc was born at or a historical value a
+/// revert restored. A field nobody maintained is a guarantee the code doesn't
+/// make; this makes the stamp a write-path invariant instead of a convention.
+pub trait Stamped {
+    fn stamp(&mut self);
+}
+
+macro_rules! stamped {
+    ($($t:ty),+ $(,)?) => {$(
+        impl Stamped for $t {
+            fn stamp(&mut self) {
+                self.schema_version = SCHEMA_VERSION;
+            }
+        }
+    )+};
+}
+stamped!(
+    StateDoc, QueueDoc, ShoppingDoc, SteeringDoc, FactsDoc, PantryDoc, EquipmentDoc, ShopsDoc,
+    FridgeDoc, RecipeDoc, TechniqueDoc,
+);
+
 /// The shape version a doc was written at, read off the object a hydrator is
 /// working on — this is `schema_version`'s reader.
 ///

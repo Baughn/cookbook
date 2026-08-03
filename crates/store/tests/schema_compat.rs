@@ -224,6 +224,54 @@ fn frozen_v1_docs_hydrate_render_and_revert() {
     assert_eq!(back.title, "Fixture recipe");
 }
 
+/// #9: `schema_version` is a write-path invariant, not a value a writer must
+/// remember to set. A doc carrying a stale stamp — an older build, a peer on a
+/// future build, or a revert restoring a historical value — is brought current
+/// by the next write: `Store::modify` stamps *after* the closure, so no
+/// new-shape bytes ever persist under an old version, and a revert cannot carry
+/// an old stamp forward over current-shape bytes.
+#[test]
+fn every_write_stamps_the_current_schema_version() {
+    use mise_store::pages::SCHEMA_VERSION;
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("corpus");
+    let mut store = Store::create(&root, &slug("home"), 2, ts(0)).unwrap();
+
+    // Plant a deliberately stale stamp. `create_doc` reconciles verbatim (it is
+    // not a mutation), which is exactly how a future-build peer could deliver
+    // one; `modify` can no longer even write a non-current stamp.
+    let id = DocId::Recipe(slug("stale"));
+    let stale = RecipeDoc {
+        schema_version: 99,
+        title: "Stale".into(),
+        servings: 3,
+        effort: "weekday".into(),
+        lead: None,
+        tags: Default::default(),
+        equipment: vec![],
+        ingredients: vec![],
+        source: None,
+        status: RecipeStatus::Active,
+        body: "".into(),
+    };
+    store.create_doc(&id, &stale, "test: stale stamp", ts(1)).unwrap();
+    assert_eq!(store.get::<RecipeDoc>(&id).unwrap().schema_version, 99, "created verbatim");
+
+    // Any ordinary edit brings it current.
+    store
+        .modify::<RecipeDoc>(&id, "test: edit", ts(2), |r| r.title = "Renamed".into())
+        .unwrap();
+    assert_eq!(store.get::<RecipeDoc>(&id).unwrap().schema_version, SCHEMA_VERSION);
+
+    // Reverting to the stale head restores the old *content* but not the stamp.
+    let stale_head = store.history(&id).unwrap()[0].hash.clone();
+    store.revert(&id, &stale_head, "test: revert to stale head", ts(3)).unwrap();
+    let back = store.get::<RecipeDoc>(&id).unwrap();
+    assert_eq!(back.title, "Stale", "content reverted");
+    assert_eq!(back.schema_version, SCHEMA_VERSION, "but the stamp stays current");
+}
+
 fn assert_markers_survived(store: &Store, when: &str) {
     for (id, markers) in manifest() {
         let path = store.export_dir().join(id.export_path());

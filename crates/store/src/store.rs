@@ -362,7 +362,13 @@ impl Store {
 
     /// Hydrate, mutate, reconcile, persist. Returns the new value. A no-op
     /// mutation writes nothing.
-    pub fn modify<T: Hydrate + Reconcile>(
+    ///
+    /// The stamp is applied *after* the closure, so no mutation — nor a revert
+    /// restoring a historical value — can persist new-shape bytes under an old
+    /// `schema_version`. Stamping to the current version is idempotent, so a
+    /// closure that changed nothing still reconciles to no change and writes
+    /// nothing.
+    pub fn modify<T: Hydrate + Reconcile + crate::pages::Stamped>(
         &mut self,
         id: &DocId,
         provenance: &str,
@@ -372,6 +378,7 @@ impl Store {
         let mut doc = self.load_doc(id)?;
         let mut value: T = hydrate(&doc)?;
         f(&mut value);
+        value.stamp();
         reconcile(&mut doc, &value)?;
         let committed = doc.commit_with(stamp(provenance, at));
         if committed.is_some() {
@@ -638,8 +645,12 @@ impl Store {
             // undone from the history UI at all.
             DocId::Recipe(_) => {
                 let value: RecipeDoc = hydrate(&old)?;
+                // `schema_version` is bound but not restored — `modify` stamps
+                // the current version, so a revert never carries an old stamp
+                // forward. It stays in the destructure so a new field is still
+                // a compile error here (see `source`, which was silently lost).
                 let RecipeDoc {
-                    schema_version,
+                    schema_version: _,
                     title,
                     servings,
                     effort,
@@ -653,7 +664,6 @@ impl Store {
                 } = value;
                 let old_body = body.as_str().to_string();
                 self.modify::<RecipeDoc>(id, provenance, at, |r| {
-                    r.schema_version = schema_version;
                     r.title = title;
                     r.servings = servings;
                     r.effort = effort;
@@ -669,10 +679,9 @@ impl Store {
             }
             DocId::Technique(_) => {
                 let value: TechniqueDoc = hydrate(&old)?;
-                let TechniqueDoc { schema_version, title, tags, body } = value;
+                let TechniqueDoc { schema_version: _, title, tags, body } = value;
                 let old_body = body.as_str().to_string();
                 self.modify::<TechniqueDoc>(id, provenance, at, |t| {
-                    t.schema_version = schema_version;
                     t.title = title;
                     t.tags = tags;
                 })?;
@@ -681,7 +690,7 @@ impl Store {
         }
     }
 
-    fn revert_plain<T: Hydrate + Reconcile>(
+    fn revert_plain<T: Hydrate + Reconcile + crate::pages::Stamped>(
         &mut self,
         id: &DocId,
         old: &AutoCommit,
