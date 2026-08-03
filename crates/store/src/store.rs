@@ -537,22 +537,16 @@ impl Store {
         Ok(uids)
     }
 
-    /// All log rows with their uids, in (date, uid) order.
+    /// All log rows with their uids, in (date, uid) order. One statement —
+    /// the uid and its entry come from the same row of the same read
+    /// snapshot. This used to be two independent SELECTs zipped together,
+    /// and in WAL mode a concurrent writer (the CLI beside the server)
+    /// committing between them misaligned every pair after the insertion
+    /// point; `zip` then truncated the mismatch silently and the wrong
+    /// pairs went onto the sync wire. `thread_rows` has the same shape.
     pub(crate) fn log_rows(&self) -> Result<Vec<(String, LogEntry)>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT uid FROM cook_log ORDER BY date, uid")?;
-        let uids = stmt
-            .query_map([], |r| r.get::<_, String>(0))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        drop(stmt);
-        Ok(uids.into_iter().zip(self.log_entries()?).collect())
-    }
-
-    /// The whole log, ordered by (date, uid) — deterministic across replicas.
-    pub fn log_entries(&self) -> Result<Vec<LogEntry>> {
         let mut stmt = self.conn.prepare(
-            "SELECT date, kind, recipe, title, location, servings, verdict, tags
+            "SELECT uid, date, kind, recipe, title, location, servings, verdict, tags
              FROM cook_log ORDER BY date, uid",
         )?;
         let rows = stmt
@@ -560,32 +554,43 @@ impl Store {
                 Ok((
                     r.get::<_, String>(0)?,
                     r.get::<_, String>(1)?,
-                    r.get::<_, Option<String>>(2)?,
-                    r.get::<_, String>(3)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, Option<String>>(3)?,
                     r.get::<_, String>(4)?,
-                    r.get::<_, u32>(5)?,
-                    r.get::<_, String>(6)?,
+                    r.get::<_, String>(5)?,
+                    r.get::<_, u32>(6)?,
                     r.get::<_, String>(7)?,
+                    r.get::<_, String>(8)?,
                 ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         rows.into_iter()
-            .map(|(date, kind, recipe, title, location, servings, verdict, tags)| {
+            .map(|(uid, date, kind, recipe, title, location, servings, verdict, tags)| {
                 let corrupt = |m: String| StoreError::Corrupt(format!("log row: {m}"));
-                Ok(LogEntry {
-                    date: date.parse().map_err(|e| corrupt(format!("bad date: {e}")))?,
-                    kind: kind.parse::<CookKind>().map_err(corrupt)?,
-                    recipe: recipe
-                        .map(|s| Slug::new(s).map_err(|e| corrupt(e.to_string())))
-                        .transpose()?,
-                    title,
-                    location,
-                    servings,
-                    verdict,
-                    tags: serde_json::from_str(&tags)?,
-                })
+                Ok((
+                    uid,
+                    LogEntry {
+                        date: date.parse().map_err(|e| corrupt(format!("bad date: {e}")))?,
+                        kind: kind.parse::<CookKind>().map_err(corrupt)?,
+                        recipe: recipe
+                            .map(|s| Slug::new(s).map_err(|e| corrupt(e.to_string())))
+                            .transpose()?,
+                        title,
+                        location,
+                        servings,
+                        verdict,
+                        tags: serde_json::from_str(&tags)?,
+                    },
+                ))
             })
             .collect()
+    }
+
+    /// The whole log, ordered by (date, uid) — deterministic across
+    /// replicas. Derived from `log_rows` so the two orderings cannot
+    /// diverge: there is only one query.
+    pub fn log_entries(&self) -> Result<Vec<LogEntry>> {
+        Ok(self.log_rows()?.into_iter().map(|(_, e)| e).collect())
     }
 
     // --------------------------------------------------------- history --
