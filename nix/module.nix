@@ -142,6 +142,25 @@ in
         SystemCallFilter = [ "@system-service" ];
         SystemCallArchitectures = "native";
         RestrictAddressFamilies = [ "AF_INET" "AF_INET6" "AF_UNIX" ];
+        # Egress filter — the specific control the SSRF deferral leans on.
+        # `fetch_url`'s host check is textual, so a public hostname whose DNS
+        # record points into the LAN or at the cloud metadata address (the
+        # prize target) slips past it and connects. Deny exactly the ranges
+        # that check exists to refuse; the Anthropic API and real recipe sites
+        # are public and unaffected. Loopback is deliberately *not* denied — it
+        # carries the Caddy → 127.0.0.1 ingress — so a hostname resolving to
+        # loopback remains reachable. That residual closes only with
+        # resolve-and-pin in the client (scheduled after M7); until then the
+        # textual check still refuses loopback *literals*.
+        IPAddressDeny = [
+          "10.0.0.0/8"      # RFC1918 private
+          "172.16.0.0/12"   # RFC1918 private
+          "192.168.0.0/16"  # RFC1918 private
+          "169.254.0.0/16"  # link-local, incl. 169.254.169.254 metadata
+          "100.64.0.0/10"   # CGNAT
+          "fc00::/7"        # IPv6 unique-local
+          "fe80::/10"       # IPv6 link-local
+        ];
         RestrictNamespaces = true;
         PrivateDevices = true;
         ProtectKernelModules = true;
