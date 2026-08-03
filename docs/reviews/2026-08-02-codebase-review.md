@@ -137,8 +137,29 @@ Folded in: **#81** (`shopping_add` no longer trusts a caller id) and **#80** (th
 convergence property now exercises and counts fridge portions; a CLI-binary
 partition test and a CLI/tool parity test guard the surfaces). Fixes span jj
 commits `zvsyutsk` (#81), `ztovxqmw` (#80), `kmkkkktp` (#33 et al.), `nuzswywm`
-(#56 tests). Not yet addressed: **#52** (CLI `wss://` TLS) and the remaining
-findings below.
+(#56 tests).
+
+_2026-08-03 — `wss://` TLS._ **#52** (HIGH): `tokio-tungstenite` now carries
+`rustls-tls-webpki-roots`, so the documented production sync (Caddy-terminated
+TLS) connects instead of failing "TLS not compiled in" (jj `uzmvvkox`).
+
+_2026-08-03 — reads are total by construction (tolerant-hydration cluster)._
+Every read of a doc is now total, finishing the schema policy the campaign
+started. **#19** froze append-only row identity behind an exhaustive destructure
+plus a frozen-hash test (a new field is a compile error, not a silent desync).
+**#9** made `schema_version` a write-path invariant via a `Stamped` trait
+`modify` applies after the closure. **#11** gave `location_view` the missing-
+sibling degradation its neighbours had. **#13/#85** typed the scalar doc fields
+behind byte-preserving `repr` adaptors and made `to_core`/`to_view` infallible,
+so a peer's out-of-vocabulary presence/effort/date/tier or a non-slug key
+degrades instead of 500ing the queue — the `Corrupt` error path is gone at the
+type level. `SCHEMA_VERSION` did not move; the frozen fixtures and export
+byte-identity property are unchanged. Fixes span jj commits `rpmmuwyx` (#19),
+`rqmwvqul` (#9), `nosymtvo`→`rqmwvqul` (#11), `totzuvrp` (#13/#85).
+
+Not yet addressed: the remaining findings below (the canonicalize-then-validate
+security cluster #38/#57/#71/#76, the web error-state cluster #60/#62/#66/#67,
+the narrow-path/atomicity cluster #3/#4/#5/#20/#28/#34, and the local one-offs).
 
 ---
 

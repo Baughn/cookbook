@@ -1,6 +1,7 @@
 # Implementation plan
 
-*Last updated: 2026-08-02 (client caching and unknown-block policy). Companion to [design.md](design.md); this document
+*Last updated: 2026-08-03 (total reads by construction: typed doc fields, the
+write-path version stamp, frozen row identity). Companion to [design.md](design.md); this document
 covers the technical shape and build order. Decisions here resolve the "Open
 questions" section of the design doc.*
 
@@ -441,21 +442,42 @@ Settled 2026-08-01, after the first whole-codebase audit
   in the opening round. It need not reject a mismatch — a warning plus a
   `SyncOutcome` field is enough — but a peer's shape must be legible
   before its changes are applied.
-- **Typed doc fields, same bytes.** `RecipeDoc.status` is
-  `RecipeStatus`; equipment entries and pantry links are `Slug`s. The
-  Automerge representation is the plain strings v1 wrote — regenerating
-  the v1 fixtures under the typed fields was verified byte-identical, so
-  this is a compile-time narrowing, not a wire change, and
+- **Typed doc fields, same bytes.** `RecipeDoc.status`/`.effort`,
+  `PantryItemDoc.presence`/`.bought`/`.tier`, equipment entries and pantry
+  links are all typed (`RecipeStatus`, `EffortClass`, `Presence`, `Date`,
+  `Slug`). The Automerge representation is the plain strings v1 wrote —
+  regenerating the v1 fixtures under the typed fields was verified
+  byte-identical, so this is a compile-time narrowing, not a wire change, and
   `SCHEMA_VERSION` did not move. The `with`-adaptors in `pages.rs::repr`
-  hydrate tolerantly: an out-of-vocabulary status reads as draft, a
-  non-slug link is dropped — degraded, never a dead read — and the
-  frontmatter-injection render bugs are gone because the bad values are
-  unrepresentable, not because more things are escaped.
+  hydrate tolerantly: an out-of-vocabulary status reads as draft, an unknown
+  presence as out, an unknown effort as weekday, a bad date or non-slug link
+  as absent — degraded, never a dead read — and the frontmatter-injection
+  render bugs are gone because the bad values are unrepresentable, not because
+  more things are escaped.
+- **Reads are total by construction.** Because sync applies peer bytes
+  verbatim, every doc→core conversion is infallible: `to_core`/`to_view`
+  return the view directly, not `Result`. Typed fields are already valid;
+  the remaining edges degrade rather than fail — a map key or portion date
+  that won't parse is skipped, a zero headcount/servings clamps to one, a
+  zero-minute lead is no lead. So one bad value from a peer can no longer 500
+  `/api/queue` or abort a chat exchange while the export renders the same
+  page fine; the `Corrupt`-from-data path does not exist. `location_view`
+  degrades a missing sibling doc the same way `corpus()` and `render_page`
+  already did.
+- **The version stamp is a write-path invariant.** `Store::modify` calls a
+  `Stamped` trait after the mutation closure, so `schema_version` always
+  records the shape the *bytes* are in — no write, and no `revert` restoring
+  a historical value, can persist new-shape bytes under an old stamp.
 - **Enforced at compile time where it can be.** Wherever a doc's fields
-  are enumerated by hand — `Store::revert`'s prose arms — the hydrated
-  value is destructured, so a newly added field is a compile error rather
-  than a silently skipped one. This is what makes the policy enforced
-  rather than merely remembered.
+  are enumerated by hand — `Store::revert`'s prose arms, and the
+  `log_content_hash`/`thread_content_hash` identity functions — the value is
+  exhaustively destructured, so a newly added field is a compile error rather
+  than a silently skipped one. For row identity this matters twice over: the
+  hash *is* the row's cross-replica identity, so a silent change desyncs every
+  existing row forever. A frozen-value test pins the current hash prefix, and
+  the destructure forces the decision — version the new form into the uid and
+  accept both prefixes forever — rather than letting a new field move it. This
+  is what makes the policy enforced rather than merely remembered.
 - **Log and thread row uids become replica-scoped**:
   `sha256(entry)[..16]-<replica-id>-<n>`, with a random replica id minted
   once per store. The occurrence index was a purely local `COUNT(*)`, so
